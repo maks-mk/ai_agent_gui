@@ -52,6 +52,14 @@ def build_stylesheet() -> str:
     transcript_panel_bg = blend_hex(SURFACE_CARD, SURFACE_ALT, 0.18)
     transcript_panel_border = blend_hex(BORDER, "#FFFFFF", 0.08)
     transcript_panel_hover = blend_hex(SURFACE_CARD, SURFACE_ALT, 0.32)
+    tool_panel_bg = blend_hex(SURFACE_BG, SURFACE_CARD, 0.34)
+    tool_panel_border = blend_hex(tool_panel_bg, "#FFFFFF", 0.16)
+    tool_panel_hover = blend_hex(tool_panel_bg, SURFACE_ALT, 0.3)
+    tool_code_bg = blend_hex(tool_panel_bg, SURFACE_BG, 0.25)
+    tool_toggle_text = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.26)
+    tool_toggle_hover_text = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.52)
+    tool_call_idle = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)
+    tool_call_hover = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)
     return f"""
     QWidget {{
         background: {SURFACE_BG};
@@ -242,6 +250,39 @@ def build_stylesheet() -> str:
         color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.45)};
     }}
 
+    QFrame#ToolExpandablePanel {{
+        background: {tool_panel_bg};
+        border: 1px solid {tool_panel_border};
+        border-radius: 0px;
+    }}
+
+    QWidget#ToolExpandableContent {{
+        background: transparent;
+        border: none;
+    }}
+
+    QPushButton#ToolExpandableToggle {{
+        background: transparent;
+        border: none;
+        border-radius: 0px;
+        padding: 5px 8px;
+        min-height: 20px;
+        font-size: 9.2pt;
+        font-weight: 400;
+        color: {tool_toggle_text};
+        text-align: left;
+    }}
+
+    QPushButton#ToolExpandableToggle:hover {{
+        background: {tool_panel_hover};
+        color: {tool_toggle_hover_text};
+    }}
+
+    QPushButton#ToolExpandableToggle:checked {{
+        background: {tool_panel_hover};
+        color: {TEXT_PRIMARY};
+    }}
+
     QPlainTextEdit,
     QTextBrowser,
     QListView,
@@ -319,9 +360,9 @@ def build_stylesheet() -> str:
     QPushButton#ToolCallButton {{
         background: transparent;
         border: none;
-        border-radius: 4px;
+        border-radius: 0px;
         padding: 0px;
-        color: {TEXT_MUTED};
+        color: {tool_call_idle};
         font-size: 10.5pt;
         font-weight: 400;
         text-align: left;
@@ -329,34 +370,25 @@ def build_stylesheet() -> str:
 
     QPushButton#ToolCallButton:hover {{
         background: transparent;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.45)};
+        color: {tool_call_hover};
         border: none;
     }}
 
     QPushButton#ToolCallButton:checked {{
         background: transparent;
-        color: {TEXT_PRIMARY};
+        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.08)};
         border: none;
     }}
 
-    QPlainTextEdit#CodeView {{
-        background: {transcript_panel_bg};
+    QPlainTextEdit#CodeView,
+    QPlainTextEdit#InlineCodeView {{
+        background: {tool_code_bg};
         color: {CODE_TEXT};
-        border: 1px solid {transcript_panel_border};
-        border-radius: 5px;
+        border: 1px solid {tool_panel_border};
+        border-radius: 0px;
         font-family: "{MONO_FONT_FAMILY}";
         font-size: 9pt;
-        padding: 6px;
-    }}
-
-    QPlainTextEdit#InlineCodeView {{
-        background: {transcript_panel_bg};
-        color: {CODE_TEXT};
-        border: 1px solid {transcript_panel_border};
-        border-radius: 5px;
-        font-family: "{MONO_FONT_FAMILY}";
-        font-size: 8.9pt;
-        padding: 6px;
+        padding: 7px;
     }}
 
     QScrollArea {{

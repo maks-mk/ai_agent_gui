@@ -254,38 +254,44 @@ class CodeBlockWidget(QWidget):
         _sync_plain_text_height(self.editor, min_lines=2, max_lines=30, extra_padding=18)
         
 
-class CollapsibleSection(QWidget):
-    def __init__(self, title: str, content: QWidget, expanded: bool = False, indent: int = 16) -> None:
+class CollapsibleSection(QFrame):
+    def __init__(self, title: str, content: QWidget, expanded: bool = False, indent: int = 0) -> None:
         super().__init__()
+        self.setObjectName("ToolExpandablePanel")
+        self.setFrameShape(QFrame.NoFrame)
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.toggle_button = QPushButton()
-        self.toggle_button.setObjectName("DisclosureButton")
+        self.toggle_button.setObjectName("ToolExpandableToggle")
         self.toggle_button.setText(title)
         self.toggle_button.setCheckable(True)
         self.toggle_button.setChecked(expanded)
         self.toggle_button.setFlat(True)
         self.toggle_button.setCursor(Qt.PointingHandCursor)
-        self.toggle_button.setMinimumHeight(18)
+        self.toggle_button.setMinimumHeight(20)
         self.toggle_button.setIconSize(QSize(8, 8))
         self._set_toggle_icon(expanded)
 
         self.content = content
         self.content_container = QWidget()
+        self.content_container.setObjectName("ToolExpandableContent")
+        self.content_container.setAttribute(Qt.WA_StyledBackground, True)
         content_layout = QHBoxLayout(self.content_container)
-        content_layout.setContentsMargins(indent, 0, 0, 0)
+        content_layout.setContentsMargins(8 + indent, 0, 8, 8)
         content_layout.setSpacing(0)
         content_layout.addWidget(self.content, 1)
         self.content_container.setVisible(expanded)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(2)
+        layout.setSpacing(0)
         layout.addWidget(self.toggle_button)
         layout.addWidget(self.content_container)
         self.toggle_button.toggled.connect(self.set_expanded)
 
     def _set_toggle_icon(self, expanded: bool) -> None:
+        icon_color = TEXT_PRIMARY if expanded else TEXT_MUTED
         self.toggle_button.setIcon(
-            qta.icon("fa5s.caret-down" if expanded else "fa5s.caret-right", color=TEXT_MUTED)
+            qta.icon("fa5s.caret-down" if expanded else "fa5s.caret-right", color=icon_color)
         )
 
     def set_expanded(self, expanded: bool) -> None:
