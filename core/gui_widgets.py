@@ -9,6 +9,7 @@ import qtawesome as qta
 from PySide6.QtCore import QAbstractListModel, QMimeData, QModelIndex, QPoint, QRect, QRegularExpression, QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QKeyEvent, QPainter, QSyntaxHighlighter, QTextCharFormat
 from PySide6.QtWidgets import (
+    QApplication,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -217,12 +218,28 @@ class CodeBlockWidget(QWidget):
         super().__init__()
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
-        layout.setSpacing(4)
+        layout.setSpacing(6)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(6)
 
         self.title_label = QLabel(title)
         self.title_label.setObjectName("TranscriptMeta")
         self.title_label.setVisible(bool(title))
-        layout.addWidget(self.title_label)
+        title_row.addWidget(self.title_label, 0, Qt.AlignVCenter)
+        title_row.addStretch(1)
+
+        self.copy_button = QToolButton()
+        self.copy_button.setObjectName("CodeCopyButton")
+        self.copy_button.setToolButtonStyle(Qt.ToolButtonIconOnly)
+        self.copy_button.setCursor(Qt.PointingHandCursor)
+        self.copy_button.setToolTip("Copy")
+        self.copy_button.setIcon(qta.icon("fa5s.copy", color=TEXT_MUTED))
+        self.copy_button.clicked.connect(self._copy_code)
+        title_row.addWidget(self.copy_button, 0, Qt.AlignVCenter)
+
+        layout.addLayout(title_row)
 
         self.editor = QPlainTextEdit()
         self.editor.setObjectName("CodeView")
@@ -252,7 +269,17 @@ class CodeBlockWidget(QWidget):
 
     def _sync_height(self) -> None:
         _sync_plain_text_height(self.editor, min_lines=2, max_lines=30, extra_padding=18)
-        
+
+    def _copy_code(self) -> None:
+        QApplication.clipboard().setText(self.editor.toPlainText())
+        self.copy_button.setText("Copied")
+        self.copy_button.setIcon(qta.icon("fa5s.check", color=SUCCESS_GREEN))
+        QTimer.singleShot(1200, self._reset_copy_button)
+
+    def _reset_copy_button(self) -> None:
+        self.copy_button.setText("Copy")
+        self.copy_button.setIcon(qta.icon("fa5s.copy", color=TEXT_MUTED))
+
 
 class CollapsibleSection(QFrame):
     def __init__(self, title: str, content: QWidget, expanded: bool = False, indent: int = 0) -> None:
@@ -687,7 +714,7 @@ class ToolsPanelWidget(QWidget):
         self._container.setObjectName("ToolsContainer")
         self._inner = QVBoxLayout(self._container)
         self._inner.setContentsMargins(6, 6, 6, 6)
-        self._inner.setSpacing(2)
+        self._inner.setSpacing(6)
         self._inner.addStretch(1)
 
         self.scroll.setWidget(self._container)
@@ -1164,7 +1191,7 @@ class ConversationTurnWidget(QWidget):
         self._assistant_markdown = ""
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(2)
+        self._layout.setSpacing(6)
         self._timeline: list[tuple[str, QWidget]] = []
         self.assistant_segments: list[AssistantMessageWidget] = []
         self.tool_cards: dict[str, ToolCardWidget] = {}

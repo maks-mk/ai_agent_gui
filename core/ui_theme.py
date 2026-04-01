@@ -52,10 +52,10 @@ def build_stylesheet() -> str:
     transcript_panel_bg = blend_hex(SURFACE_CARD, SURFACE_ALT, 0.18)
     transcript_panel_border = blend_hex(BORDER, "#FFFFFF", 0.08)
     transcript_panel_hover = blend_hex(SURFACE_CARD, SURFACE_ALT, 0.32)
-    tool_panel_bg = blend_hex(SURFACE_BG, SURFACE_CARD, 0.34)
+    tool_panel_bg = blend_hex(SURFACE_BG, SURFACE_CARD, 0.6)
     tool_panel_border = blend_hex(tool_panel_bg, "#FFFFFF", 0.16)
     tool_panel_hover = blend_hex(tool_panel_bg, SURFACE_ALT, 0.3)
-    tool_code_bg = blend_hex(tool_panel_bg, SURFACE_BG, 0.25)
+    tool_code_bg = blend_hex(tool_panel_bg, SURFACE_BG, 0.75)
     tool_toggle_text = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.26)
     tool_toggle_hover_text = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.52)
     tool_call_idle = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)
@@ -252,8 +252,8 @@ def build_stylesheet() -> str:
 
     QFrame#ToolExpandablePanel {{
         background: {tool_panel_bg};
-        border: 1px solid {tool_panel_border};
-        border-radius: 0px;
+        border: none;
+        padding: 4px 6px;
     }}
 
     QWidget#ToolExpandableContent {{
@@ -279,6 +279,20 @@ def build_stylesheet() -> str:
     }}
 
     QPushButton#ToolExpandableToggle:checked {{
+        background: {tool_panel_hover};
+        color: {TEXT_PRIMARY};
+    }}
+
+    QToolButton#CodeCopyButton {{
+        background: transparent;
+        border: none;
+        border-radius: 0px;
+        padding: 2px 6px;
+        color: {tool_toggle_text};
+        font-size: 8.8pt;
+    }}
+
+    QToolButton#CodeCopyButton:hover {{
         background: {tool_panel_hover};
         color: {TEXT_PRIMARY};
     }}
@@ -384,11 +398,11 @@ def build_stylesheet() -> str:
     QPlainTextEdit#InlineCodeView {{
         background: {tool_code_bg};
         color: {CODE_TEXT};
-        border: 1px solid {tool_panel_border};
+        border: none;
         border-radius: 0px;
         font-family: "{MONO_FONT_FAMILY}";
         font-size: 9pt;
-        padding: 7px;
+        padding: 8px 10px;
     }}
 
     QScrollArea {{
