@@ -254,6 +254,7 @@ class MainWindow(QMainWindow):
         self.composer.setMinimumHeight(50)
         self.composer.setMaximumHeight(200)
         self.composer.setFixedHeight(50)  # auto-resizes via _update_composer_height
+        self.composer.set_history_session(self.active_session_id)
         pill_row.addWidget(self.composer, 1)
 
         self.send_button = QPushButton(qta.icon("fa5s.arrow-up", color="#08090B"), "")
@@ -411,6 +412,7 @@ class MainWindow(QMainWindow):
         self._set_status_visual("Run failed", error=True)
 
     def _on_chat_reset(self, _payload: dict) -> None:
+        self.composer.reset_history_navigation()
         self.current_turn = None
         self.transcript.clear_transcript()
         self._show_transient_status_message("Started a new session")
@@ -503,6 +505,12 @@ class MainWindow(QMainWindow):
     def _apply_runtime_payload(self, payload: dict, *, restore_transcript: bool) -> None:
         self.current_snapshot = payload.get("snapshot", {})
         self.active_session_id = payload.get("active_session_id", "")
+        if restore_transcript:
+            self.composer.sync_session_history_from_transcript(
+                self.active_session_id,
+                payload.get("transcript"),
+            )
+        self.composer.set_history_session(self.active_session_id)
         self.overview_panel.set_snapshot(self.current_snapshot)
         self._update_env_info(self.current_snapshot)
         tools = payload.get("tools", self.current_snapshot.get("tools", []))
@@ -556,6 +564,7 @@ class MainWindow(QMainWindow):
         text = self.composer.toPlainText().strip()
         if not text:
             return
+        self.composer.append_submitted_message(text)
         self.composer.clear()
         self.controller.start_run(text)
         self._set_input_enabled(False)
@@ -571,26 +580,10 @@ class MainWindow(QMainWindow):
         current_text = self.composer.toPlainText()
         if current_text and not current_text.endswith(" "):
             current_text += " "
-            
-        import os
-        from pathlib import Path
-        cwd = Path.cwd()
-        
+
         for path in file_paths:
-            try:
-                # Try to make path relative to cwd to avoid "absolute path" virtual mode errors
-                rel_path = Path(path).relative_to(cwd)
-                path_str = str(rel_path).replace("\\", "/")
-            except ValueError:
-                # If not relative to cwd, keep absolute path but format it with forward slashes
-                path_str = str(Path(path)).replace("\\", "/")
-                
-            # Wrap in quotes if there's a space
-            if " " in path_str:
-                current_text += f'"{path_str}" '
-            else:
-                current_text += f"{path_str} "
-                
+            current_text += f"{self.composer.format_file_reference(path)} "
+
         self.composer.setPlainText(current_text)
         # Move cursor to end
         from PySide6.QtGui import QTextCursor
@@ -621,6 +614,7 @@ class MainWindow(QMainWindow):
     def _switch_session(self, session_id: str) -> None:
         if self.is_busy or self.awaiting_approval or not session_id or session_id == self.active_session_id:
             return
+        self.composer.set_history_session(session_id)
         self.current_turn = None
         self.transcript.clear_transcript()
         self._show_transient_status_message("Switching chat…")
@@ -647,6 +641,10 @@ class MainWindow(QMainWindow):
         if self.is_busy:
             QMessageBox.information(self, "Busy", "Wait for the current run to finish before starting a new session.")
             return
+        pending_key = "__pending_new_session__"
+        self.composer.clear_history_for_session(pending_key)
+        self.composer.set_history_session(pending_key)
+        self.composer.reset_history_navigation()
         self.current_turn = None
         self.transcript.clear_transcript()
         self.controller.new_session()
@@ -671,6 +669,10 @@ class MainWindow(QMainWindow):
         self._show_transient_status_message(f"Switching project to: {dir_path}")
         os.chdir(dir_path)
 
+        pending_key = "__pending_project_switch__"
+        self.composer.clear_history_for_session(pending_key)
+        self.composer.set_history_session(pending_key)
+        self.composer.reset_history_navigation()
         self.current_turn = None
         self.transcript.clear_transcript()
         self._set_status_visual("Creating a new chat for the selected folder…", busy=True)

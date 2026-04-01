@@ -4,7 +4,8 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QObject, Qt, Signal
+from PySide6.QtCore import QEvent, QObject, Qt, Signal
+from PySide6.QtGui import QKeyEvent, QTextCursor
 from PySide6.QtWidgets import QApplication, QLabel, QFrame, QToolBar
 
 import main as agent_cli
@@ -114,6 +115,17 @@ class GuiUxTests(unittest.TestCase):
     def _process_events(self):
         self.app.processEvents()
 
+    def _press_composer_key(self, key: int, text: str = "", modifiers: Qt.KeyboardModifier = Qt.NoModifier):
+        self.window.composer.setFocus()
+        event = QKeyEvent(QEvent.KeyPress, key, modifiers, text)
+        QApplication.sendEvent(self.window.composer, event)
+        self._process_events()
+
+    def _submit_text(self, text: str):
+        self.window._set_input_enabled(True)
+        self.window.composer.setPlainText(text)
+        self.window._submit_request()
+
     def _snapshot_payload(self):
         config = type(
             "Config",
@@ -194,6 +206,153 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(self.controller.start_calls, ["Собери summary"])
         self.assertEqual(self.window.composer.toPlainText(), "")
+
+    def test_composer_enter_submits_while_shift_enter_adds_newline(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.setPlainText("line1")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+
+        self._press_composer_key(Qt.Key_Return, "\n", Qt.ShiftModifier)
+        self.assertEqual(self.controller.start_calls, [])
+        self.assertIn("\n", self.window.composer.toPlainText())
+
+        self.window.composer.setPlainText("Сделай задачу")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+        self._press_composer_key(Qt.Key_Return, "\r")
+
+        self.assertEqual(self.controller.start_calls, ["Сделай задачу"])
+        self.assertEqual(self.window.composer.toPlainText(), "")
+
+    def test_composer_history_navigation_works_when_empty_and_dedupes_adjacent_entries(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self._submit_text("cmd alpha")
+        self._submit_text("cmd alpha")
+        self._submit_text("cmd beta")
+        self.window._set_input_enabled(True)
+        self.window.composer.clear()
+
+        self._press_composer_key(Qt.Key_Up)
+        self.assertEqual(self.window.composer.toPlainText(), "cmd beta")
+        self._press_composer_key(Qt.Key_Up)
+        self.assertEqual(self.window.composer.toPlainText(), "cmd alpha")
+        self._press_composer_key(Qt.Key_Up)
+        self.assertEqual(self.window.composer.toPlainText(), "cmd alpha")
+        self._press_composer_key(Qt.Key_Down)
+        self.assertEqual(self.window.composer.toPlainText(), "cmd beta")
+        self._press_composer_key(Qt.Key_Down)
+        self.assertEqual(self.window.composer.toPlainText(), "")
+
+    def test_composer_up_down_do_not_override_text_when_editor_not_empty(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.append_submitted_message("history item")
+        self.window.composer.setPlainText("typed")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+
+        self._press_composer_key(Qt.Key_Up)
+
+        self.assertEqual(self.window.composer.toPlainText(), "typed")
+
+    def test_composer_history_is_restored_from_transcript_payload(self):
+        payload = self._snapshot_payload()
+        payload["transcript"] = {
+            "summary_notice": "",
+            "turns": [
+                {"user_text": "first", "blocks": []},
+                {"user_text": "first", "blocks": []},
+                {"user_text": "second", "blocks": []},
+            ],
+        }
+        self.window._handle_initialized(payload)
+        self.window.composer.clear()
+
+        self._press_composer_key(Qt.Key_Up)
+        self.assertEqual(self.window.composer.toPlainText(), "second")
+        self._press_composer_key(Qt.Key_Up)
+        self.assertEqual(self.window.composer.toPlainText(), "first")
+
+    def test_composer_history_is_session_scoped(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.set_history_session("session-a")
+        self.window.composer.append_submitted_message("alpha")
+        self.window.composer.set_history_session("session-b")
+        self.window.composer.append_submitted_message("beta")
+
+        self.window.composer.set_history_session("session-a")
+        self.window.composer.clear()
+        self._press_composer_key(Qt.Key_Up)
+        self.assertEqual(self.window.composer.toPlainText(), "alpha")
+
+        self.window.composer.set_history_session("session-b")
+        self.window.composer.clear()
+        self._press_composer_key(Qt.Key_Up)
+        self.assertEqual(self.window.composer.toPlainText(), "beta")
+
+    def test_mention_popup_selects_file_and_has_priority_over_submit(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.set_file_index_for_testing(
+            ["main.py", "manual/main_notes.md", "core/gui_widgets.py"]
+        )
+        self.window.composer.setPlainText("@ma")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+
+        self._press_composer_key(Qt.Key_I, "i")
+        self.assertTrue(self.window.composer._mention_popup.isVisible())
+
+        self._press_composer_key(Qt.Key_Down)
+        self._press_composer_key(Qt.Key_Return, "\r")
+
+        self.assertEqual(self.window.composer.toPlainText(), "manual/main_notes.md")
+        self.assertFalse(self.window.composer._mention_popup.isVisible())
+        self.assertEqual(self.controller.start_calls, [])
+
+    def test_mention_popup_opens_on_at_character_input(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.set_file_index_for_testing(["main.py"])
+        at_key = Qt.Key_At if hasattr(Qt, "Key_At") else Qt.Key_A
+
+        self._press_composer_key(at_key, "@")
+
+        self.assertTrue(self.window.composer._mention_popup.isVisible())
+
+    def test_mention_popup_shows_root_files_first_and_is_wider(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.set_file_index_for_testing(
+            ["sub/main.py", "root.py", "nested/deep/file.txt"]
+        )
+        self.window.composer.setPlainText("@")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+        self.window.composer._refresh_mention_popup()
+
+        self.assertTrue(self.window.composer._mention_popup.isVisible())
+        self.assertEqual(self.window.composer._mention_popup.current_relative_path(), "root.py")
+        self.assertGreaterEqual(self.window.composer._mention_popup.width(), 560)
+        self.assertIn("/", self.window.composer._mention_popup.list_widget.item(1).text())
+
+    def test_mention_popup_closes_on_escape_no_matches_and_cursor_change(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.set_file_index_for_testing(["main.py"])
+        self.window.composer.setPlainText("@ma")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+        self.window.composer._refresh_mention_popup()
+        self.assertTrue(self.window.composer._mention_popup.isVisible())
+
+        self._press_composer_key(Qt.Key_Escape)
+        self.assertFalse(self.window.composer._mention_popup.isVisible())
+
+        self.window.composer.setPlainText("@zz")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+        self.window.composer._refresh_mention_popup()
+        self.assertFalse(self.window.composer._mention_popup.isVisible())
+
+        self.window.composer.setPlainText("@ma")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+        self.window.composer._refresh_mention_popup()
+        self.assertTrue(self.window.composer._mention_popup.isVisible())
+        cursor = self.window.composer.textCursor()
+        cursor.setPosition(0)
+        self.window.composer.setTextCursor(cursor)
+        self.window.composer._refresh_mention_popup()
+        self.assertFalse(self.window.composer._mention_popup.isVisible())
 
     def test_run_started_shows_inline_status_before_output(self):
         self.window._handle_initialized(self._snapshot_payload())

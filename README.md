@@ -1,66 +1,85 @@
 # Autonomous AI Agent (GUI)
 
-Desktop AI-агент на `LangGraph` + `PySide6` с постоянной историей чатов по проектам, checkpoint persistence и approval-потоком для опасных действий.
+Версия: `v0.62.7b`
 
-## Что есть сейчас
+Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PySide6`.
+Приложение ориентировано на повседневную разработку: работа с файлами проекта, запуск инструментов, безопасные approvals для рискованных действий и удобная история чатов по проектам.
 
-- Главный интерфейс: левый sidebar с чатами, справа transcript + composer.
-- История чатов разделена по проектам (рабочим папкам).
-- `New Session` создает новый чат в текущем проекте.
-- `Open Folder` переключает проект и подгружает его историю (или создает первую сессию).
-- Вызовы инструментов показываются компактно: имя + параметр, детали раскрываются по клику.
-- Состояние рантайма (`Thinking`, `Reviewing`, `Ready`, ошибки) отображается в статусной строке и в transcript.
-- Approval gate для mutating/destructive действий: `Approve`, `Deny`, `Always for this session`.
+## Ключевые возможности
+
+- Чат-интерфейс с persistent-сессиями по проектам.
+- Sidebar с историей чатов, быстрым переключением и удалением сессий.
+- Transcript с компактным отображением шагов агента и инструментов.
+- Composer с автоподстройкой высоты и отправкой `Enter` (`Shift+Enter` — новая строка).
+- Быстрое добавление файлов через `@`:
+  - popup-список рядом с курсором,
+  - фильтрация по имени/пути,
+  - навигация `↑/↓`, выбор `Enter`, закрытие `Esc`,
+  - приоритет файлов из корня проекта, затем из подпапок.
+- История запросов в composer:
+  - навигация `↑/↓` как в терминале,
+  - работает по текущей сессии,
+  - восстановление после перезапуска из transcript.
+- Approval-поток для mutating/destructive инструментов (`Approve`, `Deny`, `Always for this session`).
+- Поддержка MCP-инструментов (включая Context7 при соответствующей конфигурации).
+- Runtime-статусы (`Thinking`, `Reviewing`, `Ready`, ошибки) в UI.
 
 ## Архитектура
 
-- [`agent.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/agent.py): сборка агента, LLM, tool registry, checkpoint backend.
-- [`main.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/main.py): главное GUI-окно, toolbar, sidebar, transcript, статус-строка и точка входа приложения.
-- [`core/gui_runtime.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/core/gui_runtime.py): runtime/controller, события, переключение сессий, восстановление transcript.
-- [`core/session_store.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/core/session_store.py): snapshot активной сессии + индекс сессий по проектам.
-- [`core/gui_widgets.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/core/gui_widgets.py): виджеты transcript/sidebar/tool blocks.
-- [`core/config.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/core/config.py): env-конфигурация.
-- [`tools/tool_registry.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/tools/tool_registry.py): локальные и MCP инструменты, metadata/policy.
+- [`agent.py`](agent.py): сборка агентного графа, LLM, реестр инструментов, checkpoint backend.
+- [`main.py`](main.py): главное окно GUI, меню, sidebar, transcript, composer, обработка UI-событий.
+- [`core/gui_runtime.py`](core/gui_runtime.py): runtime-контроллер, запуск графа, стриминг событий, переключение/восстановление сессий.
+- [`core/gui_widgets.py`](core/gui_widgets.py): UI-виджеты (composer, transcript, popup, tool cards, sidebar).
+- [`core/session_store.py`](core/session_store.py): хранение и индекс сессий.
+- [`core/ui_theme.py`](core/ui_theme.py): единая тема и стили.
+- [`core/config.py`](core/config.py): загрузка env-конфигурации.
+- [`tools/tool_registry.py`](tools/tool_registry.py): локальные + MCP инструменты, метаданные, политика безопасности.
 
 ## Хранение данных
 
 - Checkpoint state: `CHECKPOINT_SQLITE_PATH` (или другой backend).
 - Активная сессия: `SESSION_STATE_PATH` (по умолчанию `.agent_state/session.json`).
-- Индекс чатов для sidebar: `.agent_state/session_index.json`.
+- Индекс чатов: `.agent_state/session_index.json`.
 - Логи запусков: `RUN_LOG_DIR` (JSONL).
 
-При обновлении со старых версий текущая активная сессия мигрируется в индекс автоматически.
+При старте runtime текущая активная сессия и transcript автоматически восстанавливаются.
 
 ## Быстрый старт
 
-1. Создать окружение:
+1. Создать виртуальное окружение:
+
 ```bash
 python -m venv venv
 ```
 
 2. Установить зависимости:
+
 ```bash
 pip install -r requirements.txt
 ```
 
-3. Создать `.env`:
+3. Подготовить `.env`:
+
 ```powershell
 Copy-Item env_example.txt .env
 ```
 
-4. Запустить GUI:
+4. Запустить приложение:
+
 ```bash
 python main.py
 ```
 
 ## Основные переменные окружения
 
-### Провайдер
+### LLM-провайдер
+
 - `PROVIDER=gemini|openai`
 - `GEMINI_API_KEY`, `GEMINI_MODEL`
 - `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL`
 
-### Runtime/persistence
+### Runtime и persistence
+
 - `PROMPT_PATH`
 - `MCP_CONFIG_PATH`
 - `CHECKPOINT_BACKEND=sqlite|memory|postgres`
@@ -70,6 +89,7 @@ python main.py
 - `RUN_LOG_DIR`
 
 ### Инструменты и безопасность
+
 - `MODEL_SUPPORTS_TOOLS`
 - `ENABLE_FILESYSTEM_TOOLS`
 - `ENABLE_SEARCH_TOOLS` (+ `TAVILY_API_KEY`)
@@ -80,6 +100,7 @@ python main.py
 - `ALLOW_EXTERNAL_PROCESS_CONTROL`
 
 ### Лимиты
+
 - `MAX_TOOL_OUTPUT`
 - `MAX_SEARCH_CHARS`
 - `MAX_FILE_SIZE`
@@ -87,31 +108,51 @@ python main.py
 - `MAX_BACKGROUND_PROCESSES`
 
 ### Контекст и retry
+
 - `SESSION_SIZE`
 - `SUMMARY_KEEP_LAST`
 - `MAX_RETRIES`
 - `RETRY_DELAY`
 
 ### Диагностика
+
 - `DEBUG`
 - `STRICT_MODE`
 - `LOG_LEVEL`
 - `LOG_FILE`
 
+## Управление сессиями
+
+- `New Session` создает новый чат в текущем проекте.
+- `Open Folder` переключает рабочую папку и контекст сессий.
+- Sidebar показывает историю чатов с группировкой по проектам.
+
+## Горячие клавиши в Composer
+
+- `Enter` — отправить запрос.
+- `Shift+Enter` — новая строка.
+- `@` — открыть popup файлов.
+- `↑/↓` — навигация по popup или истории запросов (в зависимости от контекста).
+- `Esc` — закрыть popup.
+
 ## Тесты
+
+Запуск полного набора:
 
 ```powershell
 .\venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
 Ключевые наборы:
-- [`tests/test_cli_ux.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/tests/test_cli_ux.py)
-- [`tests/test_runtime_refactor.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/tests/test_runtime_refactor.py)
-- [`tests/test_stream_and_filesystem.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/tests/test_stream_and_filesystem.py)
-- [`tests/test_tooling_refactor.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/tests/test_tooling_refactor.py)
+
+- [`tests/test_cli_ux.py`](tests/test_cli_ux.py)
+- [`tests/test_runtime_refactor.py`](tests/test_runtime_refactor.py)
+- [`tests/test_stream_and_filesystem.py`](tests/test_stream_and_filesystem.py)
+- [`tests/test_tooling_refactor.py`](tests/test_tooling_refactor.py)
 
 ## Безопасность
 
-- Не храните реальные ключи в репозитории.
-- `ENABLE_SHELL_TOOL=true` используйте только при необходимости.
-- Для production persistence используйте `postgres` backend.
+- Не храните реальные API-ключи в репозитории.
+- Включайте `ENABLE_SHELL_TOOL=true` только при необходимости и с approvals.
+- Для production persistence рекомендуется `postgres` backend.
+- Проверяйте политику инструментов перед запуском mutating/destructive действий.

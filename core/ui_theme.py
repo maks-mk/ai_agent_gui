@@ -362,6 +362,34 @@ def build_stylesheet() -> str:
         padding: 0px;
     }}
 
+    QFrame#ComposerMentionPopup {{
+        background: {_COMPOSER_BG};
+        border: 1px solid {_COMPOSER_BORDER};
+        border-radius: 10px;
+    }}
+
+    QListWidget#ComposerMentionList {{
+        background: transparent;
+        border: none;
+        border-radius: 8px;
+        padding: 2px;
+        outline: none;
+        font-size: 11.2pt;
+    }}
+
+    QListWidget#ComposerMentionList::item {{
+        background: transparent;
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin: 1px 0px;
+        color: {TEXT_PRIMARY};
+    }}
+
+    QListWidget#ComposerMentionList::item:selected {{
+        background: {blend_hex(SURFACE_ALT, ACCENT_BLUE_SOFT, 0.35)};
+        color: {TEXT_PRIMARY};
+    }}
+
     QTextBrowser#AssistantBody {{
         background: transparent;
         border: none;
