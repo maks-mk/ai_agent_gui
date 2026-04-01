@@ -1,0 +1,132 @@
+# ===========================
+# .env example (v0.62.5b)
+# ===========================
+#
+# ВНИМАНИЕ:
+# - Переименуйте этот файл в .env для использования.
+# - Не коммитьте реальный .env с ключами в репозиторий.
+#
+
+# ===========================
+# 1) Провайдеры LLM (Обязательно)
+# ===========================
+
+# Выбор провайдера: gemini или openai
+PROVIDER=gemini
+
+# --- Google Gemini ---
+GEMINI_API_KEY=AIzaSyREPLACE_WITH_YOUR_KEY
+GEMINI_MODEL=gemini-1.5-flash
+# GEMINI_MODEL=gemini-2.0-flash-thinking-exp-1219
+
+# --- OpenAI / Compatible (OpenRouter, LocalLLM, etc.) ---
+# OPENAI_API_KEY=sk-REPLACE_WITH_YOUR_KEY
+# OPENAI_MODEL=gpt-4o
+# OPENAI_BASE_URL=https://api.openai.com/v1
+# Для OpenRouter:
+# OPENAI_BASE_URL=https://openrouter.ai/api/v1
+# OPENAI_MODEL=deepseek/deepseek-r1
+
+# ===========================
+# 2) Основные настройки агента
+# ===========================
+TEMPERATURE=0.2
+MAX_LOOPS=50
+# Optional: перезаписать настройки per-tool loop guard.
+# Если оставить пустыми, значения вычисляются от MAX_LOOPS:
+# mutating = max(3, min(8, MAX_LOOPS // 10))
+# readonly = max(6, min(20, MAX_LOOPS // 4))
+# window = max(10, min(60, MAX_LOOPS))
+# TOOL_LOOP_LIMIT_MUTATING=5
+# TOOL_LOOP_LIMIT_READONLY=12
+# TOOL_LOOP_WINDOW=50
+# Путь к системному промпту (относительно корня проекта)
+PROMPT_PATH=prompt.txt
+# Backing store for durable graph checkpoints: sqlite | memory | postgres
+CHECKPOINT_BACKEND=sqlite
+# Local durable checkpoint DB used by default for CLI mode
+CHECKPOINT_SQLITE_PATH=.agent_state/checkpoints.sqlite
+# Optional Postgres URL for production-like persistence
+# CHECKPOINT_POSTGRES_URL=postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable
+# Active session snapshot for automatic resume.
+# Sidebar index (.agent_state/session_index.json) хранится автоматически рядом.
+SESSION_STATE_PATH=.agent_state/session.json
+# JSONL run logs directory
+RUN_LOG_DIR=logs/runs
+# Включить подробный вывод отладочной информации
+DEBUG=false
+# Logging overrides (optional)
+# LOG_LEVEL=INFO
+# LOG_FILE=logs/agent.log
+# Строгий режим (LLM меньше фантазирует, но менее креативна)
+STRICT_MODE=false
+
+# ===========================
+# 3) Подсистемы и Инструменты
+# ===========================
+# Разрешить модели использовать инструменты (Function Calling)
+MODEL_SUPPORTS_TOOLS=true
+
+# Поиск в интернете (требует TAVILY_API_KEY)
+ENABLE_SEARCH_TOOLS=true
+TAVILY_API_KEY=tvly-REPLACE_WITH_YOUR_KEY
+
+# Работа с файловой системой (чтение, запись, редактирование)
+ENABLE_FILESYSTEM_TOOLS=true
+
+# Системные утилиты (IP, Network info, System stats)
+ENABLE_SYSTEM_TOOLS=true
+
+# Управление процессами (запуск, остановка фоновых задач)
+ENABLE_PROCESS_TOOLS=false
+
+# Shell / Терминал (выполнение команд cmd/bash).
+# ВНИМАНИЕ: Дает модели доступ к выполнению любых команд. Используйте с осторожностью.
+ENABLE_SHELL_TOOL=false
+# Require interactive approval before mutating/destructive tools execute
+ENABLE_APPROVALS=true
+# Allow stopping external PIDs not started by this agent
+ALLOW_EXTERNAL_PROCESS_CONTROL=false
+
+# ===========================
+# 4) Лимиты и Безопасность
+# ===========================
+# Максимальный размер вывода инструмента (символов).
+# Если вывод больше, он будет обрезан.
+MAX_TOOL_OUTPUT=4000
+
+# Максимальный размер контента при поиске/чтении веб-страниц (символов).
+# Обычно больше, чем MAX_TOOL_OUTPUT, чтобы захватывать длинные статьи.
+MAX_SEARCH_CHARS=15000
+
+# Максимальный размер файла для чтения/записи.
+# Число без суффикса трактуется как байты.
+# Для удобства лучше указывать явные единицы: 4MB, 300MiB, 1GiB.
+MAX_FILE_SIZE=300MiB
+
+# Максимальное количество строк при чтении файла (защита от чтения логов на 1млн строк).
+MAX_READ_LINES=2000
+
+# Максимальное количество фоновых процессов (если ENABLE_PROCESS_TOOLS=true).
+MAX_BACKGROUND_PROCESSES=5
+
+# ===========================
+# 5) Память и Сеть
+# ===========================
+# Порог токенов (примерно chars/2), после которого запускается суммаризация истории.
+# 8000 токенов ~ 24000 символов.
+SESSION_SIZE=8000
+
+# Сколько последних сообщений оставлять "сырыми" (без сжатия) при суммаризации.
+SUMMARY_KEEP_LAST=4
+
+# Настройки повторных попыток для сетевых запросов (Search, Fetch).
+MAX_RETRIES=3
+RETRY_DELAY=2
+
+# ===========================
+# 6) MCP (Model Context Protocol)
+# ===========================
+# Путь к конфигурации MCP серверов
+MCP_CONFIG_PATH=mcp.json
+
