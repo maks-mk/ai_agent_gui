@@ -81,11 +81,10 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#TranscriptMetaChip {{
-        background: {transcript_panel_bg};
-        border: 1px solid {transcript_panel_border};
-        border-radius: 5px;
+    background: transparent;
+    border: none;
     }}
-
+    
     QFrame#ApprovalCard {{
         background: {SURFACE_CARD};
         border: 1px solid {AMBER_WARNING};
@@ -144,6 +143,7 @@ def build_stylesheet() -> str:
     QLabel#TranscriptMeta {{
         color: {TEXT_MUTED};
         font-size: 8.5pt;
+        background: transparent;
     }}
 
     QLabel#MutedText,

@@ -492,4 +492,4 @@ class TokenTracker:
             display_out = self._streaming_len // 3
 
         in_display = str(self.max_input) if self.max_input > 0 else "?"
-        return f"{duration:.1f}s   In: {in_display}   Out: {display_out}"
+        return f"{duration:.1f}s  ↓ {in_display}  ↑ {display_out}"
