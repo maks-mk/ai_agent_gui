@@ -16,9 +16,10 @@ from core.checkpointing import create_checkpoint_runtime
 from core.config import AgentConfig
 from core import gui_runtime
 from core.gui_runtime import append_project_label, build_transcript_payload, generate_chat_title, short_project_label
+from core.model_profiles import ModelProfileStore
 from core.nodes import AgentNodes
 from core.run_logger import JsonlRunLogger
-from core.session_store import SessionStore
+from core.session_store import SessionSnapshot, SessionStore
 from core.stream_processor import StreamProcessor
 from core.tool_policy import ToolMetadata
 from tools import process_tools
@@ -99,11 +100,10 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             "steps": 0,
             "token_usage": {},
             "current_task": task,
-            "critic_status": "",
-            "critic_source": "",
-            "critic_feedback": "",
             "turn_outcome": "",
             "retry_instruction": "",
+            "self_correction_retry_count": 0,
+            "self_correction_retry_turn_id": 0,
             "session_id": session_id,
             "run_id": run_id,
             "turn_id": 1,
@@ -278,7 +278,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(fallback_tool.calls, [])
         self.assertIsInstance(resumed["messages"][-1], AIMessage)
         self.assertIn("you chose No", str(resumed["messages"][-1].content))
-        self.assertEqual(resumed["critic_status"], "FINISHED")
         self.assertIsNone(resumed["open_tool_issue"])
 
     async def test_approval_rejection_resume_keeps_provider_safe_order(self):
@@ -325,10 +324,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed["turn_outcome"], "finish_turn")
         self.assertIn("you chose No", str(resumed["messages"][-1].content))
 
-    async def test_approval_rejection_finishes_turn_when_critic_verdict_is_malformed(self):
+    async def test_approval_rejection_finishes_turn_without_secondary_verifier(self):
         config = self._make_config(ENABLE_APPROVALS=True)
         tool = FakeTool("danger_tool", "Изменение применено.")
-        critic_llm = FakeLLM([AIMessage(content="wait maybe")])
         agent_llm = ProviderSafeFakeLLM(
             [
                 AIMessage(content="", tool_calls=[{"name": "danger_tool", "args": {"action": "apply"}, "id": "tc-mal"}]),
@@ -337,7 +335,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )
         nodes = AgentNodes(
             config=config,
-            llm=critic_llm,
+            llm=FakeLLM([]),
             tools=[tool],
             llm_with_tools=agent_llm,
             tool_metadata={
@@ -360,7 +358,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resumed["turn_outcome"], "finish_turn")
         self.assertIsNone(resumed["open_tool_issue"])
         self.assertEqual(len(agent_llm.invocations), 2)
-        self.assertEqual(len(critic_llm.invocations), 1)
         self.assertIn("вы выбрали Нет", str(resumed["messages"][-1].content))
 
     async def test_tools_node_marks_approval_denied_as_open_issue_before_agent_ack(self):
@@ -953,6 +950,145 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any(call.kwargs.get("reason") == "chdir_failed" and "OSError" in call.kwargs.get("error", "") for call in log_mock.call_args_list)
         )
+
+    async def test_model_profiles_apply_persists_without_runtime_reload(self):
+        tmp = self._workspace_tempdir()
+        profile_path = tmp / "config.json"
+        worker = gui_runtime.AgentRunWorker()
+        worker.profile_store = ModelProfileStore(profile_path)
+        worker.model_profiles = worker.profile_store.save(
+            {
+                "active_profile": "gpt-4o",
+                "profiles": [
+                    {
+                        "id": "gpt-4o",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "api_key": "sk-old",
+                        "base_url": "",
+                    }
+                ],
+            }
+        )
+        worker._emit_session_payload = mock.AsyncMock(return_value={})
+
+        with mock.patch.object(
+            worker,
+            "_rebuild_runtime_for_active_profile",
+            new=mock.AsyncMock(return_value=None),
+        ) as rebuild_mock:
+            result = await worker._apply_model_profiles(
+                {
+                    "active_profile": "gemini-1-5-flash",
+                    "profiles": [
+                        {
+                            "id": "gemini-1-5-flash",
+                            "provider": "gemini",
+                            "model": "gemini-1.5-flash",
+                            "api_key": "gm-new",
+                            "base_url": "",
+                        }
+                    ],
+                },
+                success_notice_kind="model_switched",
+                success_notice_message="ok",
+            )
+
+        self.assertTrue(result)
+        rebuild_mock.assert_not_called()
+        restored = worker.profile_store.load_or_initialize()
+        self.assertEqual(restored["active_profile"], "gemini-1-5-flash")
+
+    async def test_model_profiles_apply_success_updates_state(self):
+        tmp = self._workspace_tempdir()
+        profile_path = tmp / "config.json"
+        worker = gui_runtime.AgentRunWorker()
+        worker.profile_store = ModelProfileStore(profile_path)
+        worker.model_profiles = worker.profile_store.save({"active_profile": None, "profiles": []})
+        worker._emit_session_payload = mock.AsyncMock(return_value={})
+
+        result = await worker._apply_model_profiles(
+            {
+                "active_profile": "gpt-4o",
+                "profiles": [
+                    {
+                        "id": "gpt-4o",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "api_key": "sk-new",
+                        "base_url": "",
+                    }
+                ],
+            },
+            success_notice_kind="profiles_saved",
+            success_notice_message="saved",
+        )
+
+        self.assertTrue(result)
+        self.assertEqual(worker.model_profiles["active_profile"], "gpt-4o")
+        self.assertEqual(worker.profile_store.load_or_initialize()["active_profile"], "gpt-4o")
+
+    async def test_runtime_switch_happens_lazy_on_next_request_path(self):
+        worker = gui_runtime.AgentRunWorker()
+        worker.model_profiles = {
+            "active_profile": "gemini-1-5-flash",
+            "profiles": [
+                {
+                    "id": "gemini-1-5-flash",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "api_key": "gm-key",
+                    "base_url": "",
+                }
+            ],
+        }
+        worker._runtime_profile_id = "gpt-4o"
+        worker._emit_session_payload = mock.AsyncMock(return_value={})
+
+        with mock.patch.object(
+            worker,
+            "_rebuild_runtime_for_active_profile",
+            new=mock.AsyncMock(return_value=None),
+        ):
+            result = await worker._ensure_runtime_matches_selected_profile()
+
+        self.assertTrue(result)
+        self.assertEqual(worker._runtime_profile_id, "gemini-1-5-flash")
+
+    def test_profile_bootstrap_env_comes_from_loaded_config(self):
+        config = self._make_config(
+            PROVIDER="openai",
+            OPENAI_MODEL="openai/gpt-oss-120b",
+            OPENAI_API_KEY="sk-config",
+            OPENAI_BASE_URL="https://openrouter.ai/api/v1",
+            GEMINI_MODEL="gemini-1.5-flash",
+            GEMINI_API_KEY="gm-config",
+        )
+        env_map = gui_runtime.AgentRunWorker._profile_bootstrap_env_from_config(config)
+        self.assertEqual(env_map["PROVIDER"], "openai")
+        self.assertEqual(env_map["MODEL"], "openai/gpt-oss-120b")
+        self.assertEqual(env_map["API_KEY"], "sk-config")
+        self.assertEqual(env_map["BASE_URL"], "https://openrouter.ai/api/v1")
+        self.assertEqual(env_map["OPENAI_MODEL"], "openai/gpt-oss-120b")
+
+    def test_worker_start_run_with_missing_model_profile_emits_notice(self):
+        worker = gui_runtime.AgentRunWorker()
+        worker.model_profiles = {"active_profile": None, "profiles": []}
+        worker.current_session = SessionSnapshot(
+            session_id="session-1",
+            thread_id="thread-1",
+            checkpoint_backend="sqlite",
+            checkpoint_target="demo.sqlite",
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+            project_path=str(Path.cwd()),
+        )
+        events = []
+        worker.event_emitted.connect(events.append)
+
+        worker.start_run("hello")
+
+        self.assertTrue(any(event.type == "summary_notice" and event.payload.get("kind") == "model_missing" for event in events))
 
     def test_stop_background_process_denies_external_pid_by_default(self):
         result = process_tools.stop_background_process.invoke({"pid": os.getpid()})

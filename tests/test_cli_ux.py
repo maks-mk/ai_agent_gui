@@ -6,7 +6,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QObject, Qt, Signal
 from PySide6.QtGui import QKeyEvent, QTextCursor
-from PySide6.QtWidgets import QApplication, QLabel, QFrame, QToolBar
+from PySide6.QtWidgets import QApplication, QLabel, QFrame, QSizePolicy, QToolBar
 
 import main as agent_cli
 from core.gui_runtime import build_runtime_snapshot, summarize_approval_request
@@ -71,6 +71,8 @@ class FakeController(QObject):
         self.new_session_calls = 0
         self.switch_session_calls: list[str] = []
         self.delete_session_calls: list[str] = []
+        self.set_active_profile_calls: list[str] = []
+        self.save_profiles_calls: list[dict] = []
         self.reinitialize_calls: list[bool] = []
         self.shutdown_calls = 0
         self.initialize_calls = 0
@@ -92,6 +94,12 @@ class FakeController(QObject):
 
     def delete_session(self, session_id: str):
         self.delete_session_calls.append(session_id)
+
+    def set_active_profile(self, profile_id: str):
+        self.set_active_profile_calls.append(profile_id)
+
+    def save_profiles(self, config_payload: dict):
+        self.save_profiles_calls.append(config_payload)
 
     def reinitialize(self, force_new_session: bool = False):
         self.reinitialize_calls.append(force_new_session)
@@ -174,6 +182,25 @@ class GuiUxTests(unittest.TestCase):
                 },
             ],
             "active_session_id": "session-1234567890abcdef",
+            "model_profiles": {
+                "active_profile": "gpt-4o",
+                "profiles": [
+                    {
+                        "id": "gpt-4o",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "api_key": "sk-demo",
+                        "base_url": "",
+                    },
+                    {
+                        "id": "gemini-1-5-flash",
+                        "provider": "gemini",
+                        "model": "gemini-1.5-flash",
+                        "api_key": "gm-demo",
+                        "base_url": "",
+                    },
+                ],
+            },
             "transcript": {"summary_notice": "", "turns": []},
         }
 
@@ -358,10 +385,10 @@ class GuiUxTests(unittest.TestCase):
         self.window._handle_initialized(self._snapshot_payload())
 
         self.window._handle_event(StreamEvent("run_started", {"text": "Сводка"}))
-        self.window._handle_event(StreamEvent("status_changed", {"label": "Reviewing", "node": "critic"}))
+        self.window._handle_event(StreamEvent("status_changed", {"label": "Self-correcting", "node": "stability_guard"}))
 
         self.assertIsNotNone(self.window.current_turn.status_widget)
-        self.assertEqual(self.window.current_turn.status_widget.label.text(), "Reviewing")
+        self.assertEqual(self.window.current_turn.status_widget.label.text(), "Self-correcting")
 
     def test_status_is_rendered_below_existing_output_when_agent_keeps_thinking(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -378,10 +405,54 @@ class GuiUxTests(unittest.TestCase):
                 },
             )
         )
-        self.window._handle_event(StreamEvent("status_changed", {"label": "Reviewing", "node": "critic"}))
+        self.window._handle_event(StreamEvent("status_changed", {"label": "Self-correcting", "node": "stability_guard"}))
 
         self.assertIsNotNone(self.window.current_turn.status_widget)
-        self.assertEqual(self.window.current_turn.status_widget.label.text(), "Reviewing")
+        self.assertEqual(self.window.current_turn.status_widget.label.text(), "Self-correcting")
+
+    def test_auto_summary_notice_shows_progress_then_done_and_hides_after_output(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Большой контекст"}))
+
+        self.window._handle_event(
+            StreamEvent("status_changed", {"label": "Compressing context", "node": "summarize"})
+        )
+        self.assertIsNotNone(self.window.current_turn.summary_notice_widget)
+        self.assertIn("сжимается", self.window.current_turn.summary_notice_widget.text_label.text().lower())
+
+        self.window._handle_event(
+            StreamEvent("status_changed", {"label": "Thinking", "node": "agent"})
+        )
+        self.assertIsNotNone(self.window.current_turn.summary_notice_widget)
+        self.assertIn("контекст сжат", self.window.current_turn.summary_notice_widget.text_label.text().lower())
+
+        self.window._handle_event(
+            StreamEvent(
+                "assistant_delta",
+                {
+                    "text": "готово",
+                    "full_text": "Готово",
+                    "has_thought": False,
+                },
+            )
+        )
+        self._process_events()
+        self.assertIsNone(self.window.current_turn.summary_notice_widget)
+
+    def test_auto_summary_notice_event_is_transient_not_persistent_notice_block(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Большой контекст"}))
+        self.window._handle_event(
+            StreamEvent(
+                "summary_notice",
+                {"kind": "auto_summary", "count": 3, "message": "Context compressed automatically"},
+            )
+        )
+        self._process_events()
+
+        self.assertIsNotNone(self.window.current_turn.summary_notice_widget)
+        self.assertIn("контекст автоматически сжат", self.window.current_turn.summary_notice_widget.text_label.text().lower())
+        self.assertNotIn("notice", self.window.current_turn.block_kinds())
 
     def test_stream_events_render_transcript_and_compact_tool_sections(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -452,12 +523,237 @@ class GuiUxTests(unittest.TestCase):
         self.assertTrue(tool_card.args_container.isHidden())
         self.assertIsNone(tool_card.output_section)
         self.assertIsNotNone(tool_card.diff_section)
+        self.assertEqual(tool_card.diff_section.content.path_label.text(), "demo.txt")
+        self.assertEqual(tool_card.diff_section.content.added_label.text(), "+1")
+        self.assertEqual(tool_card.diff_section.content.removed_label.text(), "-1")
+        rendered_diff = tool_card.diff_section.content.editor.toPlainText()
+        self.assertIn(" + bar", rendered_diff)
+        self.assertNotIn("--- ", rendered_diff)
+        self.assertNotIn("+++ ", rendered_diff)
+        self.assertNotIn("@@ ", rendered_diff)
         tool_card.tool_button.click()
         self._process_events()
         self.assertTrue(tool_card.tool_button.isChecked())
         self.assertFalse(tool_card.args_container.isHidden())
 
-    def test_tool_error_expands_output_by_default(self):
+    def test_cli_exec_renders_live_terminal_panel_and_streams_output(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Запусти команду"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-cli",
+                    "name": "cli_exec",
+                    "args": {"command": "echo hello"},
+                    "display": 'cli_exec("echo hello")',
+                },
+            )
+        )
+        self.window._handle_event(
+            StreamEvent("cli_output", {"tool_id": "call-cli", "data": "hello\n", "stream": "stdout"})
+        )
+        self.window._handle_event(
+            StreamEvent("cli_output", {"tool_id": "call-cli", "data": "world\n", "stream": "stdout"})
+        )
+        self._process_events()
+
+        tool_card = self.window.current_turn.tool_cards["call-cli"]
+        self.assertFalse(tool_card.header_container.isHidden())
+        self.assertTrue(tool_card.args_container.isHidden())
+        self.assertTrue(tool_card.tool_button.isEnabled())
+        self.assertTrue(tool_card.tool_button.isCheckable())
+        self.assertTrue(tool_card.tool_button.isChecked())
+        self.assertIn("cli_exec", tool_card.tool_button.text())
+        self.assertIsNotNone(tool_card.cli_exec_widget)
+        self.assertFalse(tool_card.cli_exec_widget.isHidden())
+        self.assertEqual(tool_card.cli_exec_widget.command_label.text(), "$ echo hello")
+        output_text = tool_card.cli_exec_widget.output_view.toPlainText()
+        self.assertIn("hello", output_text)
+        self.assertIn("world", output_text)
+        self.assertLessEqual(tool_card.cli_exec_widget.output_view.height(), 90)
+
+        tool_card.tool_button.click()
+        self._process_events()
+        self.assertTrue(tool_card.cli_exec_widget.isHidden())
+        tool_card.tool_button.click()
+        self._process_events()
+        self.assertFalse(tool_card.cli_exec_widget.isHidden())
+
+    def test_cli_exec_header_command_is_single_line_for_multiline_command(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Запусти python"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-heredoc",
+                    "name": "cli_exec",
+                    "args": {"command": "python - <<'PY'\nimport sys\nprint(sys.version)\nPY"},
+                    "display": 'cli_exec("python - <<\'PY\' import sys print(sys.version) PY")',
+                },
+            )
+        )
+        self._process_events()
+
+        tool_card = self.window.current_turn.tool_cards["call-heredoc"]
+        header_text = tool_card.cli_exec_widget.command_label.text()
+        self.assertTrue(header_text.startswith("$ "))
+        self.assertNotIn("\n", header_text)
+        self.assertIn("python - <<'PY'", header_text)
+
+    def test_cli_exec_header_uses_eliding_policy_and_does_not_force_wide_layout(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Проверь ширину"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-wide",
+                    "name": "cli_exec",
+                    "args": {"command": "python -c \"" + ("x" * 800) + "\""},
+                    "display": 'cli_exec("python -c ...")',
+                },
+            )
+        )
+        self._process_events()
+
+        tool_card = self.window.current_turn.tool_cards["call-wide"]
+        label = tool_card.cli_exec_widget.command_label
+        self.assertEqual(label.sizePolicy().horizontalPolicy(), QSizePolicy.Ignored)
+        label.setFixedWidth(180)
+        self._process_events()
+        self.assertNotIn("\n", label.text())
+        self.assertTrue(bool(label.toolTip()))
+        self.assertGreater(len(label.toolTip()), len(label.text()))
+
+    def test_cli_exec_card_created_by_output_is_refreshed_when_tool_started_arrives_later(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Проверь race"}))
+        self.window._handle_event(
+            StreamEvent("cli_output", {"tool_id": "call-race", "data": "line 1\n", "stream": "stdout"})
+        )
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-race",
+                    "name": "cli_exec",
+                    "args": {"command": "echo race"},
+                    "display": 'cli_exec("echo race")',
+                    "refresh": True,
+                },
+            )
+        )
+        self._process_events()
+
+        tool_card = self.window.current_turn.tool_cards["call-race"]
+        self.assertIn("echo race", tool_card.tool_button.text())
+        self.assertEqual(tool_card.cli_exec_widget.command_label.text(), "$ echo race")
+
+    def test_cli_exec_output_autofollow_respects_manual_scroll(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Tail logs"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-tail",
+                    "name": "cli_exec",
+                    "args": {"command": "tail -f app.log"},
+                    "display": 'cli_exec("tail -f app.log")',
+                },
+            )
+        )
+        for idx in range(90):
+            self.window._handle_event(
+                StreamEvent(
+                    "cli_output",
+                    {"tool_id": "call-tail", "data": f"line {idx}\n", "stream": "stdout"},
+                )
+            )
+        self._process_events()
+
+        tool_card = self.window.current_turn.tool_cards["call-tail"]
+        output_view = tool_card.cli_exec_widget.output_view
+        scrollbar = output_view.verticalScrollBar()
+        self.assertEqual(scrollbar.value(), scrollbar.maximum())
+
+        scrollbar.setValue(max(0, scrollbar.maximum() - 20))
+        self._process_events()
+        previous_value = scrollbar.value()
+        self.window._handle_event(
+            StreamEvent("cli_output", {"tool_id": "call-tail", "data": "manual-check\n", "stream": "stdout"})
+        )
+        self._process_events()
+        self.assertEqual(scrollbar.value(), previous_value)
+
+        scrollbar.setValue(scrollbar.maximum())
+        self._process_events()
+        self.window._handle_event(
+            StreamEvent("cli_output", {"tool_id": "call-tail", "data": "follow-bottom\n", "stream": "stdout"})
+        )
+        self._process_events()
+        self.assertEqual(scrollbar.value(), scrollbar.maximum())
+
+    def test_cli_exec_collapses_after_finish_by_default(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Запусти команду"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-cli-finish",
+                    "name": "cli_exec",
+                    "args": {"command": "echo done"},
+                    "display": 'cli_exec("echo done")',
+                },
+            )
+        )
+        self.window._handle_event(
+            StreamEvent("tool_finished", {"tool_id": "call-cli-finish", "name": "cli_exec", "content": "done\n"})
+        )
+        self._process_events()
+
+        tool_card = self.window.current_turn.tool_cards["call-cli-finish"]
+        self.assertFalse(tool_card.tool_button.isChecked())
+        self.assertIsNotNone(tool_card.cli_exec_widget)
+        self.assertTrue(tool_card.cli_exec_widget.isHidden())
+        self.assertIn("done", tool_card.cli_exec_widget.output_view.toPlainText())
+
+    def test_cli_exec_restored_from_transcript_is_collapsed(self):
+        payload = self._snapshot_payload()
+        payload["transcript"] = {
+            "summary_notice": "",
+            "turns": [
+                {
+                    "user_text": "run cli",
+                    "blocks": [
+                        {
+                            "type": "tool",
+                            "payload": {
+                                "tool_id": "call-cli-restored",
+                                "name": "cli_exec",
+                                "args": {"command": "python --version"},
+                                "display": 'cli_exec("python --version")',
+                                "content": "Python 3.12.9\n",
+                                "duration": 0.1,
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+        self.window._handle_initialized(payload)
+        self._process_events()
+
+        restored_turn = self.window.transcript.layout.itemAt(0).widget()
+        tool_card = restored_turn.tool_cards["call-cli-restored"]
+        self.assertFalse(tool_card.tool_button.isChecked())
+        self.assertIsNotNone(tool_card.cli_exec_widget)
+        self.assertTrue(tool_card.cli_exec_widget.isHidden())
+
+    def test_tool_error_output_is_collapsed_by_default(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window._handle_event(StreamEvent("run_started", {"text": "Почини"}))
         self.window._handle_event(
@@ -477,12 +773,12 @@ class GuiUxTests(unittest.TestCase):
 
         tool_card = self.window.current_turn.tool_cards["call-err"]
         self.assertIsNotNone(tool_card.output_section)
-        self.assertTrue(tool_card.output_section.toggle_button.isChecked())
+        self.assertFalse(tool_card.output_section.toggle_button.isChecked())
 
     def test_run_finished_renders_plain_stats_chip(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window._handle_event(StreamEvent("run_started", {"text": "Сводка"}))
-        self.window._handle_event(StreamEvent("status_changed", {"label": "Reviewing", "node": "critic"}))
+        self.window._handle_event(StreamEvent("status_changed", {"label": "Self-correcting", "node": "stability_guard"}))
         self.window._handle_event(StreamEvent("run_finished", {"stats": "3.1s   In: 5328   Out: 106"}))
 
         self.assertEqual(self.window.current_turn.block_kinds(), ["user", "stats"])
@@ -691,6 +987,19 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
         self.assertEqual(scrollbar.value(), scrollbar.maximum())
 
+    def test_transcript_autofollow_handles_range_growth_after_initial_scroll(self):
+        scrollbar = self.window.transcript.scroll.verticalScrollBar()
+        scrollbar.setRange(0, 200)
+        scrollbar.setValue(200)
+        self.window.transcript.scroll_to_bottom()
+        self.assertTrue(self.window.transcript.auto_follow_enabled)
+
+        self.window.transcript.notify_content_changed()
+        self._process_events()
+        scrollbar.setRange(0, 280)
+        self._process_events()
+        self.assertEqual(scrollbar.value(), scrollbar.maximum())
+
     def test_transcript_uses_centered_column_instead_of_full_width_feed(self):
         self.assertEqual(self.window.transcript.column.maximumWidth(), 1180)
         self.assertEqual(self.window.transcript.column.objectName(), "TranscriptColumn")
@@ -700,6 +1009,204 @@ class GuiUxTests(unittest.TestCase):
     def test_composer_buttons_have_correct_tooltips(self):
         self.assertEqual(self.window.attach_button.toolTip(), "Attach file")
         self.assertEqual(self.window.send_button.toolTip(), "Send (Enter)")
+
+    def test_model_selector_renders_active_profile_and_tooltip(self):
+        self.window._handle_initialized(self._snapshot_payload())
+
+        self.assertFalse(self.window.model_chip.isHidden())
+        self.assertEqual(self.window.model_chip.text(), "gpt-4o")
+        self.assertIn("Provider: openai", self.window.model_chip.toolTip())
+        self.assertIn("Model: gpt-4o", self.window.model_chip.toolTip())
+        self.assertTrue(self.window.no_models_label.isHidden())
+
+    def test_model_selector_action_triggers_controller_switch(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        actions = self.window.model_chip_menu.actions()
+        target_action = next(action for action in actions if action.text() == "gemini-1-5-flash")
+
+        target_action.trigger()
+
+        self.assertEqual(self.controller.set_active_profile_calls, ["gemini-1-5-flash"])
+
+    def test_no_models_cta_is_visible_and_send_is_disabled(self):
+        payload = self._snapshot_payload()
+        payload["model_profiles"] = {"active_profile": None, "profiles": []}
+        self.window._handle_initialized(payload)
+        self.window._set_input_enabled(True)
+
+        self.assertTrue(self.window.model_chip.isHidden())
+        self.assertFalse(self.window.no_models_label.isHidden())
+        self.assertFalse(self.window.open_settings_inline_button.isHidden())
+        self.assertFalse(self.window.send_button.isEnabled())
+
+    def test_open_settings_dialog_saves_profiles_via_controller(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        dialog_instance = mock.Mock()
+        dialog_instance.exec.return_value = 1
+        dialog_instance.result_payload.return_value = {
+            "active_profile": "gemini-1-5-flash",
+            "profiles": [
+                {
+                    "id": "gemini-1-5-flash",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "api_key": "gm-demo",
+                    "base_url": "",
+                }
+            ],
+        }
+
+        with mock.patch.object(agent_cli, "ModelSettingsDialog", return_value=dialog_instance):
+            self.window._open_settings_dialog()
+
+        self.assertEqual(self.controller.save_profiles_calls, [dialog_instance.result_payload.return_value])
+        self.assertEqual(self.window.model_profiles_payload["active_profile"], "gemini-1-5-flash")
+
+    def test_model_settings_dialog_does_not_wipe_profile_on_initial_selection(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "openai/gpt-4o",
+                    "api_key": "sk-demo",
+                    "base_url": "https://api.openai.com/v1",
+                }
+            ],
+        }
+        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        self._process_events()
+
+        self.assertEqual(dialog._profiles[0]["model"], "openai/gpt-4o")
+        self.assertEqual(dialog._profiles[0]["id"], "gpt-4o")
+        self.assertEqual(dialog.model_edit.text(), "openai/gpt-4o")
+
+    def test_model_settings_dialog_autofills_name_from_model_suffix(self):
+        dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
+        self.addCleanup(dialog.close)
+        dialog._add_profile()
+        self._process_events()
+        dialog.model_edit.setText("openai/gpt-oss-120b")
+        self._process_events()
+
+        self.assertEqual(dialog.name_edit.text(), "gpt-oss-120b")
+        dialog._save_and_accept()
+        result = dialog.result_payload()
+        self.assertEqual(result["profiles"][0]["id"], "gpt-oss-120b")
+
+    def test_model_settings_dialog_disables_base_url_for_gemini(self):
+        payload = {
+            "active_profile": "gemini-1-5-flash",
+            "profiles": [
+                {
+                    "id": "gemini-1-5-flash",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "api_key": "gm-demo",
+                    "base_url": "https://should-not-be-used.example",
+                }
+            ],
+        }
+        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        self._process_events()
+
+        self.assertFalse(dialog.base_url_edit.isEnabled())
+        self.assertIn("Not used for gemini", dialog.base_url_edit.placeholderText())
+
+    def test_model_settings_dialog_uses_improved_layout_and_save_state(self):
+        dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
+        self.addCleanup(dialog.close)
+        self._process_events()
+
+        self.assertEqual(dialog.objectName(), "ModelSettingsDialog")
+        self.assertIsNotNone(dialog.save_button)
+        self.assertFalse(dialog.save_button.isEnabled())
+        self.assertIn("Add a profile", dialog.form_hint.text())
+
+        dialog._add_profile()
+        self._process_events()
+        self.assertTrue(dialog.save_button.isEnabled())
+
+    def test_model_settings_dialog_profile_list_shows_provider_and_model(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-demo",
+                    "base_url": "",
+                }
+            ],
+        }
+        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        self._process_events()
+
+        self.assertEqual(dialog.profile_list.count(), 1)
+        item_widget = dialog.profile_list.itemWidget(dialog.profile_list.item(0))
+        self.assertIsNotNone(item_widget)
+        labels = item_widget.findChildren(QLabel)
+        combined = "\n".join(label.text() for label in labels)
+        self.assertIn("gpt-4o", combined)
+        self.assertIn("openai", combined)
+
+    def test_model_settings_dialog_enables_base_url_for_openai(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-demo",
+                    "base_url": "https://api.openai.com/v1",
+                }
+            ],
+        }
+        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        self._process_events()
+
+        self.assertTrue(dialog.base_url_edit.isEnabled())
+        self.assertIn("api.openai.com", dialog.base_url_edit.placeholderText())
+
+    def test_model_settings_dialog_clears_base_url_for_gemini_on_save(self):
+        dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
+        self.addCleanup(dialog.close)
+        dialog._add_profile()
+        self._process_events()
+        dialog.provider_combo.setCurrentText("gemini")
+        dialog.model_edit.setText("gemini-1.5-flash")
+        dialog.api_key_edit.setText("gm-demo")
+        dialog.base_url_edit.setText("https://ignored.example")
+        self._process_events()
+
+        dialog._save_and_accept()
+        result = dialog.result_payload()
+        self.assertEqual(result["profiles"][0]["provider"], "gemini")
+        self.assertEqual(result["profiles"][0]["base_url"], "")
+
+    def test_composer_expands_to_max_height_then_uses_internal_scroll(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        long_text = "\n".join(f"line-{idx}" for idx in range(80))
+        self.window.composer.setPlainText(long_text)
+        self.window._update_composer_height()
+        self._process_events()
+
+        self.assertEqual(self.window.composer.height(), self.window.composer.maximumHeight())
+        self.assertGreater(self.window.composer.verticalScrollBar().maximum(), 0)
+
+    def test_composer_bottom_controls_match_new_layout(self):
+        self.assertTrue(hasattr(self.window, "model_chip"))
+        self.assertTrue(hasattr(self.window, "effort_chip"))
+        self.assertTrue(hasattr(self.window, "voice_button"))
+        self.assertEqual(self.window.effort_chip.text(), "Высокий")
+        self.assertEqual(self.window.voice_button.toolTip(), "Voice input (soon)")
 
 
 if __name__ == "__main__":

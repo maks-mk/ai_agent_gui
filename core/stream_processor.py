@@ -149,6 +149,7 @@ class StreamProcessor:
             {
                 "message": f"Context compressed automatically ({rendered_count} message(s) summarized).",
                 "count": rendered_count,
+                "kind": "auto_summary",
             },
         )
 
@@ -206,18 +207,33 @@ class StreamProcessor:
         if not tool_id:
             return
         existing = self.tool_buffer.get(tool_id, {})
+        existing_name = str(existing.get("name") or "").strip()
         existing_args = existing.get("args", {})
         incoming_args = tool_call.get("args", {})
         merged_args = self._merge_tool_args(existing_args, incoming_args)
         tool_name = (
             str(tool_call.get("name") or "").strip()
-            or str(existing.get("name") or "").strip()
+            or existing_name
             or "unknown_tool"
         )
         self.tool_buffer[tool_id] = {
             "name": tool_name,
             "args": merged_args,
         }
+
+        # If the card is already visible and we learned richer args later (stream races),
+        # push a lightweight refresh so UI updates command/args immediately.
+        if tool_id in self.printed_tool_ids and (merged_args != existing_args or tool_name != existing_name):
+            self._emit(
+                "tool_started",
+                {
+                    "tool_id": tool_id,
+                    "name": tool_name,
+                    "args": merged_args,
+                    "display": format_tool_display(tool_name, merged_args),
+                    "refresh": True,
+                },
+            )
 
     def _merge_tool_args(self, current_args: Any, incoming_args: Any) -> Dict[str, Any]:
         current = dict(current_args) if isinstance(current_args, dict) else {}
@@ -252,6 +268,9 @@ class StreamProcessor:
         if not tool_id or tool_id in self.printed_tool_ids:
             return
 
+        if not self.clean_full.strip():
+            self._emit_synthetic_tool_preface()
+
         tool_info = self.tool_buffer.get(tool_id, {})
         tool_name = (
             str(tool_call.get("name") or "").strip()
@@ -275,6 +294,20 @@ class StreamProcessor:
                     tool_name,
                     tool_args,
                 ),
+            },
+        )
+
+    def _emit_synthetic_tool_preface(self) -> None:
+        synthetic = "Сейчас выполню нужный вызов инструмента и сразу проверю результат."
+        self.full_text += synthetic
+        self.clean_full = self.full_text
+        self.has_thought = False
+        self._emit(
+            "assistant_delta",
+            {
+                "text": synthetic,
+                "full_text": prepare_markdown_for_render(self.clean_full),
+                "has_thought": False,
             },
         )
 
@@ -369,7 +402,7 @@ class StreamProcessor:
     def _status_label(self) -> str:
         node_labels = {
             "agent": "Thinking",
-            "critic": "Reviewing",
+            "stability_guard": "Self-correcting",
             "tools": "Running tools",
             "summarize": "Compressing context",
             "approval": "Waiting for approval",

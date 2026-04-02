@@ -52,10 +52,10 @@ def build_stylesheet() -> str:
     transcript_panel_bg = blend_hex(SURFACE_CARD, SURFACE_ALT, 0.18)
     transcript_panel_border = blend_hex(BORDER, "#FFFFFF", 0.08)
     transcript_panel_hover = blend_hex(SURFACE_CARD, SURFACE_ALT, 0.32)
-    tool_panel_bg = blend_hex(SURFACE_BG, SURFACE_CARD, 0.6)
-    tool_panel_border = blend_hex(tool_panel_bg, "#FFFFFF", 0.16)
-    tool_panel_hover = blend_hex(tool_panel_bg, SURFACE_ALT, 0.3)
-    tool_code_bg = blend_hex(tool_panel_bg, SURFACE_BG, 0.75)
+    tool_panel_bg = blend_hex(SURFACE_CARD, "#FFFFFF", 0.04)
+    tool_panel_border = blend_hex(tool_panel_bg, "#FFFFFF", 0.04)
+    tool_panel_hover = blend_hex(tool_panel_bg, "#FFFFFF", 0.05)
+    tool_code_bg = blend_hex(SURFACE_CARD, "#FFFFFF", 0.07)
     tool_toggle_text = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.26)
     tool_toggle_hover_text = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.52)
     tool_call_idle = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)
@@ -76,8 +76,8 @@ def build_stylesheet() -> str:
     QFrame#StatusCard,
     QFrame#NoticeCard {{
         background: {SURFACE_CARD};
-        border: 1px solid {BORDER};
-        border-radius: 7px;
+        border: none;
+        border-radius: 0px;
     }}
 
     QFrame#TranscriptMetaChip {{
@@ -86,21 +86,155 @@ def build_stylesheet() -> str:
     }}
     
     QFrame#ApprovalCard {{
-        background: {SURFACE_CARD};
-        border: 1px solid {AMBER_WARNING};
-        border-radius: 7px;
+        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.02)};
+        border: none;
+        border-radius: 0px;
     }}
 
     QFrame#UserBubble {{
         background: {blend_hex(SURFACE_CARD, ACCENT_BLUE_SOFT, 0.32)};
-        border: 1px solid {blend_hex(BORDER, ACCENT_BLUE, 0.18)};
+        border: none;
         border-radius: 12px;
     }}
 
     QDialog#InfoPopup {{
         background: {SURFACE_CARD};
-        border: 1px solid {BORDER};
-        border-radius: 10px;
+        border: none;
+        border-radius: 0px;
+    }}
+
+    QDialog#ModelSettingsDialog {{
+        background: {SURFACE_BG};
+        border: none;
+    }}
+
+    QLabel#ModelSettingsTitle {{
+        color: {TEXT_PRIMARY};
+        font-weight: 700;
+        font-size: 12.5pt;
+        padding-left: 1px;
+    }}
+
+    QLabel#ModelSettingsSubtitle {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.28)};
+        font-size: 9.3pt;
+        padding-left: 1px;
+        padding-bottom: 2px;
+    }}
+
+    QLabel#ModelSettingsMeta {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.26)};
+        font-size: 8.9pt;
+        padding-left: 1px;
+    }}
+
+    QFrame#ModelSettingsPane {{
+        background: {SURFACE_CARD};
+        border: none;
+        border-radius: 0px;
+    }}
+
+    QFrame#ModelSettingsFormCard {{
+        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.04)};
+        border: none;
+        border-radius: 0px;
+    }}
+
+    QListWidget#ModelProfileList {{
+        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.02)};
+        border: none;
+        border-radius: 0px;
+        padding: 2px;
+        outline: none;
+    }}
+
+    QListWidget#ModelProfileList::item {{
+        border: none;
+        border-radius: 0px;
+        padding: 6px 8px;
+        margin: 1px 0px;
+        color: {TEXT_PRIMARY};
+    }}
+
+    QListWidget#ModelProfileList::item:selected {{
+        background: {blend_hex(ACCENT_BLUE_SOFT, SURFACE_ALT, 0.42)};
+        color: {TEXT_PRIMARY};
+    }}
+
+    QWidget#ModelProfileItemWidget {{
+        background: transparent;
+    }}
+
+    QLabel#ModelProfileItemTitle {{
+        color: {TEXT_PRIMARY};
+        font-size: 10pt;
+        font-weight: 500;
+        background: transparent;
+    }}
+
+    QLabel#ModelProfileItemActive {{
+        color: {SUCCESS_GREEN};
+        font-size: 9.1pt;
+        font-weight: 600;
+        background: transparent;
+    }}
+
+    QLabel#ModelProfileItemMeta {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.24)};
+        font-size: 8.8pt;
+        background: transparent;
+    }}
+
+    QDialog#ModelSettingsDialog QLineEdit,
+    QDialog#ModelSettingsDialog QComboBox {{
+        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.055)};
+        border: none;
+        border-radius: 0px;
+        min-height: 28px;
+        padding: 2px 8px;
+        color: {TEXT_PRIMARY};
+        selection-background-color: {blend_hex(ACCENT_BLUE_SOFT, ACCENT_BLUE, 0.28)};
+    }}
+
+    QDialog#ModelSettingsDialog QLineEdit:disabled,
+    QDialog#ModelSettingsDialog QComboBox:disabled {{
+        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.02)};
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox::drop-down {{
+        border: none;
+        width: 18px;
+        padding-right: 2px;
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox QAbstractItemView {{
+        background: {SURFACE_CARD};
+        border: none;
+        selection-background-color: {blend_hex(ACCENT_BLUE_SOFT, ACCENT_BLUE, 0.28)};
+        color: {TEXT_PRIMARY};
+    }}
+
+    QLabel#ModelSettingsFieldLabel {{
+        background: {blend_hex(SURFACE_CARD, "#000000", 0.22)};
+        color: {TEXT_PRIMARY};
+        border: none;
+        border-radius: 0px;
+        min-height: 26px;
+        padding: 2px 8px;
+        font-size: 9.4pt;
+        font-weight: 500;
+    }}
+
+    QPushButton#SettingsAddButton,
+    QPushButton#SettingsDeleteButton {{
+        min-height: 28px;
+        font-size: 9.2pt;
+    }}
+
+    QDialog#ModelSettingsDialog QDialogButtonBox {{
+        border-top: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.06)};
+        padding-top: 8px;
     }}
 
     QWidget#TranscriptContainer {{
@@ -151,6 +285,10 @@ def build_stylesheet() -> str:
         color: {TEXT_MUTED};
     }}
 
+    QLabel#WarningText {{
+        color: {AMBER_WARNING};
+    }}
+
     QLabel#StatusLabel {{
         color: {TEXT_PRIMARY};
         font-weight: 600;
@@ -180,13 +318,13 @@ def build_stylesheet() -> str:
     QTabBar::tab:selected {{
         background: {SURFACE_ALT};
         color: {TEXT_PRIMARY};
-        border: 1px solid {BORDER};
+        border: none;
     }}
 
     QToolBar {{
         background: {SURFACE_CARD};
-        border: 1px solid {BORDER};
-        border-radius: 7px;
+        border: none;
+        border-radius: 0px;
         spacing: 3px;
         padding: 1px 3px;
     }}
@@ -194,8 +332,8 @@ def build_stylesheet() -> str:
     QToolButton,
     QPushButton {{
         background: {SURFACE_ALT};
-        border: 1px solid {BORDER};
-        border-radius: 6px;
+        border: none;
+        border-radius: 4px;
         padding: 3px 6px;
         color: {TEXT_PRIMARY};
     }}
@@ -203,7 +341,7 @@ def build_stylesheet() -> str:
     QToolButton:hover,
     QPushButton:hover {{
         background: {blend_hex(SURFACE_ALT, ACCENT_BLUE_SOFT, 0.55)};
-        border-color: {blend_hex(BORDER, ACCENT_BLUE, 0.4)};
+        border: none;
     }}
 
     QToolButton:pressed,
@@ -212,16 +350,16 @@ def build_stylesheet() -> str:
     }}
 
     QPushButton#PrimaryButton {{
-        background: {SURFACE_ALT};
+        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.08)};
         color: white;
-        border-color: {blend_hex(BORDER, ACCENT_BLUE, 0.4)};
+        border: none;
         font-weight: 600;
     }}
 
     QPushButton#DangerButton {{
         background: {ERROR_RED};
         color: white;
-        border-color: {ERROR_RED};
+        border: none;
         font-weight: 600;
     }}
 
@@ -229,7 +367,7 @@ def build_stylesheet() -> str:
     QToolButton:disabled {{
         color: {TEXT_DIM};
         background: {SURFACE_ALT};
-        border-color: {BORDER};
+        border: none;
     }}
 
     QToolButton#DisclosureButton,
@@ -253,7 +391,71 @@ def build_stylesheet() -> str:
     QFrame#ToolExpandablePanel {{
         background: {tool_panel_bg};
         border: none;
-        padding: 4px 6px;
+        padding: 5px 8px;
+    }}
+
+    QFrame#CliExecPanel {{
+        background: {tool_panel_bg};
+        border: none;
+        border-radius: 0px;
+    }}
+
+    QLabel#CliExecHeader {{
+        background: transparent;
+        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.1)};
+        font-family: "{MONO_FONT_FAMILY}";
+        font-size: 9.3pt;
+        font-weight: 500;
+    }}
+
+    QPlainTextEdit#CliExecOutput {{
+        background: {tool_code_bg};
+        color: {CODE_TEXT};
+        border: none;
+        border-radius: 0px;
+        padding: 7px 10px 8px 10px;
+        font-family: "{MONO_FONT_FAMILY}";
+        font-size: 9pt;
+    }}
+
+    QFrame#DiffPanel {{
+        background: {tool_code_bg};
+        border: none;
+        border-radius: 0px;
+    }}
+
+    QLabel#DiffHeaderPath {{
+        background: transparent;
+        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.08)};
+        font-family: "{MONO_FONT_FAMILY}";
+        font-size: 9.2pt;
+        font-weight: 500;
+    }}
+
+    QLabel#DiffStatAdded {{
+        background: transparent;
+        color: #7EDB8B;
+        font-family: "{MONO_FONT_FAMILY}";
+        font-size: 9pt;
+        font-weight: 600;
+    }}
+
+    QLabel#DiffStatRemoved {{
+        background: transparent;
+        color: #F08F8F;
+        font-family: "{MONO_FONT_FAMILY}";
+        font-size: 9pt;
+        font-weight: 600;
+    }}
+
+    QPlainTextEdit#DiffCodeView {{
+        background: transparent;
+        color: {CODE_TEXT};
+        border: none;
+        border-radius: 0px;
+        padding: 6px 10px 8px 10px;
+        font-family: "{MONO_FONT_FAMILY}";
+        font-size: 9pt;
     }}
 
     QWidget#ToolExpandableContent {{
@@ -302,9 +504,9 @@ def build_stylesheet() -> str:
     QListView,
     QListWidget,
     QTreeWidget {{
-        background: {SURFACE_CARD};
-        border: 1px solid {BORDER};
-        border-radius: 7px;
+        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.01)};
+        border: none;
+        border-radius: 0px;
         selection-background-color: {blend_hex(ACCENT_BLUE_SOFT, ACCENT_BLUE, 0.25)};
         selection-color: {TEXT_PRIMARY};
     }}
@@ -319,7 +521,7 @@ def build_stylesheet() -> str:
     /* ---- Composer pill ---- */
     QFrame#ComposerPill {{
         background: {_COMPOSER_BG};
-        border: 1px solid {_COMPOSER_BORDER};
+        border: none;
         border-radius: 20px;
     }}
 
@@ -327,8 +529,19 @@ def build_stylesheet() -> str:
         background: transparent;
         border: none;
         border-radius: 0px;
-        padding: 6px 2px;
+        padding: 4px 2px 2px 2px;
         font-size: 10.5pt;
+    }}
+
+    QPlainTextEdit#ComposerEdit QScrollBar:vertical {{
+        width: 6px;
+        margin: 2px 0 2px 0;
+    }}
+
+    QPlainTextEdit#ComposerEdit QScrollBar::handle:vertical {{
+        background: {blend_hex(TEXT_MUTED, "#FFFFFF", 0.06)};
+        border-radius: 0px;
+        min-height: 16px;
     }}
 
     QPushButton#ComposerSendButton {{
@@ -357,15 +570,87 @@ def build_stylesheet() -> str:
 
     QToolButton#ComposerAttachButton {{
         background: transparent;
-        border: 1px solid {_COMPOSER_BORDER};
+        border: none;
         border-radius: 14px;
         padding: 0px;
     }}
 
+    QToolButton#ComposerAttachButton:hover {{
+        background: {blend_hex(_COMPOSER_BG, SURFACE_ALT, 0.32)};
+        border: none;
+    }}
+
+    QPushButton#ComposerMetaChip {{
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 11px;
+        padding: 2px 8px;
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+        font-size: 8.8pt;
+        font-weight: 500;
+    }}
+
+    QPushButton#ComposerMetaChip:disabled {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+        background: transparent;
+        border: 1px solid transparent;
+    }}
+
+    QToolButton#ComposerMetaChipButton {{
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 11px;
+        padding: 2px 8px;
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+        font-size: 8.8pt;
+        font-weight: 500;
+    }}
+
+    QToolButton#ComposerMetaChipButton:hover {{
+        background: {blend_hex(_COMPOSER_BG, SURFACE_ALT, 0.24)};
+    }}
+
+    QToolButton#ComposerMetaChipButton:disabled {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+        background: transparent;
+        border: 1px solid transparent;
+    }}
+
+    QLabel#ComposerNoModelText {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.32)};
+        font-size: 8.8pt;
+    }}
+
+    QPushButton#ComposerOpenSettingsButton {{
+        background: transparent;
+        border: 1px solid {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.15)};
+        border-radius: 11px;
+        padding: 2px 8px;
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.45)};
+        font-size: 8.8pt;
+    }}
+
+    QPushButton#ComposerOpenSettingsButton:hover {{
+        background: {blend_hex(_COMPOSER_BG, SURFACE_ALT, 0.24)};
+        border: 1px solid {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.3)};
+    }}
+
+    QToolButton#ComposerGhostButton {{
+        background: transparent;
+        border: 1px solid transparent;
+        border-radius: 12px;
+        padding: 0px;
+    }}
+
+    QToolButton#ComposerGhostButton:disabled {{
+        background: transparent;
+        border: 1px solid transparent;
+    }}
+
     QFrame#ComposerMentionPopup {{
         background: {_COMPOSER_BG};
-        border: 1px solid {_COMPOSER_BORDER};
-        border-radius: 10px;
+        border: none;
+        border-radius: 0px;
     }}
 
     QListWidget#ComposerMentionList {{
@@ -440,14 +725,14 @@ def build_stylesheet() -> str:
 
     QScrollBar:vertical {{
         background: transparent;
-        width: 8px;
+        width: 6px;
         margin: 4px 0 4px 0;
     }}
 
     QScrollBar::handle:vertical {{
-        background: {blend_hex(BORDER, TEXT_MUTED, 0.35)};
-        border-radius: 4px;
-        min-height: 20px;
+        background: {blend_hex(TEXT_MUTED, "#FFFFFF", 0.06)};
+        border-radius: 0px;
+        min-height: 16px;
     }}
 
     QScrollBar::add-line:vertical,
@@ -473,7 +758,7 @@ def build_stylesheet() -> str:
     QMenu {{
         background: {SURFACE_CARD};
         color: {TEXT_PRIMARY};
-        border: 1px solid {BORDER};
+        border: none;
         padding: 6px;
     }}
 

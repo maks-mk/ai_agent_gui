@@ -21,12 +21,11 @@ class AgentState(TypedDict):
     # Original user task for the current request
     current_task: NotRequired[str]
 
-    # Internal critic state
-    critic_status: NotRequired[str]
-    critic_source: NotRequired[str]
-    critic_feedback: NotRequired[str]
+    # Internal workflow state
     turn_outcome: NotRequired[str]
     retry_instruction: NotRequired[str]
+    self_correction_retry_count: NotRequired[int]
+    self_correction_retry_turn_id: NotRequired[int]
 
     # Durable runtime/session info
     session_id: NotRequired[str]
@@ -35,8 +34,6 @@ class AgentState(TypedDict):
     pending_approval: NotRequired[Dict[str, Any] | None]
     open_tool_issue: NotRequired[Dict[str, Any] | None]
     has_protocol_error: NotRequired[bool]
-    critic_retry_count: NotRequired[int]
-    critic_last_retry_fingerprint: NotRequired[str]
     last_tool_error: NotRequired[str]
     last_tool_result: NotRequired[str]
     safety_mode: NotRequired[str]

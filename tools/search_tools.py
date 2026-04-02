@@ -33,6 +33,14 @@ _MAX_BATCH_QUERIES = 5
 _ALLOWED_SEARCH_DEPTHS = {"basic", "advanced", "fast", "ultra-fast"}
 _ALLOWED_TOPICS = {"general", "news", "finance"}
 _ALLOWED_FORMATS = {"markdown", "text"}
+_CONTENT_FORMAT_ALIASES = {
+    "md": "markdown",
+    "plain": "text",
+    "plaintext": "text",
+    # Tavily extract endpoint does not support raw json payload mode.
+    # Keep agent resilient by mapping common json request to text extraction.
+    "json": "text",
+}
 _SEARCH_DEPTH_ALIASES = {
     "deep": "advanced",
     "deep-search": "advanced",
@@ -375,6 +383,7 @@ async def fetch_content(
         return format_error(ErrorType.VALIDATION, "No valid HTTP/HTTPS URLs provided.")
 
     content_format = (content_format or "markdown").strip().lower()
+    content_format = _CONTENT_FORMAT_ALIASES.get(content_format, content_format)
     if content_format not in _ALLOWED_FORMATS:
         return format_error(ErrorType.VALIDATION, f"Invalid content_format '{content_format}'. Allowed: {sorted(_ALLOWED_FORMATS)}")
 

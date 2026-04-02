@@ -1,8 +1,8 @@
 import uuid
 import asyncio
-import hashlib
 import logging
 import time
+from contextlib import nullcontext
 from copy import deepcopy
 from datetime import datetime
 from pathlib import Path
@@ -29,7 +29,7 @@ from core.tool_results import parse_tool_execution_result
 from core.validation import validate_tool_result
 from core.utils import truncate_output
 from core.errors import format_error, ErrorType
-from core.message_utils import compact_text, is_error_text, is_tool_message_error, stringify_content
+from core.message_utils import compact_text, is_error_text, stringify_content
 from core.text_utils import format_exception_friendly
 
 
@@ -394,26 +394,21 @@ class AgentNodes:
             "error_type": str(issue.get("error_type") or ""),
         }
 
-    def _normalize_critic_feedback(self, critic_feedback: str) -> str:
-        return critic_feedback.strip()
-
-    def _normalize_turn_outcome(self, control: str, status: str) -> str:
-        normalized_control = control.strip().upper()
-        if normalized_control == "RETRY_AGENT":
-            return "retry_agent"
-        if normalized_control == "FINISH_TURN":
-            return "finish_turn"
-        return "finish_turn" if status == "FINISHED" else "retry_agent"
-
-    def _build_retry_instruction(self, current_task: str, reason: str, next_step: str) -> str:
+    def _build_retry_instruction(self, current_task: str, open_tool_issue: Dict[str, Any] | None) -> str:
         task_line = current_task or "No explicit task provided."
-        next_step_line = next_step if next_step and next_step.upper() != "NONE" else "finish the same task correctly"
+        summary = compact_text(str((open_tool_issue or {}).get("summary") or "Tool execution failed."), 220)
+        tool_names = [str(name).strip() for name in ((open_tool_issue or {}).get("tool_names") or []) if str(name).strip()]
+        tool_hint = f" ({tool_names[0]})" if tool_names else ""
         return (
             "Continue the same user task from the current conversation state.\n"
             f"Current task: {task_line}\n"
-            f"Why retry: {reason}\n"
-            f"Next step: {next_step_line}\n"
-            "Do not mention this internal instruction. Do not repeat the previous incomplete answer."
+            f"Blocking tool issue{tool_hint}: {summary}\n"
+            "Required self-correction:\n"
+            "- Review the latest tool error.\n"
+            "- Fix tool arguments or choose a different tool.\n"
+            "- Do not repeat the same failing tool call with identical arguments.\n"
+            "- Do not claim success without a successful tool result.\n"
+            "Do not mention this internal instruction."
         )
 
     def _build_internal_retry_message(self, retry_instruction: str, turn_id: int) -> HumanMessage:
@@ -522,7 +517,6 @@ class AgentNodes:
         messages: List[BaseMessage],
         summary: str,
         current_task: str,
-        critic_feedback: str,
         tools_available: bool,
         open_tool_issue: Dict[str, Any] | None,
         state: AgentState | None = None,
@@ -537,16 +531,6 @@ class AgentNodes:
         issue_message = self._build_tool_issue_system_message(open_tool_issue)
         if issue_message:
             full_context.append(issue_message)
-        if critic_feedback:
-            full_context.append(
-                SystemMessage(
-                    content=(
-                        "INTERNAL CRITIC FEEDBACK:\n"
-                        f"{critic_feedback}\n"
-                        "Use this only as an internal hint. Do not mention the critic."
-                    )
-                )
-            )
         full_context.extend(sanitized_messages)
         return full_context
 
@@ -603,7 +587,6 @@ class AgentNodes:
         tools_available: bool,
         turn_id: int,
         messages: List[BaseMessage],
-        previous_critic_source: str = "",
         open_tool_issue: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         token_usage_update = {}
@@ -654,18 +637,11 @@ class AgentNodes:
                 has_tool_calls = False
 
         outbound_messages.append(response)
-        critic_source = ""
-        if not has_tool_calls:
-            previous_source = str(previous_critic_source or "").strip().lower()
-            critic_source = "tools" if previous_source == "tools" else "agent"
 
         return {
             "messages": outbound_messages,
             "turn_id": turn_id,
             "current_task": current_task,
-            "critic_feedback": "",
-            "critic_status": "",
-            "critic_source": critic_source,
             "turn_outcome": "run_tools" if has_tool_calls else "",
             "retry_instruction": "",
             "pending_approval": None,
@@ -705,27 +681,6 @@ class AgentNodes:
             "If tools are still needed, issue a fresh valid tool call."
         )
     
-    def _build_critic_feedback(
-        self,
-        status: str,
-        reason: str,
-        next_step: str,
-        critic_source: str,
-    ) -> str:
-        if status == "FINISHED":
-            if critic_source == "tools":
-                # Language instruction is intentionally absent here — the system prompt
-                # (prompt.txt) is the authoritative place to set the reply language.
-                return (
-                    "Task appears complete based on the tool results. "
-                    "Provide a concise final answer to the user without calling more tools "
-                    "unless a final verification is still genuinely required."
-                )
-            return ""
-
-        next_step_line = next_step if next_step and next_step != "NONE" else "perform an explicit verification step"
-        return f"Task incomplete. Reason: {reason}. Next step: {next_step_line}."
-
     # --- NODE: AGENT ---
 
     async def agent_node(self, state: AgentState):
@@ -737,7 +692,6 @@ class AgentNodes:
         )
         messages = state["messages"]
         summary = state.get("summary", "")
-        critic_feedback = self._normalize_critic_feedback(state.get("critic_feedback") or "")
         current_task = state.get("current_task") or self._derive_current_task(messages)
         current_turn_id = self._current_turn_id(state, messages)
         open_tool_issue = self._get_active_open_tool_issue(state, messages, current_turn_id)
@@ -755,7 +709,6 @@ class AgentNodes:
                 messages,
                 summary,
                 current_task,
-                critic_feedback,
                 tools_available,
                 open_tool_issue,
                 state=state,
@@ -773,7 +726,6 @@ class AgentNodes:
                 tools_available,
                 current_turn_id,
                 messages,
-                previous_critic_source=str(state.get("critic_source", "") or ""),
                 open_tool_issue=open_tool_issue,
             )
             tool_calls_count = len(getattr(response, "tool_calls", []) or [])
@@ -804,164 +756,148 @@ class AgentNodes:
             )
             raise
 
-    # --- NODE: CRITIC ---
+    # --- NODE: STABILITY GUARD ---
 
-    async def critic_node(self, state: AgentState):
+    async def stability_guard_node(self, state: AgentState):
         node_timer = self._log_node_start(
             state,
-            "critic",
+            "stability_guard",
             message_count=len(state.get("messages") or []),
-            source=(state.get("critic_source") or "agent"),
+            has_open_tool_issue=bool(state.get("open_tool_issue")),
         )
         messages = state.get("messages", [])
         current_turn_id = self._current_turn_id(state, messages)
         current_task = (state.get("current_task") or self._derive_current_task(messages)).strip()
-        summary = state.get("summary", "")
-        critic_source = (state.get("critic_source") or "agent").strip().lower()
-        trace = self._format_trace_for_critic(messages)
         open_tool_issue = self._get_active_open_tool_issue(state, messages, current_turn_id)
-        unresolved_tool_error = open_tool_issue.get("summary") if open_tool_issue else "None."
+        last_ai = self._get_last_ai_message(messages)
+        loop_budget_reached = int(state.get("steps", 0) or 0) >= int(self.config.max_loops or 0)
+        pending_tool_calls = bool(last_ai and getattr(last_ai, "tool_calls", None))
+
+        retry_turn_id = int(state.get("self_correction_retry_turn_id", 0) or 0)
+        retry_count = int(state.get("self_correction_retry_count", 0) or 0)
+        if retry_turn_id != current_turn_id:
+            retry_count = 0
+            retry_turn_id = current_turn_id
+
+        turn_outcome = "finish_turn"
+        retry_instruction = ""
+        next_retry_count = retry_count
+        next_retry_turn_id = retry_turn_id
+        next_open_tool_issue = open_tool_issue
+        completion_reason = "no_open_tool_issue"
+        handoff_message = ""
+        drop_trailing_tool_call = False
 
         try:
-            prompt = constants.CRITIC_PROMPT_TEMPLATE.format(
-                current_task=current_task or "No explicit task provided.",
-                summary=summary or "No prior summary.",
-                unresolved_tool_error=unresolved_tool_error,
-                source=critic_source or "agent",
-                trace=trace,
-            )
-
-            response = await self._invoke_llm_with_retry(
-                self.llm,
-                [SystemMessage(content=prompt)],
-                state=state,
-                node_name="critic",
-            )
-            parsed = self._parse_critic_response(str(response.content))
-
-            if not parsed:
-                status, reason, next_step, control = self._infer_critic_fallback(
-                    messages,
-                    critic_source,
-                    open_tool_issue,
-                )
-                logger.info(
-                    f"Critic returned malformed verdict. Falling back to heuristic {status}: {reason}"
-                )
+            if loop_budget_reached:
+                completion_reason = "loop_budget_exhausted"
+                next_open_tool_issue = None
+                if open_tool_issue:
+                    handoff_message = self._build_tool_issue_handoff_text(open_tool_issue)
+                elif pending_tool_calls:
+                    completion_reason = "loop_budget_exhausted_pending_tool_call"
+                    handoff_message = self._build_loop_budget_handoff_text(
+                        current_task=current_task,
+                        tool_names=[
+                            str(tool_call.get("name") or "").strip()
+                            for tool_call in (getattr(last_ai, "tool_calls", []) or [])
+                            if str(tool_call.get("name") or "").strip()
+                        ],
+                    )
+                    drop_trailing_tool_call = True
+            elif not open_tool_issue:
+                completion_reason = "no_open_tool_issue"
+                next_open_tool_issue = None
+            elif self._assistant_handed_off_open_tool_issue(last_ai, open_tool_issue):
+                completion_reason = "assistant_handoff"
+                next_open_tool_issue = None
+            elif self._assistant_requests_user_input(last_ai):
+                completion_reason = "assistant_waits_for_user_input"
+                next_open_tool_issue = None
+            elif self._open_tool_issue_requires_user_input(open_tool_issue):
+                completion_reason = "input_required"
+                next_open_tool_issue = None
+                handoff_message = self._build_tool_issue_handoff_text(open_tool_issue)
+            elif retry_count < 1:
+                completion_reason = "auto_retry"
+                turn_outcome = "retry_agent"
+                retry_instruction = self._build_retry_instruction(current_task, open_tool_issue)
+                next_retry_count = retry_count + 1
+                next_retry_turn_id = current_turn_id
+                next_open_tool_issue = open_tool_issue
             else:
-                status, reason, next_step, control = parsed
+                completion_reason = "retry_budget_exhausted"
+                next_open_tool_issue = None
+                handoff_message = self._build_tool_issue_handoff_text(open_tool_issue)
 
-            last_ai = self._get_last_ai_message(messages)
+            outbound_messages: List[BaseMessage] = []
+            if drop_trailing_tool_call and last_ai and getattr(last_ai, "tool_calls", None) and getattr(last_ai, "id", None):
+                outbound_messages.append(RemoveMessage(id=last_ai.id))
             if (
-                control == "FINISH_TURN"
-                and open_tool_issue
+                turn_outcome == "finish_turn"
+                and handoff_message
                 and not self._assistant_handed_off_open_tool_issue(last_ai, open_tool_issue)
+                and not self._assistant_requests_user_input(last_ai)
             ):
-                status = "INCOMPLETE"
-                reason = "A tool issue is still open, so the assistant cannot honestly claim success yet."
-                next_step = "resolve the blocker or clearly report it to the user"
-                control = "RETRY_AGENT"
-            elif control == "RETRY_AGENT" and self._assistant_requests_user_input(last_ai):
-                status = "INCOMPLETE"
-                reason = "The assistant is waiting for a user decision or clarification."
-                next_step = "wait for the next user input"
-                control = "FINISH_TURN"
-
-            turn_outcome = self._normalize_turn_outcome(control, status)
-            retry_instruction = ""
-            next_retry_count = 0
-            next_retry_fingerprint = ""
-            current_retry_count = int(state.get("critic_retry_count", 0) or 0)
-            previous_retry_fingerprint = str(state.get("critic_last_retry_fingerprint", "") or "")
-            current_fingerprint = self._assistant_response_fingerprint(last_ai)
-            if turn_outcome == "retry_agent":
-                retry_limit = max(0, int(getattr(self.config, "critic_max_retries_per_turn", 1)))
-                repeated_response = bool(
-                    current_fingerprint and current_fingerprint == previous_retry_fingerprint
+                handoff_metadata: Dict[str, Any] = {}
+                if completion_reason.startswith("loop_budget_exhausted"):
+                    handoff_metadata = {
+                        "agent_internal": {
+                            "kind": "loop_budget_handoff",
+                            "turn_id": current_turn_id,
+                        }
+                    }
+                outbound_messages.append(
+                    AIMessage(
+                        content=handoff_message,
+                        additional_kwargs=handoff_metadata,
+                    )
                 )
-                retry_limit_reached = current_retry_count >= retry_limit
-
-                if repeated_response or retry_limit_reached:
-                    status = "INCOMPLETE"
-                    reason = (
-                        "Assistant response repeated after a tool issue; stopping auto-retry to avoid oscillation."
-                        if repeated_response
-                        else "Critic retry budget for this turn is exhausted; waiting for user input."
-                    )
-                    next_step = "wait for the next user input"
-                    control = "FINISH_TURN"
-                    turn_outcome = "finish_turn"
-                    self._log_run_event(
-                        state,
-                        "critic_retry_suppressed",
-                        run_id=state.get("run_id", ""),
-                        repeated_response=repeated_response,
-                        retry_limit=retry_limit,
-                        retry_count=current_retry_count,
-                        has_open_tool_issue=bool(open_tool_issue),
-                    )
-                else:
-                    retry_instruction = self._build_retry_instruction(current_task, reason, next_step)
-                    next_retry_count = current_retry_count + 1
-                    next_retry_fingerprint = current_fingerprint
 
             self._log_run_event(
                 state,
-                "critic_verdict",
-                run_id=state.get("run_id", ""),
-                status=status,
-                reason=reason,
-                next_step=next_step,
-                source=critic_source,
-                control=control,
-                turn_outcome=turn_outcome,
-            )
-            self._log_run_event(
-                state,
-                "turn_outcome",
+                "stability_guard_verdict",
                 run_id=state.get("run_id", ""),
                 outcome=turn_outcome,
-                source=critic_source,
+                reason=completion_reason,
+                retry_count_before=retry_count,
+                retry_count_after=next_retry_count,
+                has_open_tool_issue=bool(open_tool_issue),
+                loop_budget_reached=loop_budget_reached,
+                had_pending_tool_calls=pending_tool_calls,
             )
-            if turn_outcome == "finish_turn":
-                self._log_run_event(
-                    state,
-                    "handoff_to_user",
-                    run_id=state.get("run_id", ""),
-                    source=critic_source,
-                    reason=reason,
-                )
-
             self._log_node_end(
                 state,
-                "critic",
+                "stability_guard",
                 node_timer,
-                status=status,
-                control=control,
                 turn_outcome=turn_outcome,
-                used_fallback=not bool(parsed),
+                reason=completion_reason,
+                retry_count=next_retry_count,
                 has_open_tool_issue=bool(open_tool_issue),
+                loop_budget_reached=loop_budget_reached,
+                had_pending_tool_calls=pending_tool_calls,
             )
-            return {
+            result: Dict[str, Any] = {
                 "turn_id": current_turn_id,
-                "critic_status": status,
-                "critic_feedback": self._build_critic_feedback(status, reason, next_step, critic_source),
                 "current_task": current_task,
                 "turn_outcome": turn_outcome,
                 "retry_instruction": retry_instruction,
-                "open_tool_issue": None if turn_outcome == "finish_turn" else open_tool_issue,
+                "open_tool_issue": next_open_tool_issue,
                 "has_protocol_error": False,
-                "critic_retry_count": next_retry_count,
-                "critic_last_retry_fingerprint": next_retry_fingerprint,
+                "self_correction_retry_count": next_retry_count,
+                "self_correction_retry_turn_id": next_retry_turn_id,
             }
+            if outbound_messages:
+                result["messages"] = outbound_messages
+            return result
         except Exception as e:
             self._log_node_error(
                 state,
-                "critic",
+                "stability_guard",
                 node_timer,
                 e,
-                source=critic_source,
                 has_open_tool_issue=bool(open_tool_issue),
+                retry_count=retry_count,
             )
             raise
 
@@ -1218,16 +1154,11 @@ class AgentNodes:
             return {
                 "messages": final_messages,
                 "turn_id": current_turn_id,
-                "critic_source": "tools",
-                "critic_feedback": "",
-                "critic_status": "",
                 "turn_outcome": "run_tools",
                 "retry_instruction": "",
                 "pending_approval": None,
                 "open_tool_issue": merged_issue,
                 "has_protocol_error": False,
-                "critic_retry_count": 0,
-                "critic_last_retry_fingerprint": "",
                 "last_tool_error": last_error,
                 "last_tool_result": last_result,
             }
@@ -1403,7 +1334,7 @@ class AgentNodes:
                 tool_args=t_args,
                 policy=metadata.to_dict(),
             )
-            content = await self._execute_tool(t_name, t_args, state=state)
+            content = await self._execute_tool(t_name, t_args, state=state, tool_call_id=t_id)
 
         # Post-Tool Validation Layer
         validation_error = validate_tool_result(t_name, t_args, content)
@@ -1510,7 +1441,13 @@ class AgentNodes:
             "Provider-unsafe agent context: the last model-visible message must be HumanMessage or ToolMessage."
         )
 
-    async def _execute_tool(self, name: str, args: dict, state: AgentState | None = None) -> str:
+    async def _execute_tool(
+        self,
+        name: str,
+        args: dict,
+        state: AgentState | None = None,
+        tool_call_id: str = "",
+    ) -> str:
         # Быстрый поиск за O(1)
         tool = self.tools_map.get(name)
         if not tool:
@@ -1523,7 +1460,17 @@ class AgentNodes:
             )
             return format_error(ErrorType.NOT_FOUND, f"Tool '{name}' not found.")
         try:
-            raw_result = await tool.ainvoke(args)
+            invoke_scope = nullcontext()
+            if name == "cli_exec" and tool_call_id:
+                try:
+                    from tools.local_shell import cli_output_context
+
+                    invoke_scope = cli_output_context(tool_call_id)
+                except Exception:
+                    invoke_scope = nullcontext()
+
+            with invoke_scope:
+                raw_result = await tool.ainvoke(args)
             content = str(raw_result)
             if not content.strip():
                 self._log_run_event(
@@ -1557,81 +1504,6 @@ class AgentNodes:
                     return content
         return ""
 
-    def _format_trace_for_critic(self, messages: List[BaseMessage], max_messages: int = 12) -> str:
-        if not messages:
-            return "No recent messages."
-
-        trace_messages = messages[-max_messages:]
-        formatted = [self._format_message_for_critic(message) for message in trace_messages]
-        trace = "\n".join(part for part in formatted if part).strip()
-        if not trace:
-            return "No recent messages."
-        return trace[:12000]
-
-    def _format_message_for_critic(self, message: BaseMessage) -> str:
-        if self._is_internal_retry_message(message):
-            return ""
-
-        content = stringify_content(message.content)
-        content = compact_text(content, 1200)
-
-        if isinstance(message, ToolMessage):
-            label = f"tool[{message.name or 'unknown'}]"
-            return f"{label}: {content or '[empty tool output]'}"
-
-        if isinstance(message, AIMessage):
-            parts: List[str] = []
-            if content:
-                parts.append(f"assistant: {content}")
-            for tool_call in getattr(message, "tool_calls", []) or []:
-                name = tool_call.get("name", "unknown")
-                args = compact_text(str(tool_call.get("args", {})), 300)
-                parts.append(f"assistant_tool_call[{name}]: {args}")
-            return "\n".join(parts) if parts else "assistant: [empty response]"
-
-        if isinstance(message, HumanMessage):
-            role = "system_hint" if content == constants.REFLECTION_PROMPT else "user"
-            return f"{role}: {content or '[empty message]'}"
-
-        return f"{message.type}: {content or '[empty message]'}"
-
-
-    def _parse_critic_response(self, text: str) -> Optional[Tuple[str, str, str, str]]:
-        parsed: Dict[str, str] = {}
-        for raw_line in text.splitlines():
-            line = raw_line.strip()
-            if ":" not in line:
-                continue
-            key, value = line.split(":", 1)
-            key = key.strip().upper()
-            if key in {"STATUS", "REASON", "NEXT_STEP", "CONTROL"} and key not in parsed:
-                parsed[key] = value.strip()
-
-        status = parsed.get("STATUS", "").upper().rstrip(".")
-        upper_text = text.upper()
-        if status not in {"FINISHED", "INCOMPLETE"}:
-            if "INCOMPLETE" in upper_text:
-                status = "INCOMPLETE"
-            elif "FINISHED" in upper_text or "COMPLETE" in upper_text or "DONE" in upper_text:
-                status = "FINISHED"
-            else:
-                return None
-
-        reason = parsed.get("REASON", "").strip()
-        if not reason:
-            reason = self._extract_reason_from_freeform_text(text, status)
-
-        next_step = parsed.get("NEXT_STEP", "").strip()
-        if not next_step:
-            next_step = "NONE" if status == "FINISHED" else "continue with the next obvious missing step"
-
-        control = parsed.get("CONTROL", "").strip().upper().rstrip(".")
-        if control not in {"FINISH_TURN", "RETRY_AGENT"}:
-            control = "FINISH_TURN" if status == "FINISHED" else "RETRY_AGENT"
-
-        normalized_next_step = next_step.upper() if next_step.upper() == "NONE" else next_step
-        return status, reason, normalized_next_step, control
-
     def _open_tool_issue_requires_user_input(self, open_tool_issue: Dict[str, Any] | None) -> bool:
         if not isinstance(open_tool_issue, dict):
             return False
@@ -1642,15 +1514,7 @@ class AgentNodes:
         tool_names = [str(name).strip() for name in (open_tool_issue.get("tool_names") or []) if str(name).strip()]
         only_planning_tools = bool(tool_names) and all(self._is_planning_tool(name) for name in tool_names)
         summary = str(open_tool_issue.get("summary") or "").strip().lower()
-        if error_type == "VALIDATION":
-            if only_planning_tools:
-                return False
-            return True
-
-        user_input_markers = (
-            "missing required field",
-            "required field",
-            "accepted aliases",
+        input_required_markers = (
             "укажите путь",
             "укажите правильный путь",
             "предоставьте путь",
@@ -1658,6 +1522,34 @@ class AgentNodes:
             "specify the path",
             "provide file",
             "предоставьте файл",
+        )
+        if error_type == "VALIDATION":
+            if only_planning_tools:
+                return False
+            # Validation issues for edit operations (missing old/new string, ambiguous matches, aliases)
+            # are usually recoverable by another tool pass and should not force immediate handoff.
+            recoverable_validation_markers = (
+                "accepted aliases",
+                "identical occurrences",
+                "exact target text",
+                "old_string",
+                "new_string",
+                "search_text",
+                "find_text",
+                "replace_text",
+                "replacement",
+            )
+            if any(marker in summary for marker in recoverable_validation_markers):
+                return False
+            # Missing path/file fields are often model-side argument issues and can be auto-corrected
+            # by one guarded retry; do not force immediate handoff on the first failure.
+            return any(marker in summary for marker in input_required_markers)
+
+        user_input_markers = (
+            "missing required field",
+            "required field",
+            "accepted aliases",
+            *input_required_markers,
         )
         return any(marker in summary for marker in user_input_markers)
 
@@ -1677,21 +1569,14 @@ class AgentNodes:
             "и я продолжу без повторного цикла."
         )
 
-    def _extract_reason_from_freeform_text(self, text: str, status: str) -> str:
-        cleaned = " ".join(text.split()).strip(" -:")
-        if cleaned:
-            return compact_text(cleaned, 180)
-        if status == "FINISHED":
-            return "Task appears completed."
-        return "Task appears incomplete."
-
-    def _assistant_response_fingerprint(self, last_ai: AIMessage | None) -> str:
-        if not last_ai or getattr(last_ai, "tool_calls", None):
-            return ""
-        content = " ".join(stringify_content(last_ai.content).strip().lower().split())
-        if not content:
-            return ""
-        return hashlib.sha1(content.encode("utf-8")).hexdigest()
+    def _build_loop_budget_handoff_text(self, current_task: str, tool_names: List[str]) -> str:
+        tool_hint = f" (последний: `{tool_names[0]}`)" if tool_names else ""
+        task_hint = compact_text(current_task.strip(), 180) if current_task else "текущей задачи"
+        return (
+            f"Остановился по лимиту внутренних шагов до завершения {task_hint}{tool_hint}.\n"
+            "Чтобы не терять корректность, я не выполнял новые вызовы инструмента после достижения лимита.\n"
+            "Напишите «продолжай» (или уточните следующий конкретный шаг), и я продолжу с текущего состояния."
+        )
 
     def _assistant_handed_off_open_tool_issue(
         self,
@@ -1808,85 +1693,11 @@ class AgentNodes:
             return True
         return content.endswith("?")
 
-    def _infer_critic_fallback(
-        self,
-        messages: List[BaseMessage],
-        critic_source: str,
-        open_tool_issue: Dict[str, Any] | None,
-    ) -> Tuple[str, str, str, str]:
-        last_ai = self._get_last_ai_message(messages)
-        recent_tools = self._get_recent_tool_messages(messages)
-
-        if open_tool_issue:
-            if self._assistant_handed_off_open_tool_issue(last_ai, open_tool_issue):
-                reason = (
-                    "The user denied a protected tool and the assistant already handed control back to the user."
-                    if open_tool_issue.get("kind") == "approval_denied"
-                    else "A tool failed and the assistant already reported the blocker honestly to the user."
-                )
-                return (
-                    "INCOMPLETE",
-                    reason,
-                    "wait for the next user instruction",
-                    "FINISH_TURN",
-                )
-            return (
-                "INCOMPLETE",
-                "An unresolved tool issue remains and critic control was unavailable.",
-                "resolve the blocker or clearly report it to the user",
-                "RETRY_AGENT",
-            )
-
-        if any(is_tool_message_error(msg) for msg in recent_tools):
-            return (
-                "INCOMPLETE",
-                "Recent tool execution reported an explicit error.",
-                "fix the failed step",
-                "RETRY_AGENT",
-            )
-
-        if critic_source == "tools" and recent_tools:
-            return (
-                "FINISHED",
-                "Recent tool results indicate the requested action completed successfully.",
-                "NONE",
-                "FINISH_TURN",
-            )
-
-        if last_ai and not getattr(last_ai, "tool_calls", None):
-            content = stringify_content(last_ai.content)
-            if content.strip():
-                return (
-                    "FINISHED",
-                    "The latest assistant response appears to deliver the requested result.",
-                    "NONE",
-                    "FINISH_TURN",
-                )
-
-        return (
-            "INCOMPLETE",
-            "Completion is still unclear from the latest trace.",
-            "continue only if something obvious is still missing",
-            "RETRY_AGENT",
-        )
-
     def _get_last_ai_message(self, messages: List[BaseMessage]) -> Optional[AIMessage]:
         for message in reversed(messages):
             if isinstance(message, AIMessage):
                 return message
         return None
-
-    def _get_recent_tool_messages(self, messages: List[BaseMessage], limit: int = 6) -> List[ToolMessage]:
-        recent: List[ToolMessage] = []
-        for message in reversed(messages):
-            if isinstance(message, ToolMessage):
-                recent.append(message)
-                if len(recent) >= limit:
-                    break
-            elif recent:
-                break
-        recent.reverse()
-        return recent
 
     def _get_base_prompt(self) -> str:
         """Ленивая загрузка и кэширование промпта для устранения дискового I/O"""

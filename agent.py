@@ -60,14 +60,14 @@ def create_agent_workflow(
     config: AgentConfig,
     tools_enabled: Optional[bool] = None,
 ) -> StateGraph:
-    """Builds the LangGraph workflow where critic validates only final agent answers."""
+    """Builds the LangGraph workflow with deterministic stability/self-correction guard."""
     tools_enabled = bool(nodes.tools) and config.model_supports_tools if tools_enabled is None else tools_enabled
 
     workflow = StateGraph(AgentState)
 
     workflow.add_node("summarize", nodes.summarize_node)
     workflow.add_node("agent", nodes.agent_node)
-    workflow.add_node("critic", nodes.critic_node)
+    workflow.add_node("stability_guard", nodes.stability_guard_node)
     workflow.add_node("prepare_retry", nodes.prepare_retry_node)
     workflow.add_node("update_step", lambda state: {"steps": state.get("steps", 0) + 1})
 
@@ -79,33 +79,26 @@ def create_agent_workflow(
         workflow.add_node("approval", nodes.approval_node)
         workflow.add_node("tools", nodes.tools_node)
 
-    def should_run_critic_after_agent(state: AgentState) -> bool:
-        mode = str(getattr(config, "critic_mode", "hybrid") or "hybrid").strip().lower()
-        if mode == "always":
-            return True
-        if mode == "off":
-            return False
-        # Hybrid mode: run critic only for higher-risk branches.
-        critic_source = str(state.get("critic_source", "") or "").strip().lower()
-        if critic_source == "tools":
-            return True
-        if state.get("open_tool_issue"):
-            return True
-        if bool(state.get("has_protocol_error")):
-            return True
-        return False
-
     def route_after_agent(state: AgentState):
         steps = state.get("steps", 0)
+        messages = state.get("messages") or []
 
         if steps >= config.max_loops:
-            logger.debug(f"🛑 Loop Guard: {steps} steps reached.")
+            # Do not end immediately on budget boundary: run a deterministic guard pass
+            # to produce a clean user-facing handoff and avoid dangling tool calls.
+            if messages:
+                logger.warning(
+                    "Loop guard reached at step %s/%s. Routing to stability_guard for graceful termination.",
+                    steps,
+                    config.max_loops,
+                )
+                return "stability_guard"
+            logger.debug("🛑 Loop Guard: %s steps reached with empty message state.", steps)
             return END
 
-        messages = state.get("messages") or []
         if not messages:
-            logger.warning("Agent node returned no messages; routing to critic for a safe fallback.")
-            return "critic"
+            logger.warning("Agent node returned no messages; routing to stability_guard for a safe fallback.")
+            return "stability_guard"
 
         last_msg = messages[-1]
 
@@ -114,23 +107,21 @@ def create_agent_workflow(
                 return "approval"
             return "tools"
 
-        return "critic" if should_run_critic_after_agent(state) else END
+        return "stability_guard"
 
-    def route_after_critic(state: AgentState):
-        if state.get("turn_outcome") == "finish_turn":
-            return END
+    def route_after_stability_guard(state: AgentState):
         if state.get("turn_outcome") == "retry_agent":
             return "prepare_retry"
         return END
 
     if tools_enabled:
-        workflow.add_conditional_edges("agent", route_after_agent, ["approval", "tools", "critic", END])
+        workflow.add_conditional_edges("agent", route_after_agent, ["approval", "tools", "stability_guard", END])
         workflow.add_edge("approval", "tools")
         workflow.add_edge("tools", "update_step")
     else:
-        workflow.add_conditional_edges("agent", route_after_agent, ["critic", END])
+        workflow.add_conditional_edges("agent", route_after_agent, ["stability_guard", END])
 
-    workflow.add_conditional_edges("critic", route_after_critic, ["prepare_retry", END])
+    workflow.add_conditional_edges("stability_guard", route_after_stability_guard, ["prepare_retry", END])
     workflow.add_edge("prepare_retry", "update_step")
 
     return workflow

@@ -89,6 +89,12 @@ def truncate_value(value: str, max_length: int = 60) -> str:
     return value
 
 
+def _single_line_preview(value: Any) -> str:
+    text = str(value or "")
+    # Tool card headers should stay one-line even when command/query contains newlines.
+    return " ".join(text.split())
+
+
 def abbreviate_path(path_str: str, max_length: int = 60) -> str:
     try:
         path = Path(path_str)
@@ -120,21 +126,21 @@ def _format_path_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
 def _format_query_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
     query = tool_args.get("query")
     if query is not None:
-        return f'{tool_name}("{truncate_value(str(query), 80)}")'
+        return f'{tool_name}("{truncate_value(_single_line_preview(query), 80)}")'
     return None
 
 
 def _format_pattern_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
     pattern_val = tool_args.get("pattern") or tool_args.get("name_pattern")
     if pattern_val is not None:
-        return f'{tool_name}("{truncate_value(str(pattern_val), 70)}")'
+        return f'{tool_name}("{truncate_value(_single_line_preview(pattern_val), 70)}")'
     return None
 
 
 def _format_command_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
     command = tool_args.get("command")
     if command is not None:
-        return f'{tool_name}("{truncate_value(str(command), 100)}")'
+        return f'{tool_name}("{truncate_value(_single_line_preview(command), 100)}")'
     return None
 
 
@@ -146,7 +152,7 @@ def _format_list_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
 def _format_url_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
     url_val = tool_args.get("url") or tool_args.get("urls")
     if url_val:
-        return f'{tool_name}("{truncate_value(str(url_val), 80)}")'
+        return f'{tool_name}("{truncate_value(_single_line_preview(url_val), 80)}")'
     return None
 
 
@@ -168,7 +174,7 @@ def format_tool_display(tool_name: str, tool_args: Dict[str, Any]) -> str:
                 return formatted
             break
 
-    args_str = ", ".join(f"{k}={truncate_value(str(v), 50)}" for k, v in tool_args.items())
+    args_str = ", ".join(f"{k}={truncate_value(_single_line_preview(v), 50)}" for k, v in tool_args.items())
     return f"{tool_name}({args_str})"
 
 

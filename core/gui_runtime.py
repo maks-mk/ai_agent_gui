@@ -13,13 +13,15 @@ from typing import Any
 from PySide6.QtCore import QObject, QThread, Signal, Slot, Qt
 from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, ToolMessage
 from langgraph.types import Command
+from pydantic import SecretStr
 
 from agent import build_agent_app
 from core.config import AgentConfig
-from core.constants import AGENT_VERSION
+from core.constants import AGENT_VERSION, BASE_DIR
 from core.logging_config import setup_logging
 from core.message_utils import is_tool_message_error, stringify_content
 from core.run_logger import JsonlRunLogger
+from core.model_profiles import ModelProfileStore, find_active_profile, normalize_profiles_payload
 from core.session_store import (
     DEFAULT_CHAT_TITLE,
     SessionListEntry,
@@ -72,17 +74,14 @@ def build_initial_state(user_input: str, session_id: str, safety_mode: str = "de
         "steps": 0,
         "token_usage": {},
         "current_task": user_input,
-        "critic_status": "",
-        "critic_source": "",
-        "critic_feedback": "",
         "session_id": session_id,
         "run_id": uuid.uuid4().hex,
         "turn_id": 1,
         "pending_approval": None,
         "open_tool_issue": None,
         "has_protocol_error": False,
-        "critic_retry_count": 0,
-        "critic_last_retry_fingerprint": "",
+        "self_correction_retry_count": 0,
+        "self_correction_retry_turn_id": 0,
         "last_tool_error": "",
         "last_tool_result": "",
         "safety_mode": safety_mode,
@@ -439,6 +438,7 @@ async def build_ui_payload(
     tool_registry,
     store: SessionStore,
     snapshot: SessionSnapshot,
+    model_profiles: dict[str, Any] | None = None,
     *,
     agent_app=None,
     include_transcript: bool = False,
@@ -450,6 +450,7 @@ async def build_ui_payload(
         "help_markdown": build_help_markdown(),
         "sessions": serialize_session_entries(store.list_sessions()),
         "active_session_id": snapshot.session_id,
+        "model_profiles": normalize_profiles_payload(model_profiles or {}),
     }
     if include_transcript and agent_app is not None:
         payload["transcript"] = await load_transcript_payload(agent_app, snapshot.thread_id)
@@ -482,7 +483,11 @@ class AgentRunWorker(QObject):
         self._loop: asyncio.AbstractEventLoop | None = None
         self._current_task: asyncio.Task | None = None
         self.config: AgentConfig | None = None
+        self.base_config: AgentConfig | None = None
         self.store: SessionStore | None = None
+        self.profile_store: ModelProfileStore | None = None
+        self.model_profiles: dict[str, Any] = {"active_profile": None, "profiles": []}
+        self._runtime_profile_id: str = ""
         self.agent_app = None
         self.tool_registry = None
         self.current_session: SessionSnapshot | None = None
@@ -679,6 +684,7 @@ class AgentRunWorker(QObject):
             self.tool_registry,
             self.store,
             self.current_session,
+            model_profiles=self.model_profiles,
             agent_app=self.agent_app,
             include_transcript=include_transcript,
         )
@@ -704,6 +710,176 @@ class AgentRunWorker(QObject):
             self.ui_run_logger.log_event(self.current_session.session_id, event_type, **normalized_payload)
         except Exception:
             logger.debug("Failed to write UI run event '%s'", event_type, exc_info=True)
+
+    def _emit_cli_output_event(self, payload: dict[str, Any]) -> None:
+        tool_id = str((payload or {}).get("tool_id", "")).strip()
+        data = str((payload or {}).get("data", ""))
+        if not tool_id or not data:
+            return
+        stream = str((payload or {}).get("stream", "stdout") or "stdout")
+        self._emit_stream_event(
+            StreamEvent(
+                "cli_output",
+                {
+                    "tool_id": tool_id,
+                    "data": data,
+                    "stream": stream,
+                },
+            )
+        )
+
+    def _configure_cli_output_bridge(self) -> None:
+        try:
+            from tools import local_shell
+
+            local_shell.set_cli_output_emitter(self._emit_cli_output_event)
+        except Exception:
+            logger.debug("Failed to set cli_output bridge.", exc_info=True)
+
+    @staticmethod
+    def _clear_cli_output_bridge() -> None:
+        try:
+            from tools import local_shell
+
+            local_shell.set_cli_output_emitter(None)
+        except Exception:
+            logger.debug("Failed to clear cli_output bridge.", exc_info=True)
+
+    def _profile_config_path(self) -> Path:
+        return BASE_DIR / ".agent_state" / "config.json"
+
+    @staticmethod
+    def _profile_bootstrap_env_from_config(config: AgentConfig) -> dict[str, str]:
+        provider = str(config.provider or "").strip().lower()
+        openai_key = config.openai_api_key.get_secret_value() if config.openai_api_key else ""
+        gemini_key = config.gemini_api_key.get_secret_value() if config.gemini_api_key else ""
+        model = config.openai_model if provider == "openai" else config.gemini_model
+        api_key = openai_key if provider == "openai" else gemini_key
+
+        return {
+            "PROVIDER": provider,
+            "MODEL": str(model or ""),
+            "API_KEY": str(api_key or ""),
+            "BASE_URL": str(config.openai_base_url or ""),
+            # Legacy-compatible keys, still supported by bootstrap logic.
+            "OPENAI_MODEL": str(config.openai_model or ""),
+            "OPENAI_API_KEY": str(openai_key or ""),
+            "OPENAI_BASE_URL": str(config.openai_base_url or ""),
+            "GEMINI_MODEL": str(config.gemini_model or ""),
+            "GEMINI_API_KEY": str(gemini_key or ""),
+        }
+
+    @staticmethod
+    def _config_overrides_for_profile(profile: dict[str, str]) -> dict[str, Any]:
+        provider = str(profile.get("provider") or "").strip().lower()
+        model_name = str(profile.get("model") or "").strip()
+        api_key = str(profile.get("api_key") or "").strip()
+        base_url = str(profile.get("base_url") or "").strip()
+
+        overrides: dict[str, Any] = {"provider": provider}
+        if provider == "openai":
+            overrides["openai_model"] = model_name
+            overrides["openai_api_key"] = SecretStr(api_key) if api_key else None
+            overrides["openai_base_url"] = base_url or None
+        else:
+            overrides["gemini_model"] = model_name
+            overrides["gemini_api_key"] = SecretStr(api_key) if api_key else None
+        return overrides
+
+    def _build_config_for_active_profile(self, model_profiles: dict[str, Any]) -> AgentConfig:
+        base = self.base_config or self.config or AgentConfig()
+        base_values = base.model_dump(mode="python")
+        active_profile = find_active_profile(model_profiles)
+        if active_profile is None:
+            return base
+        overrides = self._config_overrides_for_profile(active_profile)
+        base_values.update(overrides)
+        return AgentConfig(**base_values)
+
+    @staticmethod
+    def _selected_profile_id(model_profiles: dict[str, Any]) -> str:
+        active = find_active_profile(model_profiles)
+        return str(active.get("id") or "").strip() if active else ""
+
+    async def _rebuild_runtime_for_active_profile(self, model_profiles: dict[str, Any]) -> None:
+        active_profile = find_active_profile(model_profiles)
+        if active_profile is None:
+            return
+
+        new_config = self._build_config_for_active_profile(model_profiles)
+        new_agent_app, new_tool_registry = await build_agent_app(new_config)
+
+        old_tool_registry = self.tool_registry
+        self._clear_cli_output_bridge()
+        self.config = new_config
+        self.agent_app = new_agent_app
+        self.tool_registry = new_tool_registry
+        self._configure_cli_output_bridge()
+
+        if self.current_session is not None:
+            checkpoint_info = getattr(self.tool_registry, "checkpoint_info", {}) or {}
+            self.current_session.checkpoint_backend = checkpoint_info.get(
+                "resolved_backend",
+                self.current_session.checkpoint_backend,
+            )
+            self.current_session.checkpoint_target = checkpoint_info.get(
+                "target",
+                self.current_session.checkpoint_target,
+            )
+            self.store.save_active_session(self.current_session, touch=False, set_active=True)
+            self._sync_tool_registry_workdir(self.current_session.project_path)
+
+        if old_tool_registry is not None:
+            await close_runtime_resources(old_tool_registry)
+
+    async def _apply_model_profiles(
+        self,
+        candidate_payload: dict[str, Any],
+        *,
+        success_notice_kind: str,
+        success_notice_message: str,
+    ) -> bool:
+        if self.profile_store is None:
+            raise RuntimeError("Model profile store is not initialized.")
+
+        normalized_target = self.profile_store.save(candidate_payload)
+        self.model_profiles = normalized_target
+        self.event_emitted.emit(
+            StreamEvent(
+                "summary_notice",
+                {
+                    "message": success_notice_message,
+                    "kind": success_notice_kind,
+                },
+            )
+        )
+        await self._emit_session_payload(include_transcript=False)
+        return True
+
+    async def _ensure_runtime_matches_selected_profile(self) -> bool:
+        target_profile_id = self._selected_profile_id(self.model_profiles)
+        if not target_profile_id:
+            return False
+        if target_profile_id == self._runtime_profile_id:
+            return True
+
+        try:
+            await self._rebuild_runtime_for_active_profile(self.model_profiles)
+        except Exception as exc:
+            self.event_emitted.emit(
+                StreamEvent(
+                    "summary_notice",
+                    {
+                        "message": f"Не удалось применить выбранную модель: {exc}",
+                        "kind": "model_switch_failed",
+                    },
+                )
+            )
+            return False
+
+        self._runtime_profile_id = target_profile_id
+        await self._emit_session_payload(include_transcript=False)
+        return True
 
     def _emit_stream_event(self, event: StreamEvent) -> None:
         self.event_emitted.emit(event)
@@ -739,10 +915,24 @@ class AgentRunWorker(QObject):
             self.initialization_failed.emit(str(exc))
 
     async def _initialize_async(self, force_new_session: bool = False) -> None:
-        self.config = setup_runtime()
+        self.base_config = setup_runtime()
+        self.config = self.base_config
+        self.profile_store = ModelProfileStore(self._profile_config_path())
+        self.model_profiles = self.profile_store.load_or_initialize(
+            self._profile_bootstrap_env_from_config(self.base_config)
+        )
+        try:
+            self.config = self._build_config_for_active_profile(self.model_profiles)
+        except Exception:
+            sanitized = dict(self.model_profiles)
+            sanitized["active_profile"] = None
+            self.model_profiles = self.profile_store.save(sanitized)
+            self.config = self.base_config
+        self._runtime_profile_id = self._selected_profile_id(self.model_profiles)
         self.ui_run_logger = JsonlRunLogger(self.config.run_log_dir)
         self.store = SessionStore(self.config.session_state_path)
         self.agent_app, self.tool_registry = await build_agent_app(self.config)
+        self._configure_cli_output_bridge()
         selected_session = self._select_session_for_project(force_new_session=force_new_session)
         self.current_session = self._activate_session_with_workdir_or_fallback(
             selected_session,
@@ -760,6 +950,7 @@ class AgentRunWorker(QObject):
             self.tool_registry,
             self.store,
             self.current_session,
+            model_profiles=self.model_profiles,
             agent_app=self.agent_app,
             include_transcript=True,
         )
@@ -769,6 +960,19 @@ class AgentRunWorker(QObject):
     @Slot(str)
     def start_run(self, user_text: str) -> None:
         if not user_text.strip() or self._is_busy or self._awaiting_approval or not self.current_session:
+            return
+        if find_active_profile(self.model_profiles) is None:
+            self.event_emitted.emit(
+                StreamEvent(
+                    "summary_notice",
+                    {
+                        "message": "No models configured. Open Settings and add a profile.",
+                        "kind": "model_missing",
+                    },
+                )
+            )
+            return
+        if not self._run(self._ensure_runtime_matches_selected_profile()):
             return
         if self._maybe_set_session_title(user_text):
             self._run(self._emit_session_payload(include_transcript=False))
@@ -935,6 +1139,99 @@ class AgentRunWorker(QObject):
         self.event_emitted.emit(StreamEvent("chat_reset", {}))
         await self._emit_session_payload(include_transcript=True)
 
+    @Slot(str)
+    def set_active_profile(self, profile_id: str) -> None:
+        if self._is_busy or self._awaiting_approval:
+            self.event_emitted.emit(
+                StreamEvent(
+                    "summary_notice",
+                    {
+                        "message": "Нельзя переключить модель во время выполнения.",
+                        "kind": "model_switch_blocked",
+                    },
+                )
+            )
+            return
+        if self.profile_store is None:
+            return
+        try:
+            self._run(self._set_active_profile_async(profile_id))
+        except Exception as exc:
+            self.event_emitted.emit(
+                StreamEvent(
+                    "summary_notice",
+                    {
+                        "message": f"Не удалось переключить модель: {exc}",
+                        "kind": "model_switch_failed",
+                    },
+                )
+            )
+
+    async def _set_active_profile_async(self, profile_id: str) -> None:
+        target_id = str(profile_id or "").strip()
+        current = normalize_profiles_payload(self.model_profiles)
+        known_ids = {
+            str(profile.get("id") or "").strip()
+            for profile in current.get("profiles", []) or []
+            if isinstance(profile, dict)
+        }
+        if target_id and target_id not in known_ids:
+            self.event_emitted.emit(
+                StreamEvent(
+                    "summary_notice",
+                    {
+                        "message": "Выбранный профиль не найден.",
+                        "kind": "model_switch_failed",
+                    },
+                )
+            )
+            return
+        if target_id == str(current.get("active_profile") or ""):
+            return
+        candidate = dict(current)
+        candidate["active_profile"] = target_id or None
+        await self._apply_model_profiles(
+            candidate,
+            success_notice_kind="model_switched",
+            success_notice_message="Модель переключена. Новый выбор будет использован в следующем запросе.",
+        )
+
+    @Slot(object)
+    def save_profiles(self, config_payload: object) -> None:
+        if self._is_busy or self._awaiting_approval:
+            self.event_emitted.emit(
+                StreamEvent(
+                    "summary_notice",
+                    {
+                        "message": "Нельзя сохранить профили во время выполнения.",
+                        "kind": "profiles_save_blocked",
+                    },
+                )
+            )
+            return
+        if self.profile_store is None:
+            return
+        try:
+            payload = config_payload if isinstance(config_payload, dict) else {}
+            self._run(self._save_profiles_async(payload))
+        except Exception as exc:
+            self.event_emitted.emit(
+                StreamEvent(
+                    "summary_notice",
+                    {
+                        "message": f"Не удалось сохранить профили: {exc}",
+                        "kind": "profiles_save_failed",
+                    },
+                )
+            )
+
+    async def _save_profiles_async(self, config_payload: dict[str, Any]) -> None:
+        await self._apply_model_profiles(
+            config_payload,
+            success_notice_kind="profiles_saved",
+            success_notice_message="Профили моделей сохранены. Изменения будут использованы в следующем запросе.",
+        )
+
     @Slot()
     def shutdown(self) -> None:
         try:
@@ -946,6 +1243,7 @@ class AgentRunWorker(QObject):
             self.shutdown_complete.emit()
 
     async def _shutdown_async(self) -> None:
+        self._clear_cli_output_bridge()
         await close_runtime_resources(self.tool_registry)
         self.ui_run_logger = None
 
@@ -965,6 +1263,8 @@ class AgentRuntimeController(QObject):
     _new_session_requested = Signal()
     _switch_session_requested = Signal(str)
     _delete_session_requested = Signal(str)
+    _set_active_profile_requested = Signal(str)
+    _save_profiles_requested = Signal(object)
     _reinitialize_requested = Signal(bool)
     _shutdown_requested = Signal()
 
@@ -982,6 +1282,8 @@ class AgentRuntimeController(QObject):
         self._new_session_requested.connect(self._worker.new_session)
         self._switch_session_requested.connect(self._worker.switch_session)
         self._delete_session_requested.connect(self._worker.delete_session)
+        self._set_active_profile_requested.connect(self._worker.set_active_profile)
+        self._save_profiles_requested.connect(self._worker.save_profiles)
         self._shutdown_requested.connect(self._worker.shutdown)
 
         self._worker.initialized.connect(self.initialized)
@@ -1018,6 +1320,12 @@ class AgentRuntimeController(QObject):
 
     def delete_session(self, session_id: str) -> None:
         self._delete_session_requested.emit(session_id)
+
+    def set_active_profile(self, profile_id: str) -> None:
+        self._set_active_profile_requested.emit(profile_id)
+
+    def save_profiles(self, config_payload: dict[str, Any]) -> None:
+        self._save_profiles_requested.emit(config_payload)
 
     def shutdown(self) -> None:
         if self._thread.isRunning():

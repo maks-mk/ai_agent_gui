@@ -2,7 +2,7 @@ import sys
 
 import qtawesome as qta
 from PySide6.QtCore import QPoint, QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QCloseEvent, QIcon
+from PySide6.QtGui import QAction, QActionGroup, QCloseEvent, QIcon
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
@@ -12,6 +12,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMenuBar,
     QMessageBox,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QSplitter,
@@ -23,15 +24,26 @@ from PySide6.QtWidgets import (
 
 from core.constants import AGENT_VERSION
 from core.gui_runtime import AgentRuntimeController
+from core.model_profiles import normalize_profiles_payload
 from core.gui_widgets import (
     ApprovalDialog,
     ChatTranscriptWidget,
     ComposerTextEdit,
     InfoPopupDialog,
+    ModelSettingsDialog,
     SessionSidebarWidget,
     TRANSCRIPT_MAX_WIDTH,
 )
 from core.ui_theme import ACCENT_BLUE, ERROR_RED, SUCCESS_GREEN, TEXT_MUTED, build_stylesheet
+
+
+def _fa_icon(name: str, *, color: str = TEXT_MUTED, size: int = 14, **kwargs) -> QIcon:
+    safe_size = max(8, int(size))
+    icon = qta.icon(name, color=color, **kwargs)
+    pixmap = icon.pixmap(safe_size, safe_size)
+    if pixmap.isNull():
+        return icon
+    return QIcon(pixmap)
 
 
 class MainWindow(QMainWindow):
@@ -46,6 +58,9 @@ class MainWindow(QMainWindow):
         self.sidebar_collapsed = False
         self._sidebar_width = 280
         self._tools_hash: int = 0  # cache: skip set_tools rebuild when tools haven’t changed
+        self._summarize_in_progress = False
+        self.model_profiles_payload: dict = {"active_profile": None, "profiles": []}
+        self._has_active_model = False
         self._primary_status_label = "Initializing runtime…"
         self._status_message_ticket = 0
         self._build_ui()
@@ -58,7 +73,7 @@ class MainWindow(QMainWindow):
         self.setWindowTitle(f"AI Agent {AGENT_VERSION}")
         self.resize(1300, 670)
         self.setMinimumSize(900, 600)
-        self.setWindowIcon(qta.icon("fa5s.robot", color=ACCENT_BLUE))
+        self.setWindowIcon(_fa_icon("fa5s.robot", color=ACCENT_BLUE, size=16))
         self.setStatusBar(QStatusBar())
         self.statusBar().setSizeGripEnabled(False)
         self.status_line_label = QLabel("")
@@ -85,10 +100,11 @@ class MainWindow(QMainWindow):
         self._set_input_enabled(False)
 
     def _build_menu_bar(self) -> None:
-        self.toggle_sidebar_action = QAction(qta.icon("fa5s.columns", color=ACCENT_BLUE), "Toggle Sidebar", self)
-        self.new_session_action = QAction(qta.icon("fa5s.plus", color=ACCENT_BLUE), "New Session", self)
-        self.info_action = QAction(qta.icon("fa5s.info-circle", color=ACCENT_BLUE), "Information", self)
-        self.quit_action = QAction(qta.icon("fa5s.sign-out-alt", color=ERROR_RED), "Quit", self)
+        self.toggle_sidebar_action = QAction(_fa_icon("fa5s.columns", color=ACCENT_BLUE, size=14), "Toggle Sidebar", self)
+        self.new_session_action = QAction(_fa_icon("fa5s.plus", color=ACCENT_BLUE, size=14), "New Session", self)
+        self.settings_action = QAction(_fa_icon("fa5s.cog", color=ACCENT_BLUE, size=14), "Settings", self)
+        self.info_action = QAction(_fa_icon("fa5s.info-circle", color=ACCENT_BLUE, size=14), "Information", self)
+        self.quit_action = QAction(_fa_icon("fa5s.sign-out-alt", color=ERROR_RED, size=14), "Quit", self)
 
         # Keyboard shortcuts
         self.toggle_sidebar_action.setShortcut("Ctrl+B")
@@ -98,6 +114,7 @@ class MainWindow(QMainWindow):
         for action, tooltip in (
             (self.toggle_sidebar_action, "Show or hide chat history (Ctrl+B)"),
             (self.new_session_action, "Start a new session (Ctrl+N)"),
+            (self.settings_action, "Manage model profiles"),
             (self.info_action, "Show session information, tools, and help (Ctrl+I)"),
             (self.quit_action, "Quit"),
         ):
@@ -116,6 +133,7 @@ class MainWindow(QMainWindow):
 
         view_menu = actual_menu.addMenu("View")
         view_menu.addAction(self.toggle_sidebar_action)
+        view_menu.addAction(self.settings_action)
         view_menu.addAction(self.info_action)
 
         # Keep runtime status labels as lightweight state holders; the visible
@@ -128,7 +146,7 @@ class MainWindow(QMainWindow):
 
         # --- Right-side action buttons ---
         self.new_project_button = QToolButton()
-        self.new_project_button.setIcon(qta.icon("fa5s.folder-open", color=ACCENT_BLUE))
+        self.new_project_button.setIcon(_fa_icon("fa5s.folder-open", color=ACCENT_BLUE, size=14))
         self.new_project_button.setIconSize(QSize(14, 14))
         self.new_project_button.setAutoRaise(False)
         self.new_project_button.setToolTip("Open new project folder")
@@ -151,6 +169,14 @@ class MainWindow(QMainWindow):
         self.new_session_button.setStatusTip(self.new_session_action.statusTip())
         self.new_session_button.clicked.connect(lambda _checked=False: self.new_session_action.trigger())
 
+        self.settings_button = QToolButton()
+        self.settings_button.setIcon(self.settings_action.icon())
+        self.settings_button.setIconSize(QSize(14, 14))
+        self.settings_button.setAutoRaise(False)
+        self.settings_button.setToolTip(self.settings_action.toolTip())
+        self.settings_button.setStatusTip(self.settings_action.statusTip())
+        self.settings_button.clicked.connect(lambda _checked=False: self.settings_action.trigger())
+
         self.info_button = QToolButton()
         self.info_button.setIcon(self.info_action.icon())
         self.info_button.setIconSize(QSize(14, 14))
@@ -165,6 +191,7 @@ class MainWindow(QMainWindow):
         #right_layout.addWidget(self.stop_button)
         right_layout.addWidget(self.new_project_button)
         right_layout.addWidget(self.new_session_button)
+        right_layout.addWidget(self.settings_button)
         right_layout.addWidget(self.info_button)
 
         left_controls = QWidget()
@@ -237,38 +264,89 @@ class MainWindow(QMainWindow):
         # Pill frame: [attach] [text] [send]
         self.composer_pill = QFrame()
         self.composer_pill.setObjectName("ComposerPill")
-        pill_row = QHBoxLayout(self.composer_pill)
-        pill_row.setContentsMargins(10, 8, 8, 8)
-        pill_row.setSpacing(6)
+        pill_layout = QVBoxLayout(self.composer_pill)
+        pill_layout.setContentsMargins(10, 8, 8, 8)
+        pill_layout.setSpacing(6)
+
+        self.composer = ComposerTextEdit()
+        self.composer.setPlaceholderText("Ask the agent…")
+        self.composer.setMinimumHeight(56)
+        self.composer.setMaximumHeight(168)
+        self.composer.setFixedHeight(56)  # auto-resizes via _update_composer_height
+        self.composer.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.composer.setVerticalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.composer.set_history_session(self.active_session_id)
+        pill_layout.addWidget(self.composer, 1)
+
+        control_row = QHBoxLayout()
+        control_row.setContentsMargins(0, 0, 0, 0)
+        control_row.setSpacing(6)
 
         self.attach_button = QToolButton()
-        self.attach_button.setIcon(qta.icon("fa5s.plus", color=TEXT_MUTED))
+        self.attach_button.setIcon(_fa_icon("fa5s.plus", color=TEXT_MUTED, size=12))
         self.attach_button.setIconSize(QSize(12, 12))
         self.attach_button.setFixedSize(28, 28)
         self.attach_button.setObjectName("ComposerAttachButton")
         self.attach_button.setToolTip("Attach file")
-        pill_row.addWidget(self.attach_button, 0, Qt.AlignBottom)
+        control_row.addWidget(self.attach_button, 0, Qt.AlignVCenter)
 
-        self.composer = ComposerTextEdit()
-        self.composer.setPlaceholderText("Ask the agent…")
-        self.composer.setMinimumHeight(50)
-        self.composer.setMaximumHeight(200)
-        self.composer.setFixedHeight(50)  # auto-resizes via _update_composer_height
-        self.composer.set_history_session(self.active_session_id)
-        pill_row.addWidget(self.composer, 1)
+        self.model_chip = QToolButton()
+        self.model_chip.setObjectName("ComposerMetaChipButton")
+        self.model_chip.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self.model_chip.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        self.model_chip.setText("Model")
+        self.model_chip.setCursor(Qt.PointingHandCursor)
+        self.model_chip.setFocusPolicy(Qt.NoFocus)
+        self.model_chip_menu = QMenu(self.model_chip)
+        self.model_chip.setMenu(self.model_chip_menu)
+        self.model_chip_group = QActionGroup(self.model_chip_menu)
+        self.model_chip_group.setExclusive(True)
+        control_row.addWidget(self.model_chip, 0, Qt.AlignVCenter)
 
-        self.send_button = QPushButton(qta.icon("fa5s.arrow-up", color="#08090B"), "")
+        self.no_models_label = QLabel("No models configured")
+        self.no_models_label.setObjectName("ComposerNoModelText")
+        self.no_models_label.setVisible(False)
+        control_row.addWidget(self.no_models_label, 0, Qt.AlignVCenter)
+
+        self.open_settings_inline_button = QPushButton("Open Settings")
+        self.open_settings_inline_button.setObjectName("ComposerOpenSettingsButton")
+        self.open_settings_inline_button.setVisible(False)
+        self.open_settings_inline_button.setFocusPolicy(Qt.NoFocus)
+        control_row.addWidget(self.open_settings_inline_button, 0, Qt.AlignVCenter)
+
+        self.effort_chip = QPushButton("Высокий")
+        self.effort_chip.setObjectName("ComposerMetaChip")
+        self.effort_chip.setEnabled(False)
+        self.effort_chip.setCursor(Qt.ArrowCursor)
+        self.effort_chip.setFocusPolicy(Qt.NoFocus)
+        self.effort_chip.setVisible(False)
+        # control_row.addWidget(self.effort_chip, 0, Qt.AlignVCenter)
+
+        control_row.addStretch(1)
+
+        self.voice_button = QToolButton()
+        self.voice_button.setObjectName("ComposerGhostButton")
+        self.voice_button.setIcon(_fa_icon("fa5s.microphone", color=TEXT_MUTED, size=11))
+        self.voice_button.setIconSize(QSize(11, 11))
+        self.voice_button.setToolTip("Voice input (soon)")
+        self.voice_button.setEnabled(False)
+        self.voice_button.setFixedSize(24, 24)
+        self.voice_button.setVisible(False)
+        # control_row.addWidget(self.voice_button, 0, Qt.AlignVCenter)
+
+        self.send_button = QPushButton(_fa_icon("fa5s.arrow-up", color="#08090B", size=14), "")
         self.send_button.setObjectName("ComposerSendButton")
         self.send_button.setToolTip("Send (Enter)")
-        self.send_button.setFixedSize(30, 30)
-        pill_row.addWidget(self.send_button, 0, Qt.AlignBottom)
+        self.send_button.setFixedSize(32, 32)
+        control_row.addWidget(self.send_button, 0, Qt.AlignVCenter)
         
-        self.stop_action_button = QPushButton(qta.icon("fa5s.stop", color="#FFFFFF"), "")
+        self.stop_action_button = QPushButton(_fa_icon("fa5s.stop", color="#FFFFFF", size=14), "")
         self.stop_action_button.setStyleSheet("QPushButton { background: #F26D6D; border: none; border-radius: 15px; } QPushButton:hover { background: #ff8b8b; }")
         self.stop_action_button.setToolTip("Stop")
-        self.stop_action_button.setFixedSize(30, 30)
+        self.stop_action_button.setFixedSize(32, 32)
         self.stop_action_button.setVisible(False)
-        pill_row.addWidget(self.stop_action_button, 0, Qt.AlignBottom)
+        control_row.addWidget(self.stop_action_button, 0, Qt.AlignVCenter)
+        pill_layout.addLayout(control_row)
 
         outer_layout.addWidget(self.composer_pill)
         composer_shell.addWidget(self.composer_container, 3)
@@ -286,8 +364,10 @@ class MainWindow(QMainWindow):
     def _connect_signals(self) -> None:
         self.toggle_sidebar_action.triggered.connect(lambda _checked=False: self._toggle_sidebar())
         self.new_session_action.triggered.connect(lambda _checked=False: self._new_session())
+        self.settings_action.triggered.connect(lambda _checked=False: self._open_settings_dialog())
         self.info_action.triggered.connect(lambda _checked=False: self._toggle_info_popup())
         self.info_button.clicked.connect(lambda _checked=False: self._toggle_info_popup())
+        self.open_settings_inline_button.clicked.connect(lambda _checked=False: self._open_settings_dialog())
         self.quit_action.triggered.connect(lambda _checked=False: self.close())
         self.stop_action_button.clicked.connect(lambda _checked=False: self.controller.stop_run())
         self.sidebar.session_activated.connect(self._switch_session)
@@ -295,6 +375,7 @@ class MainWindow(QMainWindow):
 
         self.send_button.clicked.connect(self._submit_request)
         self.attach_button.clicked.connect(self._attach_file)
+        self.model_chip_menu.triggered.connect(self._on_model_action_triggered)
         self.composer.submit_requested.connect(self._submit_request)
         self.composer.document().documentLayout().documentSizeChanged.connect(
             self._update_composer_height
@@ -315,6 +396,7 @@ class MainWindow(QMainWindow):
             "status_changed": self._on_status_changed,
             "assistant_delta": self._on_assistant_delta,
             "tool_started": self._on_tool_started,
+            "cli_output": self._on_cli_output,
             "tool_finished": self._on_tool_finished,
             "tool_args_missing": self._on_tool_args_missing,
             "summary_notice": self._on_summary_notice,
@@ -327,8 +409,8 @@ class MainWindow(QMainWindow):
     def _update_composer_height(self, *_args) -> None:
         """Auto-resize the composer text field as the user types."""
         doc_height = int(self.composer.document().size().height())
-        # Увеличили минимум до 50 и запас до +18, чтобы текст не прокручивался
-        new_height = max(50, min(doc_height + 18, 200))
+        # Grow upward until max height, then let the internal scrollbar handle overflow.
+        new_height = max(56, min(doc_height + 16, 168))
         if self.composer.height() != new_height:
             self.composer.setFixedHeight(new_height)
             
@@ -336,15 +418,28 @@ class MainWindow(QMainWindow):
 
     def _on_run_started(self, payload: dict) -> None:
         self.current_turn = self.transcript.start_turn(payload.get("text", ""))
+        self._summarize_in_progress = False
         if self.current_turn is not None:
             self.current_turn.set_status("Thinking")
         self._set_status_visual("Thinking…", busy=True)
 
     def _on_status_changed(self, payload: dict) -> None:
-        if payload.get("label"):
-            self._set_status_visual(payload["label"], busy=payload.get("node") != "approval")
-            if self.current_turn is not None:
-                self.current_turn.set_status(payload["label"])
+        label = payload.get("label")
+        node = str(payload.get("node", "") or "")
+        if not label:
+            return
+
+        self._set_status_visual(label, busy=node != "approval")
+        if self.current_turn is not None:
+            self.current_turn.set_status(label)
+            if node == "summarize":
+                self._summarize_in_progress = True
+                self.current_turn.set_summary_notice("Контекст автоматически сжимается…", level="info")
+                self.transcript.notify_content_changed()
+            elif self._summarize_in_progress:
+                self._summarize_in_progress = False
+                self.current_turn.set_summary_notice("Контекст сжат", level="success")
+                self.transcript.notify_content_changed()
 
     def _on_assistant_delta(self, payload: dict) -> None:
         if self.current_turn is None:
@@ -364,7 +459,27 @@ class MainWindow(QMainWindow):
         self.current_turn.finish_tool(payload)
         self.transcript.notify_content_changed()
 
+    def _on_cli_output(self, payload: dict) -> None:
+        if self.current_turn is None:
+            return
+        self.current_turn.append_tool_output(payload)
+        self.transcript.notify_content_changed()
+
     def _on_summary_notice(self, payload: dict) -> None:
+        kind = str(payload.get("kind", "") or "")
+        if kind == "auto_summary":
+            self._summarize_in_progress = False
+            if self.current_turn is not None:
+                count = int(payload.get("count", 0) or 0)
+                if count > 0:
+                    self.current_turn.set_summary_notice(
+                        f"Контекст автоматически сжат ({count} сообщ.).",
+                        level="success",
+                    )
+                else:
+                    self.current_turn.set_summary_notice("Контекст сжат", level="success")
+                self.transcript.notify_content_changed()
+            return
         if self.current_turn is not None:
             self.current_turn.add_notice(payload.get("message", ""), level="info")
             self.transcript.notify_content_changed()
@@ -440,7 +555,7 @@ class MainWindow(QMainWindow):
         color = ACCENT_BLUE if busy else SUCCESS_GREEN if success else ERROR_RED if error else ACCENT_BLUE
         icon_name = "fa5s.spinner" if busy else "fa5s.check-circle" if success else "fa5s.times-circle" if error else "fa5s.circle"
         self.status_text.setText(label)
-        self.status_icon.setPixmap(qta.icon(icon_name, color=color).pixmap(14, 14))
+        self.status_icon.setPixmap(_fa_icon(icon_name, color=color, size=14).pixmap(14, 14))
         self._set_primary_status_message(label)
 
     def _toggle_info_popup(self) -> None:
@@ -467,9 +582,13 @@ class MainWindow(QMainWindow):
 
     def _set_input_enabled(self, enabled: bool) -> None:
         can_edit = enabled and not self.awaiting_approval and not self.is_busy
+        can_send = can_edit and self._has_active_model
         self.composer.setEnabled(can_edit)
-        self.send_button.setEnabled(can_edit)
+        self.send_button.setEnabled(can_send)
         self.attach_button.setEnabled(enabled and not self.awaiting_approval)
+        self.model_chip.setEnabled(can_edit and self._has_active_model)
+        self.open_settings_inline_button.setEnabled(enabled and not self.awaiting_approval and not self.is_busy)
+        self.settings_button.setEnabled(enabled and not self.awaiting_approval and not self.is_busy)
         self.sidebar.setEnabled(enabled and not self.awaiting_approval and not self.is_busy)
 
     def _handle_initialized(self, payload: dict) -> None:
@@ -485,8 +604,19 @@ class MainWindow(QMainWindow):
             cwd_display = cwd[:18] + "..." + cwd[-34:]
         else:
             cwd_display = cwd
-            
-        model = snapshot.get("model", "unknown")
+
+        active_profile = self._active_model_profile()
+        if active_profile is not None:
+            model = str(active_profile.get("model") or snapshot.get("model", "unknown"))
+            model_id = str(active_profile.get("id") or model).strip() or "Model"
+            provider = str(active_profile.get("provider") or "").strip() or snapshot.get("provider", "")
+            self.model_chip.setText(model_id)
+            self.model_chip.setToolTip(f"Provider: {provider}\nModel: {model}")
+        else:
+            model = snapshot.get("model", "unknown")
+            self.model_chip.setText("No models")
+            self.model_chip.setToolTip("No models configured")
+
         tools_count = snapshot.get("tools_count", 0)
         self.runtime_meta_label.setText(
             f"Workdir: {cwd_display}   |   Model: {model}   |   Tools: {tools_count}"
@@ -494,6 +624,77 @@ class MainWindow(QMainWindow):
         self.runtime_meta_label.setToolTip(
             f"Workdir: {cwd}\nModel: {model}\nTools: {tools_count}"
         )
+
+    def _active_model_profile(self) -> dict | None:
+        payload = self.model_profiles_payload if isinstance(self.model_profiles_payload, dict) else {}
+        active_id = str(payload.get("active_profile") or "").strip()
+        for profile in payload.get("profiles", []) or []:
+            if isinstance(profile, dict) and str(profile.get("id") or "").strip() == active_id:
+                return profile
+        return None
+
+    def _refresh_model_selector(self) -> None:
+        payload = self.model_profiles_payload if isinstance(self.model_profiles_payload, dict) else {}
+        profiles = [item for item in payload.get("profiles", []) or [] if isinstance(item, dict)]
+        active_id = str(payload.get("active_profile") or "").strip()
+
+        self.model_chip_menu.clear()
+        for action in self.model_chip_group.actions():
+            self.model_chip_group.removeAction(action)
+
+        if not profiles:
+            self.model_chip.setVisible(False)
+            self.no_models_label.setVisible(True)
+            self.open_settings_inline_button.setVisible(True)
+            self._has_active_model = False
+            return
+
+        self.model_chip.setVisible(True)
+        self.no_models_label.setVisible(False)
+        self.open_settings_inline_button.setVisible(False)
+
+        for profile in profiles:
+            profile_id = str(profile.get("id") or "").strip()
+            if not profile_id:
+                continue
+            action = self.model_chip_menu.addAction(profile_id)
+            action.setCheckable(True)
+            action.setData(profile_id)
+            provider = str(profile.get("provider") or "").strip()
+            model = str(profile.get("model") or "").strip()
+            action.setToolTip(f"Provider: {provider}\nModel: {model}")
+            if profile_id == active_id:
+                action.setChecked(True)
+                self.model_chip.setText(profile_id)
+                self.model_chip.setToolTip(f"Provider: {provider}\nModel: {model}")
+            self.model_chip_group.addAction(action)
+
+        self._has_active_model = any(str(item.get("id") or "").strip() == active_id for item in profiles)
+        if not self._has_active_model:
+            self.model_chip.setText("No models")
+            self.model_chip.setToolTip("No active model selected")
+
+    def _apply_model_profiles_payload(self, payload: dict | None) -> None:
+        self.model_profiles_payload = payload if isinstance(payload, dict) else {"active_profile": None, "profiles": []}
+        self._refresh_model_selector()
+        self._set_input_enabled(True)
+
+    def _on_model_action_triggered(self, action: QAction) -> None:
+        profile_id = str(action.data() or "").strip()
+        if not profile_id:
+            return
+        self.controller.set_active_profile(profile_id)
+
+    def _open_settings_dialog(self) -> None:
+        if self.is_busy or self.awaiting_approval:
+            QMessageBox.information(self, "Busy", "Wait for the current run to finish before changing settings.")
+            return
+        dialog = ModelSettingsDialog(self.model_profiles_payload, self)
+        if dialog.exec():
+            payload = normalize_profiles_payload(dialog.result_payload())
+            # Optimistic local refresh so reopening Settings immediately shows just-saved values.
+            self._apply_model_profiles_payload(payload)
+            self.controller.save_profiles(payload)
 
     def _handle_init_failed(self, message: str) -> None:
         self._set_status_visual("Initialization failed", error=True)
@@ -505,6 +706,7 @@ class MainWindow(QMainWindow):
     def _apply_runtime_payload(self, payload: dict, *, restore_transcript: bool) -> None:
         self.current_snapshot = payload.get("snapshot", {})
         self.active_session_id = payload.get("active_session_id", "")
+        self._apply_model_profiles_payload(payload.get("model_profiles"))
         if restore_transcript:
             self.composer.sync_session_history_from_transcript(
                 self.active_session_id,

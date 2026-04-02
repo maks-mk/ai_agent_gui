@@ -4,6 +4,7 @@ from typing import Any, Callable
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
 logger = logging.getLogger("agent")
+HANDOFF_MARKERS_SKIP_REPAIR = frozenset({"loop_budget_handoff"})
 
 
 async def repair_session_if_needed(
@@ -64,6 +65,21 @@ async def repair_session_if_needed(
                 missing_tool_calls.append(tool_call)
 
         if not missing_tool_calls:
+            return notices
+
+        # If the run already produced an explicit internal handoff after the
+        # dangling tool-call message, do not inject synthetic tool outputs.
+        handoff_after_tool_call = False
+        for index in range(last_ai_idx + 1, len(messages)):
+            message = messages[index]
+            if not isinstance(message, (AIMessage, AIMessageChunk)):
+                continue
+            metadata = getattr(message, "additional_kwargs", {}) or {}
+            internal = metadata.get("agent_internal") if isinstance(metadata, dict) else None
+            if isinstance(internal, dict) and str(internal.get("kind") or "") in HANDOFF_MARKERS_SKIP_REPAIR:
+                handoff_after_tool_call = True
+                break
+        if handoff_after_tool_call:
             return notices
 
         _notify(

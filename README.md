@@ -1,6 +1,6 @@
 # Autonomous AI Agent (GUI)
 
-Версия: `v0.62.7b`
+Версия: `v0.63.2b`
 
 Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PySide6`.
 Приложение ориентировано на повседневную разработку: работа с файлами проекта, запуск инструментов, безопасные approvals для рискованных действий и удобная история чатов по проектам.
@@ -22,18 +22,34 @@ Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PyS
   - восстановление после перезапуска из transcript.
 - Approval-поток для mutating/destructive инструментов (`Approve`, `Deny`, `Always for this session`).
 - Поддержка MCP-инструментов (включая Context7 при соответствующей конфигурации).
-- Runtime-статусы (`Thinking`, `Reviewing`, `Ready`, ошибки) в UI.
+- Runtime-статусы (`Thinking`, `Self-correcting`, `Ready`, ошибки) в UI.
+- Профили моделей в GUI:
+  - окно `Settings` (CRUD профилей),
+  - селектор активной модели рядом с `+` в composer,
+  - безопасное переключение только вне `busy/approval`,
+  - применение выбранной модели к **следующему** запросу без сброса чата.
+- Автоподхват модели из `.env`:
+  - при первом запуске env-модель записывается в настройки,
+  - при последующих запусках env-модели аккуратно подмешиваются в профильный список,
+  - одинаковые профили не дублируются.
 
 ## Архитектура
 
-- [`agent.py`](agent.py): сборка агентного графа, LLM, реестр инструментов, checkpoint backend.
+- [`agent.py`](agent.py): сборка агентного графа (`summarize -> agent -> tools/approval -> stability_guard`), LLM, реестр инструментов, checkpoint backend.
 - [`main.py`](main.py): главное окно GUI, меню, sidebar, transcript, composer, обработка UI-событий.
 - [`core/gui_runtime.py`](core/gui_runtime.py): runtime-контроллер, запуск графа, стриминг событий, переключение/восстановление сессий.
 - [`core/gui_widgets.py`](core/gui_widgets.py): UI-виджеты (composer, transcript, popup, tool cards, sidebar).
+- [`core/nodes.py`](core/nodes.py): узлы графа, self-correction (`stability_guard`), loop-guards, tool-preflight и safety flow.
 - [`core/session_store.py`](core/session_store.py): хранение и индекс сессий.
 - [`core/ui_theme.py`](core/ui_theme.py): единая тема и стили.
 - [`core/config.py`](core/config.py): загрузка env-конфигурации.
 - [`tools/tool_registry.py`](tools/tool_registry.py): локальные + MCP инструменты, метаданные, политика безопасности.
+
+## Поведение self-correction
+
+- В графе нет отдельного LLM-узла критика: контроль стабильности выполняет детерминированный `stability_guard`.
+- При незакрытой ошибке инструмента выполняется максимум **1** внутренний auto-retry в рамках user turn.
+- Если после auto-retry проблема не закрыта или требуется пользовательский ввод, агент делает безопасный handoff без ложного сообщения об успехе.
 
 ## Хранение данных
 
@@ -41,8 +57,20 @@ Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PyS
 - Активная сессия: `SESSION_STATE_PATH` (по умолчанию `.agent_state/session.json`).
 - Индекс чатов: `.agent_state/session_index.json`.
 - Логи запусков: `RUN_LOG_DIR` (JSONL).
+- Профили моделей: `.agent_state/config.json`:
+  - `active_profile: str | null`
+  - `profiles: [{id, provider, model, api_key, base_url}]`
 
 При старте runtime текущая активная сессия и transcript автоматически восстанавливаются.
+
+## Профили моделей и ENV
+
+- Источник правды для профилей в GUI — `.agent_state/config.json`.
+- Если `config.json` отсутствует или пустой по профилям, профиль создается из `.env`.
+- Если `config.json` уже существует, env-профили добавляются без дублирования существующих.
+- `active_profile` сохраняется при merge (если валиден), иначе выбирается первый доступный профиль.
+- Для `provider=gemini` поле `base_url` в UI отключено и не используется.
+- Для `provider=openai` `base_url` доступен и сохраняется.
 
 ## Быстрый старт
 
@@ -77,6 +105,7 @@ python main.py
 - `PROVIDER=gemini|openai`
 - `GEMINI_API_KEY`, `GEMINI_MODEL`
 - `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL`
+- (опционально, generic bootstrap) `MODEL`, `API_KEY`, `BASE_URL`
 
 ### Runtime и persistence
 
@@ -146,6 +175,8 @@ python main.py
 Ключевые наборы:
 
 - [`tests/test_cli_ux.py`](tests/test_cli_ux.py)
+- [`tests/test_critic_graph.py`](tests/test_critic_graph.py)
+- [`tests/test_model_profiles.py`](tests/test_model_profiles.py)
 - [`tests/test_runtime_refactor.py`](tests/test_runtime_refactor.py)
 - [`tests/test_stream_and_filesystem.py`](tests/test_stream_and_filesystem.py)
 - [`tests/test_tooling_refactor.py`](tests/test_tooling_refactor.py)
