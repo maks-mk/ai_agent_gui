@@ -23,9 +23,11 @@ class AgentState(TypedDict):
 
     # Internal workflow state
     turn_outcome: NotRequired[str]
-    retry_instruction: NotRequired[str]
+    recovery_state: NotRequired[Dict[str, Any]]
     self_correction_retry_count: NotRequired[int]
     self_correction_retry_turn_id: NotRequired[int]
+    self_correction_fingerprint_history: NotRequired[List[str]]
+    self_correction_last_reason: NotRequired[str]
 
     # Durable runtime/session info
     session_id: NotRequired[str]

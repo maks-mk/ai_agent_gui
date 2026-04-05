@@ -6,18 +6,26 @@ from langchain_core.messages import ToolMessage
 ERROR_PREFIXES = ("error", "ошибка", "error[")
 
 
+def _stringify_content_item(item: Any) -> str:
+    if item is None:
+        return ""
+    if isinstance(item, str):
+        return item
+    if isinstance(item, dict):
+        if "text" in item:
+            return str(item.get("text") or "")
+        if "refusal" in item:
+            return str(item.get("refusal") or "")
+        if "content" in item:
+            return _stringify_content_item(item.get("content"))
+        return ""
+    if isinstance(item, list):
+        return "".join(_stringify_content_item(part) for part in item)
+    return str(item)
+
+
 def stringify_content(content: Any) -> str:
-    if isinstance(content, str):
-        return content
-    if isinstance(content, list):
-        parts = []
-        for item in content:
-            if isinstance(item, dict):
-                parts.append(str(item.get("text", "")))
-            else:
-                parts.append(str(item))
-        return "".join(parts)
-    return str(content)
+    return _stringify_content_item(content)
 
 
 def compact_text(text: str, limit: int) -> str:

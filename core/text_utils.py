@@ -467,17 +467,40 @@ class TokenTracker:
             self._apply_metadata(msg.usage_metadata, msg_id=getattr(msg, "id", None))
 
     def update_from_node_update(self, update: Dict):
-        agent_data = update.get("agent")
-        if not agent_data:
+        if not isinstance(update, dict):
             return
 
-        messages = agent_data.get("messages", [])
-        if not isinstance(messages, list):
-            messages = [messages]
+        for node_payload in update.values():
+            if not isinstance(node_payload, dict):
+                continue
+            usage = node_payload.get("token_usage")
+            if isinstance(usage, dict):
+                self._apply_metadata(usage)
 
-        for msg in messages:
-            if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-                self._apply_metadata(msg.usage_metadata, msg_id=getattr(msg, "id", None))
+    @staticmethod
+    def _coerce_token_int(value: Any) -> int:
+        try:
+            coerced = int(value)
+        except (TypeError, ValueError):
+            return 0
+        return max(0, coerced)
+
+    @classmethod
+    def _extract_output_tokens(cls, usage: Dict[str, Any]) -> int:
+        for key in ("output_tokens", "completion_tokens", "completion_token_count", "output_token_count"):
+            if key in usage:
+                return cls._coerce_token_int(usage.get(key))
+        return 0
+
+    @classmethod
+    def _extract_input_tokens(cls, usage: Dict[str, Any], output_tokens: int) -> int:
+        for key in ("input_tokens", "prompt_tokens", "prompt_token_count", "input_token_count"):
+            if key in usage:
+                return cls._coerce_token_int(usage.get(key))
+        total_tokens = cls._coerce_token_int(usage.get("total_tokens"))
+        if total_tokens > 0 and output_tokens > 0:
+            return max(0, total_tokens - output_tokens)
+        return 0
 
     def _apply_metadata(self, usage: Dict, msg_id: str = None):
         if msg_id:
@@ -485,11 +508,11 @@ class TokenTracker:
                 return
             self._seen_msg_ids.add(msg_id)
 
-        in_t = usage.get("input_tokens", 0)
+        out_t = self._extract_output_tokens(usage)
+        in_t = self._extract_input_tokens(usage, out_t)
         if in_t > self.max_input:
             self.max_input = in_t
 
-        out_t = usage.get("output_tokens", 0)
         self.total_output += out_t
 
     def render(self, duration: float) -> str:
@@ -497,5 +520,5 @@ class TokenTracker:
         if self._streaming_len > 10 and display_out < (self._streaming_len // 10):
             display_out = self._streaming_len // 3
 
-        in_display = str(self.max_input) if self.max_input > 0 else "?"
+        in_display = str(self.max_input if self.max_input > 0 else 0)
         return f"{duration:.1f}s  ↓ {in_display}  ↑ {display_out}"

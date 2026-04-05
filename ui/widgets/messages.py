@@ -1,0 +1,227 @@
+from __future__ import annotations
+
+from PySide6.QtCore import QSize, Qt
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
+
+from ui.theme import ACCENT_BLUE, AMBER_WARNING, ERROR_RED, SUCCESS_GREEN, TEXT_MUTED
+from .foundation import AutoTextBrowser, CodeBlockWidget, _collapsed_user_message_text, _fa_icon
+
+
+class NoticeWidget(QFrame):
+    def __init__(self, message: str, level: str = "info") -> None:
+        super().__init__()
+        self.setObjectName("FlatNoticeRow")
+        self.setFrameShape(QFrame.NoFrame)
+        self._level = "info"
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 1, 0, 1)
+        layout.setSpacing(5)
+
+        self.icon_label = QLabel()
+        layout.addWidget(self.icon_label, 0, Qt.AlignTop)
+
+        self.text_label = QLabel(message)
+        self.text_label.setObjectName("MetaText")
+        self.text_label.setWordWrap(True)
+        layout.addWidget(self.text_label, 1)
+
+        self.set_level(level)
+
+    def _icon_for_level(self, level: str) -> tuple[str, str]:
+        if level == "warning":
+            return "fa5s.exclamation-triangle", AMBER_WARNING
+        if level == "error":
+            return "fa5s.times-circle", ERROR_RED
+        if level == "success":
+            return "fa5s.check-circle", SUCCESS_GREEN
+        return "fa5s.info-circle", ACCENT_BLUE
+
+    def set_level(self, level: str) -> None:
+        normalized = str(level or "info").strip().lower() or "info"
+        self._level = normalized
+        icon_name, color = self._icon_for_level(normalized)
+        self.icon_label.setPixmap(_fa_icon(icon_name, color=color, size=11).pixmap(11, 11))
+
+    def set_message(self, message: str) -> None:
+        self.text_label.setText(str(message or ""))
+
+
+class RunStatsWidget(QWidget):
+    def __init__(self, stats: str) -> None:
+        super().__init__()
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 60)
+        layout.setSpacing(0)
+        layout.addStretch(1)
+
+        chip = QFrame()
+        chip.setObjectName("TranscriptMetaChip")
+        chip_layout = QHBoxLayout(chip)
+        chip_layout.setContentsMargins(8, 4, 8, 4)
+        chip_layout.setSpacing(5)
+
+        icon = QLabel()
+        icon.setPixmap(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=11).pixmap(11, 11))
+        chip_layout.addWidget(icon, 0, Qt.AlignVCenter)
+
+        label = QLabel(stats)
+        label.setObjectName("MetaText")
+        label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        chip_layout.addWidget(label, 0, Qt.AlignVCenter)
+
+        layout.addWidget(chip, 0, Qt.AlignRight)
+
+
+class StatusIndicatorWidget(QFrame):
+    def __init__(self, label: str) -> None:
+        super().__init__()
+        self.setObjectName("InlineStatusRow")
+        self.setFrameShape(QFrame.NoFrame)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 2, 0, 6)
+        layout.setSpacing(6)
+
+        self.spinner = QToolButton()
+        self.spinner.setObjectName("InlineStatusSpinner")
+        self.spinner.setEnabled(False)
+        self.spinner.setAutoRaise(True)
+        self.spinner.setIcon(_fa_icon("fa5s.spinner", color=TEXT_MUTED, size=12))
+        self.spinner.setIconSize(QSize(12, 12))
+        self.spinner.setFixedSize(14, 14)
+        layout.addWidget(self.spinner, 0, Qt.AlignVCenter)
+
+        self.label = QLabel(label)
+        self.label.setObjectName("TranscriptMeta")
+        layout.addWidget(self.label, 0, Qt.AlignVCenter)
+        layout.addStretch(1)
+
+    def set_label(self, label: str) -> None:
+        self.label.setText(label)
+
+
+class UserMessageWidget(QFrame):
+    def __init__(self, text: str) -> None:
+        super().__init__()
+        self.full_text = text
+        self.preview_text, self.is_expandable = _collapsed_user_message_text(text)
+        self.setObjectName("TranscriptRow")
+        self.setFrameShape(QFrame.NoFrame)
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(0, 12, 0, 16)
+        layout.setSpacing(0)
+
+        # Пружина выталкивает пузырь вправо
+        layout.addStretch(1)
+
+        self.bubble = QFrame()
+        self.bubble.setObjectName("UserBubble")
+        self.bubble.setSizePolicy(QSizePolicy.Maximum, QSizePolicy.Preferred)
+        self.bubble.setMaximumWidth(720)
+
+        bubble_layout = QVBoxLayout(self.bubble)
+        bubble_layout.setContentsMargins(14, 10, 14, 10)
+        bubble_layout.setSpacing(4)
+
+        self.body = QLabel(self.preview_text if self.is_expandable else self.full_text)
+        self.body.setObjectName("TranscriptBody")
+        self.body.setWordWrap(True)
+        self.body.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByMouse)
+
+        from PySide6.QtGui import QTextDocument
+        doc = QTextDocument()
+        font = self.body.font()
+        font.setPointSize(11)
+        doc.setDefaultFont(font)
+        doc.setPlainText(text)
+        doc.setTextWidth(680)
+        ideal_width = min(680, int(doc.idealWidth()) + 8)
+
+        self.body.setMinimumWidth(ideal_width)
+        self.body.setSizePolicy(QSizePolicy.Preferred, QSizePolicy.Preferred)
+        self.body.setMaximumWidth(680)
+        bubble_layout.addWidget(self.body)
+
+        self.toggle_button = QToolButton()
+        self.toggle_button.setObjectName("DisclosureButton")
+        self.toggle_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+        self.toggle_button.setAutoRaise(True)
+        self.toggle_button.setCheckable(True)
+        self.toggle_button.setVisible(self.is_expandable)
+        self.toggle_button.toggled.connect(self._set_expanded)
+        bubble_layout.addWidget(self.toggle_button, 0, Qt.AlignRight)
+        self._set_expanded(False)
+
+        layout.addWidget(self.bubble)
+
+    def _set_expanded(self, expanded: bool) -> None:
+        self.body.setText(self.full_text if expanded else self.preview_text)
+        self.toggle_button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        self.toggle_button.setText("Show less" if expanded else "Show more")
+
+
+class AssistantMessageWidget(QFrame):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("TranscriptRow")
+        self.setFrameShape(QFrame.NoFrame)
+        self._markdown = ""
+        
+        self._layout = QHBoxLayout(self)
+        self._layout.setContentsMargins(0, 1, 0, 3)
+        self._layout.setSpacing(6)
+
+        self.content_widget = QWidget()
+        self.content_layout = QVBoxLayout(self.content_widget)
+        self.content_layout.setContentsMargins(0, 0, 0, 0)
+        self.content_layout.setSpacing(8)
+        self._layout.addWidget(self.content_widget, 1)
+
+        self.parts_widgets = []
+
+    def set_markdown(self, markdown: str) -> None:
+        self._markdown = markdown
+        text = markdown.strip() or "*Thinking…*"
+        
+        parts = text.split("```")
+
+        while len(self.parts_widgets) < len(parts):
+            idx = len(self.parts_widgets)
+            is_code = (idx % 2 == 1)
+            if is_code:
+                w = CodeBlockWidget("", "")
+                self.content_layout.addWidget(w)
+            else:
+                w = AutoTextBrowser()
+                w.setObjectName("AssistantBody")
+                self.content_layout.addWidget(w)
+            self.parts_widgets.append(w)
+
+        while len(self.parts_widgets) > len(parts):
+            w = self.parts_widgets.pop()
+            self.content_layout.removeWidget(w)
+            w.deleteLater()
+
+        for idx, part in enumerate(parts):
+            w = self.parts_widgets[idx]
+            is_code = (idx % 2 == 1)
+            
+            if is_code:
+                lines = part.split("\n", 1)
+                lang = lines[0].strip() if len(lines) > 0 else ""
+                code = lines[1] if len(lines) > 1 else ""
+                title = lang.upper() if lang else "CODE"
+                w.set_code(code, lang, title)
+                w.setVisible(True)
+            else:
+                if part.strip() or idx == 0:
+                    w.setMarkdown(part)
+                    w.setVisible(True)
+                else:
+                    w.setVisible(False)
+
+    def markdown(self) -> str:
+        return self._markdown
+
+
+

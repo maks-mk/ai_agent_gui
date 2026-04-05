@@ -14,12 +14,7 @@ from core.run_logger import JsonlRunLogger
 from core.state import AgentState
 from tools.tool_registry import ToolRegistry
 
-# Setup logging
-try:
-    logger = setup_logging()
-except Exception:
-    logging.basicConfig(level=logging.INFO)
-    logger = logging.getLogger("agent")
+logger = logging.getLogger("agent")
 
 
 # --- Factories ---
@@ -62,13 +57,14 @@ def create_agent_workflow(
 ) -> StateGraph:
     """Builds the LangGraph workflow with deterministic stability/self-correction guard."""
     tools_enabled = bool(nodes.tools) and config.model_supports_tools if tools_enabled is None else tools_enabled
+    approval_enabled = bool(tools_enabled and config.enable_approvals)
 
     workflow = StateGraph(AgentState)
 
     workflow.add_node("summarize", nodes.summarize_node)
     workflow.add_node("agent", nodes.agent_node)
     workflow.add_node("stability_guard", nodes.stability_guard_node)
-    workflow.add_node("prepare_retry", nodes.prepare_retry_node)
+    workflow.add_node("recovery", nodes.recovery_node)
     workflow.add_node("update_step", lambda state: {"steps": state.get("steps", 0) + 1})
 
     workflow.add_edge(START, "summarize")
@@ -76,8 +72,9 @@ def create_agent_workflow(
     workflow.add_edge("update_step", "agent")
 
     if tools_enabled:
-        workflow.add_node("approval", nodes.approval_node)
         workflow.add_node("tools", nodes.tools_node)
+        if approval_enabled:
+            workflow.add_node("approval", nodes.approval_node)
 
     def route_after_agent(state: AgentState):
         steps = state.get("steps", 0)
@@ -100,29 +97,41 @@ def create_agent_workflow(
             logger.warning("Agent node returned no messages; routing to stability_guard for a safe fallback.")
             return "stability_guard"
 
-        last_msg = messages[-1]
+        turn_outcome = str(state.get("turn_outcome") or "").strip().lower()
 
-        if tools_enabled and isinstance(last_msg, AIMessage) and last_msg.tool_calls:
-            if nodes.tool_calls_require_approval(last_msg.tool_calls):
-                return "approval"
-            return "tools"
+        if tools_enabled and turn_outcome == "run_tools":
+            pending_ai_with_tools = nodes._get_last_pending_ai_with_tool_calls(messages)
+            if isinstance(pending_ai_with_tools, AIMessage) and pending_ai_with_tools.tool_calls:
+                if approval_enabled and nodes.tool_calls_require_approval(pending_ai_with_tools.tool_calls):
+                    return "approval"
+                return "tools"
+            logger.warning(
+                "Agent reported run_tools outcome without a valid tool call payload. "
+                "Routing to stability_guard."
+            )
+            return "stability_guard"
 
         return "stability_guard"
 
     def route_after_stability_guard(state: AgentState):
-        if state.get("turn_outcome") == "retry_agent":
-            return "prepare_retry"
+        if state.get("turn_outcome") == "recover_agent":
+            return "recovery"
+        if state.get("turn_outcome") == "continue_agent":
+            return "update_step"
         return END
 
     if tools_enabled:
-        workflow.add_conditional_edges("agent", route_after_agent, ["approval", "tools", "stability_guard", END])
-        workflow.add_edge("approval", "tools")
-        workflow.add_edge("tools", "update_step")
+        agent_routes = ["tools", "stability_guard", END]
+        if approval_enabled:
+            agent_routes.insert(0, "approval")
+            workflow.add_edge("approval", "tools")
+        workflow.add_conditional_edges("agent", route_after_agent, agent_routes)
+        workflow.add_edge("tools", "stability_guard")
     else:
         workflow.add_conditional_edges("agent", route_after_agent, ["stability_guard", END])
 
-    workflow.add_conditional_edges("stability_guard", route_after_stability_guard, ["prepare_retry", END])
-    workflow.add_edge("prepare_retry", "update_step")
+    workflow.add_conditional_edges("stability_guard", route_after_stability_guard, ["recovery", "update_step", END])
+    workflow.add_edge("recovery", "update_step")
 
     return workflow
 
@@ -132,6 +141,7 @@ async def build_agent_app(config: Optional[AgentConfig] = None) -> Tuple[Any, To
     """
     # Pydantic AgentConfig автоматически загружает .env.
     config = config or AgentConfig()
+    setup_logging(level=config.log_level, log_file=config.log_file)
 
     logger.info(f"Initializing agent: [bold cyan]{config.provider}[/]", extra={"markup": True})
 

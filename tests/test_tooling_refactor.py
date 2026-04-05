@@ -6,6 +6,7 @@ import unittest
 from unittest import mock
 from pathlib import Path
 from uuid import uuid4
+from types import SimpleNamespace
 
 from core.config import AgentConfig
 from core.validation import validate_tool_result
@@ -41,6 +42,11 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("safe_delete_file", names)
         self.assertIn("safe_delete_directory", names)
 
+    async def test_tool_registry_does_not_keep_selector_catalog_state(self):
+        registry = ToolRegistry(self._make_config())
+        await registry.load_all()
+        self.assertFalse(hasattr(registry, "selector_catalog"))
+
     async def test_tool_registry_fallback_delete_tools_without_filesystem(self):
         registry = ToolRegistry(self._make_config(ENABLE_FILESYSTEM_TOOLS=False))
         await registry.load_all()
@@ -56,7 +62,7 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(metadata.requires_approval)
         self.assertTrue(metadata.networked)
 
-    def test_mcp_metadata_flags_write_like_tools_for_approval(self):
+    def test_mcp_metadata_flags_write_like_tools_without_default_approval(self):
         metadata = ToolRegistry._infer_mcp_metadata("filesystem:write_file")
 
         self.assertFalse(metadata.read_only)
@@ -65,14 +71,42 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(metadata.requires_approval)
         self.assertTrue(metadata.networked)
 
-    def test_mcp_metadata_flags_execution_like_tools_for_approval(self):
+    def test_mcp_metadata_flags_execution_like_tools_without_default_approval(self):
         metadata = ToolRegistry._infer_mcp_metadata("terminal:run_command")
+
+        self.assertFalse(metadata.read_only)
+        self.assertTrue(metadata.mutating)
+        self.assertFalse(metadata.destructive)
+        self.assertTrue(metadata.requires_approval)
+        self.assertTrue(metadata.networked)
+
+    def test_mcp_metadata_respects_safe_readonly_hint(self):
+        tool = SimpleNamespace(
+            name="acme_search_docs",
+            description="Search documentation pages",
+            metadata={"readOnlyHint": True, "openWorldHint": True},
+        )
+
+        metadata = ToolRegistry._infer_mcp_metadata(tool)
+
+        self.assertTrue(metadata.read_only)
+        self.assertFalse(metadata.mutating)
+        self.assertFalse(metadata.destructive)
+        self.assertFalse(metadata.requires_approval)
+
+    def test_mcp_metadata_uses_destructive_hint_for_approval(self):
+        tool = SimpleNamespace(
+            name="acme_workspace",
+            description="Manage workspace entries",
+            metadata={"destructiveHint": True},
+        )
+
+        metadata = ToolRegistry._infer_mcp_metadata(tool)
 
         self.assertFalse(metadata.read_only)
         self.assertTrue(metadata.mutating)
         self.assertTrue(metadata.destructive)
         self.assertTrue(metadata.requires_approval)
-        self.assertTrue(metadata.networked)
 
     def test_validation_supports_delete_argument_aliases(self):
         tmp = self._workspace_tempdir()
@@ -99,6 +133,11 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
     def test_max_file_size_rejects_invalid_strings(self):
         with self.assertRaises(Exception):
             self._make_config(MAX_FILE_SIZE="300MBps")
+
+    def test_logging_env_keys_are_loaded_via_agent_config(self):
+        config = self._make_config(LOG_LEVEL="debug", LOG_FILE="logs/custom-agent.log")
+        self.assertEqual(config.log_level, "DEBUG")
+        self.assertEqual(config.log_file.name, "custom-agent.log")
 
     def test_text_utils_import_does_not_require_prompt_toolkit(self):
         import core.text_utils as text_utils
@@ -132,6 +171,49 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(match)
         stop_result = process_tools.stop_background_process.invoke({"pid": int(match.group(1))})
         self.assertIn("Success:", stop_result)
+
+    def test_find_process_by_port_uses_net_connections(self):
+        class FakePsutil:
+            class AccessDenied(Exception):
+                pass
+
+            class NoSuchProcess(Exception):
+                pass
+
+            class ZombieProcess(Exception):
+                pass
+
+            @staticmethod
+            def net_connections(kind="inet"):
+                return [SimpleNamespace(laddr=SimpleNamespace(port=8000), pid=4321)]
+
+            @staticmethod
+            def Process(pid):
+                return SimpleNamespace(name=lambda: "python")
+
+        with mock.patch.object(process_tools, "psutil", FakePsutil):
+            result = process_tools.find_process_by_port.invoke({"port": 8000})
+        self.assertIn("Found process 'python' (PID: 4321) on port 8000.", result)
+
+    def test_find_process_by_port_returns_non_error_when_port_is_free(self):
+        class FakePsutil:
+            class AccessDenied(Exception):
+                pass
+
+            class NoSuchProcess(Exception):
+                pass
+
+            class ZombieProcess(Exception):
+                pass
+
+            @staticmethod
+            def net_connections(kind="inet"):
+                return []
+
+        with mock.patch.object(process_tools, "psutil", FakePsutil):
+            result = process_tools.find_process_by_port.invoke({"port": 8000})
+        self.assertEqual(result, "No process found listening on port 8000.")
+        self.assertNotIn("ERROR[", result)
 
 
 if __name__ == "__main__":

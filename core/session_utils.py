@@ -11,6 +11,7 @@ async def repair_session_if_needed(
     agent_app: Any,
     thread_id: str,
     notifier: Callable[[str], None] | None = None,
+    event_logger: Callable[[str, dict[str, Any]], None] | None = None,
 ) -> list[str]:
     notices: list[str] = []
 
@@ -90,9 +91,27 @@ async def repair_session_if_needed(
                 tool_call_id=tool_call["id"],
                 content="Error: Execution interrupted (system limit reached or user stop). Please retry.",
                 name=tool_call["name"],
+                additional_kwargs={
+                    "tool_args": dict(tool_call.get("args") or {}),
+                    "agent_internal": {
+                        "kind": "repaired_interrupted_tool_call",
+                    },
+                },
             )
             for tool_call in missing_tool_calls
         ]
+
+        if event_logger:
+            for tool_call in missing_tool_calls:
+                event_logger(
+                    "tool_repair_inserted",
+                    {
+                        "tool_name": str(tool_call.get("name") or ""),
+                        "tool_call_id": str(tool_call.get("id") or ""),
+                        "tool_args": dict(tool_call.get("args") or {}),
+                        "reason": "missing_tool_output_after_interrupt",
+                    },
+                )
 
         async_update_state = getattr(agent_app, "aupdate_state", None)
         if callable(async_update_state):

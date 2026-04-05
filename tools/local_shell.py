@@ -3,12 +3,14 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 import os
 import re
-from typing import Callable, Iterator, Optional
+import shutil
+from typing import Any, Callable, Iterator, Optional
 from langchain_core.tools import tool
 
 from core.utils import truncate_output
 from core.errors import format_error, ErrorType
 from core.safety_policy import SafetyPolicy
+from core.policy_engine import classify_shell_command
 
 # Константы
 DEFAULT_TIMEOUT = 120
@@ -37,6 +39,81 @@ _WINDOWS_PYTHON_HEREDOC_RE = re.compile(
     r"^\s*(?P<exe>python(?:3(?:\.\d+)?)?)\s*-\s*<<\s*['\"]?(?P<tag>[A-Za-z_][A-Za-z0-9_]*)['\"]?\s*\r?\n(?P<body>[\s\S]*?)\r?\n(?P=tag)\s*$",
     re.IGNORECASE,
 )
+_WINDOWS_POWERSHELL_WRAPPER_RE = re.compile(
+    r"^\s*(?:pwsh|powershell(?:\.exe)?)\s+(?:(?:-(?:NoProfile|NoLogo|NonInteractive))\s+)*-Command\s+(?P<body>[\s\S]+?)\s*$",
+    re.IGNORECASE,
+)
+_WINDOWS_NULL_OUTPUT_FLAG_RE = re.compile(
+    r"(?i)(?P<flag>--output|-o)\s+(?P<quote>['\"]?)/dev/null(?P=quote)"
+)
+_WINDOWS_NULL_OUTPUT_FLAG_EQ_RE = re.compile(
+    r"(?i)(?P<flag>--output=)(?P<quote>['\"]?)/dev/null(?P=quote)"
+)
+_WINDOWS_NULL_REDIRECT_RE = re.compile(
+    r"(?i)(?P<redir>\d?>)\s*(?P<quote>['\"]?)/dev/null(?P=quote)"
+)
+_NPM_LIKE_COMMAND_RE = re.compile(r"(^|[;&|()\s])(?:npm|npx)(?=$|[;&|()\s])", re.IGNORECASE)
+_INTERACTIVE_PROMPT_PATTERNS = (
+    re.compile(r"ok to proceed\?\s*\(y\)", re.IGNORECASE),
+    re.compile(r"do you want to continue\?\s*\[(?:y|yes)/(?:n|no)\]", re.IGNORECASE),
+    re.compile(r"\[(?:y|yes)/(?:n|no)\]", re.IGNORECASE),
+    re.compile(r"\[(?:n|no)/(?:y|yes)\]", re.IGNORECASE),
+    re.compile(r"press any key", re.IGNORECASE),
+    re.compile(r"hit ctrl-c to stop", re.IGNORECASE),
+)
+_INSPECT_ONLY_COMMAND_PATTERNS = (
+    re.compile(r"\bget-process\b", re.IGNORECASE),
+    re.compile(r"\btasklist\b", re.IGNORECASE),
+    re.compile(r"\bwhere-object\b", re.IGNORECASE),
+    re.compile(r"\bselect-object\b", re.IGNORECASE),
+    re.compile(r"\bfindstr\b", re.IGNORECASE),
+    re.compile(r"\bget-childitem\b", re.IGNORECASE),
+    re.compile(r"\bget-content\b", re.IGNORECASE),
+    re.compile(r"\bselect-string\b", re.IGNORECASE),
+    re.compile(r"\bdir\b", re.IGNORECASE),
+    re.compile(r"\btype\b", re.IGNORECASE),
+    re.compile(r"\bwhere\b", re.IGNORECASE),
+    re.compile(r"\bnetstat\b", re.IGNORECASE),
+    re.compile(r"\bss\b", re.IGNORECASE),
+    re.compile(r"\bps\b", re.IGNORECASE),
+)
+_MUTATING_COMMAND_PATTERNS = (
+    re.compile(r"\btaskkill\b", re.IGNORECASE),
+    re.compile(r"\bstop-process\b", re.IGNORECASE),
+    re.compile(r"\bremove-item\b", re.IGNORECASE),
+    re.compile(r"\brm\b", re.IGNORECASE),
+    re.compile(r"\bdel\b", re.IGNORECASE),
+    re.compile(r"\brmdir\b", re.IGNORECASE),
+    re.compile(r"\bmove-item\b", re.IGNORECASE),
+    re.compile(r"\brename-item\b", re.IGNORECASE),
+    re.compile(r"\bcopy-item\b", re.IGNORECASE),
+    re.compile(r"\bset-content\b", re.IGNORECASE),
+    re.compile(r"\badd-content\b", re.IGNORECASE),
+    re.compile(r"\bnpm\s+install\b", re.IGNORECASE),
+    re.compile(r"\bnpm\s+uninstall\b", re.IGNORECASE),
+    re.compile(r"\bpip\s+install\b", re.IGNORECASE),
+    re.compile(r"\bgit\s+checkout\b", re.IGNORECASE),
+)
+_DESTRUCTIVE_COMMAND_PATTERNS = (
+    re.compile(r"\btaskkill\b", re.IGNORECASE),
+    re.compile(r"\bstop-process\b", re.IGNORECASE),
+    re.compile(r"\bremove-item\b", re.IGNORECASE),
+    re.compile(r"\brm\b", re.IGNORECASE),
+    re.compile(r"\bdel\b", re.IGNORECASE),
+    re.compile(r"\brmdir\b", re.IGNORECASE),
+)
+_LONG_RUNNING_SERVICE_PATTERNS = (
+    re.compile(r"\bpython(?:3(?:\.\d+)?)?\s+-m\s+http\.server\b", re.IGNORECASE),
+    re.compile(r"\bhttp-server\b", re.IGNORECASE),
+    re.compile(r"\bnpm\s+start\b", re.IGNORECASE),
+    re.compile(r"\bnpm\s+run\s+dev\b", re.IGNORECASE),
+    re.compile(r"\bnpm\s+exec\b.*\bhttp-server\b", re.IGNORECASE),
+    re.compile(r"\bnpx\b.*\bhttp-server\b", re.IGNORECASE),
+    re.compile(r"\buvicorn\b", re.IGNORECASE),
+    re.compile(r"\bflask\s+run\b", re.IGNORECASE),
+    re.compile(r"\bwebpack(?:\.cmd)?\s+serve\b", re.IGNORECASE),
+    re.compile(r"\bserve\b", re.IGNORECASE),
+)
 
 
 def _get_windows_command_hint(command: str, stderr: str) -> str:
@@ -60,7 +137,7 @@ def _get_windows_command_hint(command: str, stderr: str) -> str:
 
 
 def _normalize_windows_python_heredoc(command: str) -> str:
-    """Converts bash-style python heredoc into a PowerShell-compatible invocation on Windows."""
+    """Converts bash-style python heredoc into a PowerShell-compatible command body on Windows."""
     if os.name != "nt":
         return command
 
@@ -76,7 +153,113 @@ def _normalize_windows_python_heredoc(command: str) -> str:
     if "\n'@\n" in f"\n{body}\n":
         return command
 
-    return f'powershell -NoProfile -Command "@\'\n{body}\n\'@ | {exe} -"'
+    return f"@'\n{body}\n'@ | {exe} -"
+
+
+def _strip_nested_windows_powershell_wrapper(command: str) -> str:
+    """
+    cli_exec already runs PowerShell on Windows.
+    If the model wraps the command in `powershell -Command ...`, unwrap it so
+    `$vars` are not expanded by an outer shell layer.
+    """
+    if os.name != "nt":
+        return command
+    raw = str(command or "")
+    match = _WINDOWS_POWERSHELL_WRAPPER_RE.match(raw.strip())
+    if not match:
+        return command
+    body = str(match.group("body") or "").strip()
+    if len(body) >= 2 and body[0] == body[-1] and body[0] in {'"', "'"}:
+        body = body[1:-1]
+    return body or command
+
+
+def _normalize_windows_null_device(command: str) -> str:
+    """Maps POSIX null sink paths to Windows `NUL` for common CLI patterns."""
+    if os.name != "nt":
+        return command
+
+    raw = str(command or "")
+    if "/dev/null" not in raw.lower():
+        return raw
+
+    normalized = _WINDOWS_NULL_OUTPUT_FLAG_RE.sub(
+        lambda match: f"{match.group('flag')} {match.group('quote')}NUL{match.group('quote')}",
+        raw,
+    )
+    normalized = _WINDOWS_NULL_OUTPUT_FLAG_EQ_RE.sub(
+        lambda match: f"{match.group('flag')}{match.group('quote')}NUL{match.group('quote')}",
+        normalized,
+    )
+    normalized = _WINDOWS_NULL_REDIRECT_RE.sub(
+        lambda match: f"{match.group('redir')} {match.group('quote')}NUL{match.group('quote')}",
+        normalized,
+    )
+    return normalized
+
+
+def _prepare_shell_env(command: str) -> dict[str, str]:
+    env = os.environ.copy()
+    # Best-effort non-interactive mode for CLI tools that support CI semantics.
+    env.setdefault("CI", "1")
+
+    if _NPM_LIKE_COMMAND_RE.search(command or ""):
+        # Prevent npm/npx confirmation prompts such as "Ok to proceed? (y)".
+        env.setdefault("npm_config_yes", "true")
+        env.setdefault("npm_config_audit", "false")
+        env.setdefault("npm_config_fund", "false")
+    return env
+
+
+def _detect_interactive_prompt(text: str) -> str | None:
+    sample = str(text or "")
+    if not sample:
+        return None
+    for pattern in _INTERACTIVE_PROMPT_PATTERNS:
+        match = pattern.search(sample)
+        if match:
+            return match.group(0)
+    return None
+
+
+def classify_cli_command(command: str) -> dict[str, Any]:
+    # Shared classification policy for both routing and execution layers.
+    return classify_shell_command(command)
+
+
+def _powershell_executable() -> str:
+    return shutil.which("pwsh") or shutil.which("powershell") or "powershell.exe"
+
+
+async def _terminate_process_tree(process: Any) -> None:
+    pid = getattr(process, "pid", None)
+    if os.name == "nt" and pid:
+        try:
+            killer = await asyncio.create_subprocess_exec(
+                "taskkill",
+                "/PID",
+                str(pid),
+                "/T",
+                "/F",
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            await asyncio.wait_for(killer.wait(), timeout=3)
+        except Exception:
+            try:
+                process.kill()
+            except OSError:
+                pass
+    else:
+        try:
+            process.kill()
+        except OSError:
+            pass
+
+    try:
+        await asyncio.wait_for(process.wait(), timeout=3)
+    except Exception:
+        return
 
 
 def set_safety_policy(policy: SafetyPolicy):
@@ -147,17 +330,44 @@ async def cli_exec(command: str) -> str:
         return format_error(ErrorType.VALIDATION, "Command cannot be empty.")
 
     normalized_command = _normalize_windows_python_heredoc(command)
+    normalized_command = _strip_nested_windows_powershell_wrapper(normalized_command)
+    normalized_command = _normalize_windows_null_device(normalized_command)
+    command_profile = classify_cli_command(normalized_command)
+    if command_profile["long_running_service"]:
+        return format_error(
+            ErrorType.VALIDATION,
+            "Foreground service/server commands are not supported in cli_exec. "
+            "Use run_background_process for long-running services.",
+        )
+    command_env = _prepare_shell_env(normalized_command)
 
     try:
-        process = await asyncio.create_subprocess_shell(
-            normalized_command,
-            stdout=asyncio.subprocess.PIPE,
-            stderr=asyncio.subprocess.PIPE,
-            cwd=_WORKING_DIRECTORY
-        )
+        if os.name == "nt":
+            process = await asyncio.create_subprocess_exec(
+                _powershell_executable(),
+                "-NoProfile",
+                "-Command",
+                normalized_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                cwd=_WORKING_DIRECTORY,
+                env=command_env,
+            )
+        else:
+            process = await asyncio.create_subprocess_shell(
+                normalized_command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                stdin=asyncio.subprocess.DEVNULL,
+                cwd=_WORKING_DIRECTORY,
+                env=command_env,
+            )
         stdout_chunks: list[str] = []
         stderr_chunks: list[str] = []
         chunk_queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
+        interactive_prompt: str = ""
+        interactive_prompt_sample = ""
 
         async def _read_stream(stream_name: str, reader: asyncio.StreamReader | None) -> None:
             if reader is None:
@@ -176,7 +386,9 @@ async def cli_exec(command: str) -> str:
                 await chunk_queue.put((stream_name, None))
 
         async def _collect_stream_output() -> None:
+            nonlocal interactive_prompt, interactive_prompt_sample
             completed_readers = 0
+            prompt_window = ""
             while completed_readers < 2:
                 stream_name, chunk = await chunk_queue.get()
                 if chunk is None:
@@ -188,6 +400,14 @@ async def cli_exec(command: str) -> str:
                     stderr_chunks.append(chunk)
                 _emit_cli_output(chunk, stream_name)
 
+                if not interactive_prompt:
+                    prompt_window = (prompt_window + chunk)[-1200:]
+                    detected_prompt = _detect_interactive_prompt(prompt_window)
+                    if detected_prompt:
+                        interactive_prompt = detected_prompt
+                        interactive_prompt_sample = prompt_window[-320:].strip()
+                        await _terminate_process_tree(process)
+
         stdout_reader_task = asyncio.create_task(_read_stream("stdout", process.stdout))
         stderr_reader_task = asyncio.create_task(_read_stream("stderr", process.stderr))
         collector_task = asyncio.create_task(_collect_stream_output())
@@ -197,11 +417,10 @@ async def cli_exec(command: str) -> str:
             await asyncio.wait_for(process.wait(), timeout=DEFAULT_TIMEOUT)
         except asyncio.TimeoutError:
             timed_out = True
-            try:
-                process.kill()
-            except OSError:
-                pass
-            await process.wait()
+            await _terminate_process_tree(process)
+        except asyncio.CancelledError:
+            await _terminate_process_tree(process)
+            raise
         finally:
             await asyncio.gather(stdout_reader_task, stderr_reader_task, return_exceptions=True)
             await collector_task
@@ -216,6 +435,16 @@ async def cli_exec(command: str) -> str:
             output_parts.append(f"[stderr]\n{stderr}")
 
         output = "\n".join(output_parts)
+
+        if interactive_prompt:
+            details = f"\nOutput tail:\n{interactive_prompt_sample}" if interactive_prompt_sample else ""
+            return format_error(
+                ErrorType.EXECUTION,
+                "Interactive prompt detected in cli_exec output "
+                f"('{interactive_prompt}'). Run command in non-interactive mode "
+                "(for npm/npx add -y/--yes), or use run_background_process for services."
+                f"{details}",
+            )
 
         if timed_out:
             details = f"\nPartial output:\n{output}" if output else ""

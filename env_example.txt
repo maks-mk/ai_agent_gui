@@ -1,5 +1,5 @@
 # ===========================
-# .env example (v0.62.7b)
+# .env example (v0.64.2b)
 # ===========================
 #
 # ВНИМАНИЕ:
@@ -26,6 +26,10 @@ GEMINI_MODEL=gemini-1.5-flash
 # Для OpenRouter:
 # OPENAI_BASE_URL=https://openrouter.ai/api/v1
 # OPENAI_MODEL=deepseek/deepseek-r1
+# Универсальный вариант для совместимых OpenAI backends:
+# MODEL=openai/gpt-oss-120b
+# API_KEY=sk-REPLACE_WITH_YOUR_KEY
+# BASE_URL=https://openrouter.ai/api/v1
 
 # ===========================
 # 2) Основные настройки агента
@@ -34,8 +38,8 @@ TEMPERATURE=0.2
 MAX_LOOPS=50
 # Optional: перезаписать настройки per-tool loop guard.
 # Если оставить пустыми, значения вычисляются от MAX_LOOPS:
-# mutating = max(3, min(8, MAX_LOOPS // 10))
-# readonly = max(6, min(20, MAX_LOOPS // 4))
+# mutating = max(6, min(24, MAX_LOOPS))
+# readonly = max(12, min(40, MAX_LOOPS * 2))
 # window = max(10, min(60, MAX_LOOPS))
 # TOOL_LOOP_LIMIT_MUTATING=5
 # TOOL_LOOP_LIMIT_READONLY=12
@@ -83,6 +87,14 @@ ENABLE_PROCESS_TOOLS=false
 # Shell / Терминал (выполнение команд cmd/bash).
 # ВНИМАНИЕ: Дает модели доступ к выполнению любых команд. Используйте с осторожностью.
 ENABLE_SHELL_TOOL=false
+# Stream/runtime caps (защита от роста памяти в длинных стримах)
+# STREAM_TEXT_MAX_CHARS=120000
+# STREAM_EVENTS_MAX=400
+# STREAM_TOOL_BUFFER_MAX=128
+# Self-correction auto-repair (до N автоматических repair-ретраев)
+# SELF_CORRECTION_ENABLE_AUTO_REPAIR=true
+# SELF_CORRECTION_MAX_AUTO_REPAIRS=2
+# SELF_CORRECTION_HARD_CEILING=8
 # Require interactive approval before mutating/destructive tools execute
 ENABLE_APPROVALS=true
 # Allow stopping external PIDs not started by this agent

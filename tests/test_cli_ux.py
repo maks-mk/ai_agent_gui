@@ -1,11 +1,13 @@
 import os
+import time
 import unittest
 from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QObject, Qt, Signal
-from PySide6.QtGui import QKeyEvent, QTextCursor
+from PySide6.QtCore import QEvent, QMimeData, QObject, Qt, Signal
+from PySide6.QtGui import QKeyEvent, QTextCursor, QTextFormat
+from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel, QFrame, QSizePolicy, QToolBar
 
 import main as agent_cli
@@ -13,6 +15,7 @@ from core.gui_runtime import build_runtime_snapshot, summarize_approval_request
 from core.stream_processor import StreamEvent
 from core.tool_policy import ToolMetadata
 from core.ui_theme import AMBER_WARNING, BORDER, ERROR_RED, SURFACE_BG, SURFACE_CARD, TEXT_MUTED
+from ui.widgets.foundation import AutoTextBrowser, CopySafePlainTextEdit
 
 
 class FakeTool:
@@ -123,6 +126,10 @@ class GuiUxTests(unittest.TestCase):
     def _process_events(self):
         self.app.processEvents()
 
+    def _wait_for_gui(self, ms: int):
+        QTest.qWait(ms)
+        self._process_events()
+
     def _press_composer_key(self, key: int, text: str = "", modifiers: Qt.KeyboardModifier = Qt.NoModifier):
         self.window.composer.setFocus()
         event = QKeyEvent(QEvent.KeyPress, key, modifiers, text)
@@ -225,6 +232,21 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(self.window.active_session_id, "session-1234567890abcdef")
         self.assertEqual(self.window.status_line_label.text(), "Ready")
 
+    def test_configure_qt_logging_adds_font_db_rule_once(self):
+        with mock.patch.dict(os.environ, {}, clear=False):
+            agent_cli._configure_qt_logging()
+            self.assertEqual(os.environ.get("QT_LOGGING_RULES"), "qt.text.font.db=false")
+            agent_cli._configure_qt_logging()
+            self.assertEqual(os.environ.get("QT_LOGGING_RULES"), "qt.text.font.db=false")
+
+    def test_configure_qt_logging_preserves_existing_rules(self):
+        with mock.patch.dict(os.environ, {"QT_LOGGING_RULES": "qt.network.ssl.warning=true"}, clear=False):
+            agent_cli._configure_qt_logging()
+            self.assertEqual(
+                os.environ.get("QT_LOGGING_RULES"),
+                "qt.network.ssl.warning=true;qt.text.font.db=false",
+            )
+
     def test_submit_request_uses_controller_and_clears_editor(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window.composer.setPlainText("Собери summary")
@@ -249,6 +271,80 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(self.controller.start_calls, ["Сделай задачу"])
         self.assertEqual(self.window.composer.toPlainText(), "")
+
+    def test_composer_paste_single_line_text_drops_trailing_newline(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.setPlainText("Открой ")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+
+        mime = QMimeData()
+        mime.setText("core/nodes.py\r\n")
+        self.window.composer.insertFromMimeData(mime)
+
+        self.assertEqual(self.window.composer.toPlainText(), "Открой core/nodes.py")
+
+    def test_composer_paste_single_line_text_drops_leading_and_trailing_newlines(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.setPlainText("Открой ")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+
+        mime = QMimeData()
+        mime.setText("\r\ncore/nodes.py\r\n")
+        self.window.composer.insertFromMimeData(mime)
+
+        self.assertEqual(self.window.composer.toPlainText(), "Открой core/nodes.py")
+
+    def test_composer_paste_multiline_text_keeps_newlines(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.setPlainText("Список:\n")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+
+        mime = QMimeData()
+        mime.setText("first.py\nsecond.py\n")
+        self.window.composer.insertFromMimeData(mime)
+
+        self.assertEqual(self.window.composer.toPlainText(), "Список:\nfirst.py\nsecond.py\n")
+
+    def test_copy_safe_plain_text_edit_copies_plain_text_without_hidden_paragraph_breaks(self):
+        editor = CopySafePlainTextEdit()
+        editor.setPlainText("alpha.py")
+        editor.selectAll()
+        editor.copy()
+
+        self.assertEqual(QApplication.clipboard().text(), "alpha.py")
+
+    def test_copy_safe_plain_text_edit_strips_spurious_edge_newlines_for_single_line_selection(self):
+        editor = CopySafePlainTextEdit()
+        editor.setPlainText("\nalpha.py\n")
+        cursor = editor.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        editor.setTextCursor(cursor)
+
+        mime = editor.createMimeDataFromSelection()
+
+        self.assertEqual(mime.text(), "alpha.py")
+
+    def test_auto_text_browser_copy_normalizes_qt_paragraph_separators(self):
+        browser = AutoTextBrowser()
+        browser.setMarkdown("first line\n\nsecond line")
+        cursor = browser.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        browser.setTextCursor(cursor)
+
+        browser.copy()
+
+        self.assertEqual(QApplication.clipboard().text(), "first line\nsecond line")
+
+    def test_auto_text_browser_copy_strips_spurious_edge_newlines_for_single_line_selection(self):
+        browser = AutoTextBrowser()
+        browser.setMarkdown("alpha.py")
+        cursor = browser.textCursor()
+        cursor.select(QTextCursor.SelectionType.Document)
+        browser.setTextCursor(cursor)
+
+        mime = browser.createMimeDataFromSelection()
+
+        self.assertEqual(mime.text(), "alpha.py")
 
     def test_composer_history_navigation_works_when_empty_and_dedupes_adjacent_entries(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -531,10 +627,17 @@ class GuiUxTests(unittest.TestCase):
         self.assertNotIn("--- ", rendered_diff)
         self.assertNotIn("+++ ", rendered_diff)
         self.assertNotIn("@@ ", rendered_diff)
+        full_width_selections = tool_card.diff_section.content.editor.extraSelections()
+        self.assertEqual(len(full_width_selections), 2)
+        self.assertTrue(all(bool(sel.format.property(QTextFormat.FullWidthSelection)) for sel in full_width_selections))
+        selection_colors = {sel.format.background().color().name().lower() for sel in full_width_selections}
+        self.assertEqual(selection_colors, {"#1e3425", "#472b2b"})
         tool_card.tool_button.click()
         self._process_events()
         self.assertTrue(tool_card.tool_button.isChecked())
         self.assertFalse(tool_card.args_container.isHidden())
+        self.assertIn("Success", tool_card.args_view.toPlainText())
+        self.assertNotIn('"path"', tool_card.args_view.toPlainText())
 
     def test_cli_exec_renders_live_terminal_panel_and_streams_output(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -716,10 +819,79 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         tool_card = self.window.current_turn.tool_cards["call-cli-finish"]
-        self.assertFalse(tool_card.tool_button.isChecked())
+        self.assertTrue(tool_card.tool_button.isChecked())
         self.assertIsNotNone(tool_card.cli_exec_widget)
-        self.assertTrue(tool_card.cli_exec_widget.isHidden())
+        self.assertFalse(tool_card.cli_exec_widget.isHidden())
         self.assertIn("done", tool_card.cli_exec_widget.output_view.toPlainText())
+        self._wait_for_gui(950)
+        self.assertFalse(tool_card.tool_button.isChecked())
+        self.assertTrue(tool_card.cli_exec_widget.isHidden())
+
+    def test_cli_exec_finish_collapses_even_if_user_kept_card_open(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Запусти команду"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-cli-finish-open",
+                    "name": "cli_exec",
+                    "args": {"command": "echo done"},
+                    "display": 'cli_exec("echo done")',
+                },
+            )
+        )
+        self._process_events()
+
+        tool_card = self.window.current_turn.tool_cards["call-cli-finish-open"]
+        self.assertTrue(tool_card.tool_button.isChecked())
+        self.assertFalse(tool_card.cli_exec_widget.isHidden())
+
+        # User toggles while running; finish still auto-collapses by policy.
+        tool_card.tool_button.click()
+        self._process_events()
+        self.assertTrue(tool_card.cli_exec_widget.isHidden())
+        tool_card.tool_button.click()
+        self._process_events()
+        self.assertFalse(tool_card.cli_exec_widget.isHidden())
+
+        self.window._handle_event(
+            StreamEvent("tool_finished", {"tool_id": "call-cli-finish-open", "name": "cli_exec", "content": "done\n"})
+        )
+        self._process_events()
+
+        self.assertTrue(tool_card.tool_button.isChecked())
+        self.assertFalse(tool_card.cli_exec_widget.isHidden())
+        self._wait_for_gui(950)
+        self.assertFalse(tool_card.tool_button.isChecked())
+        self.assertTrue(tool_card.cli_exec_widget.isHidden())
+
+    def test_cli_exec_long_running_finishes_without_extra_delay(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Запусти команду"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-cli-long",
+                    "name": "cli_exec",
+                    "args": {"command": "echo done"},
+                    "display": 'cli_exec("echo done")',
+                },
+            )
+        )
+        self._process_events()
+
+        tool_card = self.window.current_turn.tool_cards["call-cli-long"]
+        tool_card._cli_started_at_monotonic = time.monotonic() - 1.2
+
+        self.window._handle_event(
+            StreamEvent("tool_finished", {"tool_id": "call-cli-long", "name": "cli_exec", "content": "done\n"})
+        )
+        self._process_events()
+
+        self.assertFalse(tool_card.tool_button.isChecked())
+        self.assertTrue(tool_card.cli_exec_widget.isHidden())
 
     def test_cli_exec_restored_from_transcript_is_collapsed(self):
         payload = self._snapshot_payload()
@@ -772,8 +944,111 @@ class GuiUxTests(unittest.TestCase):
         )
 
         tool_card = self.window.current_turn.tool_cards["call-err"]
-        self.assertIsNotNone(tool_card.output_section)
-        self.assertFalse(tool_card.output_section.toggle_button.isChecked())
+        self.assertFalse(tool_card.tool_button.isChecked())
+        self.assertTrue(tool_card.args_container.isHidden())
+        tool_card.tool_button.click()
+        self._process_events()
+        self.assertIn("error[access_denied]", tool_card.args_view.toPlainText().lower())
+
+    def test_cli_exec_error_meta_is_marked_for_error_styling(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Почини"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_finished",
+                {
+                    "tool_id": "call-cli-err",
+                    "name": "cli_exec",
+                    "args": {"command": "python bad.py"},
+                    "content": "boom",
+                    "is_error": True,
+                    "duration": 0.4,
+                },
+            )
+        )
+
+        tool_card = self.window.current_turn.tool_cards["call-cli-err"]
+        self.assertIsNotNone(tool_card.cli_exec_widget)
+        self.assertEqual(tool_card.cli_exec_widget.meta_label.property("severity"), "error")
+        self.assertTrue(tool_card.cli_exec_widget.meta_label.text().lower().startswith("error"))
+
+    def test_hidden_internal_notice_renders_as_notice_without_assistant_block(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Проверь остановку"}))
+        self.window._handle_event(
+            StreamEvent(
+                "summary_notice",
+                {
+                    "kind": "agent_internal_notice",
+                    "message": "Автоматическое продолжение остановлено. Нужен новый запрос.",
+                    "level": "warning",
+                },
+            )
+        )
+
+        self.assertEqual(self.window.current_turn.block_kinds(), ["user", "notice"])
+        notice = self.window.current_turn.layout().itemAt(1).widget()
+        self.assertEqual(notice.text_label.text(), "Автоматическое продолжение остановлено. Нужен новый запрос.")
+
+    def test_tool_args_missing_diagnostic_is_not_shown_in_transcript(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Проверь list_directory"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_args_missing",
+                {
+                    "tool_id": "call-dir",
+                    "name": "list_directory",
+                    "message": "No canonical tool args were available when tool result arrived.",
+                },
+            )
+        )
+
+        self.assertEqual(self.window.current_turn.block_kinds(), ["user"])
+
+    def test_cli_exec_display_strips_ansi_sequences(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Проверь ansi"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-cli-ansi",
+                    "name": "cli_exec",
+                    "args": {"command": "bad-command"},
+                    "display": 'cli_exec("bad-command")',
+                },
+            )
+        )
+        self.window._handle_event(
+            StreamEvent(
+                "cli_output",
+                {
+                    "tool_id": "call-cli-ansi",
+                    "stream": "stderr",
+                    "data": "\u001b[31mboom\u001b[0m\n",
+                },
+            )
+        )
+        self.window._handle_event(
+            StreamEvent(
+                "tool_finished",
+                {
+                    "tool_id": "call-cli-ansi",
+                    "name": "cli_exec",
+                    "args": {"command": "bad-command"},
+                    "content": "\u001b[31mboom\u001b[0m\n",
+                    "is_error": True,
+                    "duration": 0.3,
+                },
+            )
+        )
+
+        tool_card = self.window.current_turn.tool_cards["call-cli-ansi"]
+        self.assertIsNotNone(tool_card.cli_exec_widget)
+        rendered = tool_card.cli_exec_widget.output_view.toPlainText()
+        self.assertEqual(rendered, "boom\n")
+        self.assertNotIn("\u001b", rendered)
 
     def test_run_finished_renders_plain_stats_chip(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -837,7 +1112,7 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(user_widget.bubble.styleSheet(), "")
         self.assertIn("QFrame#UserBubble", self.window.styleSheet())
-        self.assertIn("border-radius: 12px", self.window.styleSheet())
+        self.assertIn("border-radius: 0px", self.window.styleSheet())
 
     def test_long_user_message_is_collapsible(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1095,6 +1370,28 @@ class GuiUxTests(unittest.TestCase):
         dialog._save_and_accept()
         result = dialog.result_payload()
         self.assertEqual(result["profiles"][0]["id"], "gpt-oss-120b")
+
+    def test_model_settings_dialog_updates_auto_name_when_model_changes(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "openai/gpt-4o",
+                    "api_key": "sk-demo",
+                    "base_url": "https://api.openai.com/v1",
+                }
+            ],
+        }
+        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        self._process_events()
+
+        dialog.model_edit.setText("openai/gpt-oss-120b")
+        self._process_events()
+
+        self.assertEqual(dialog.name_edit.text(), "gpt-oss-120b")
 
     def test_model_settings_dialog_disables_base_url_for_gemini(self):
         payload = {

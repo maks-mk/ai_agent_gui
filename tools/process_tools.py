@@ -180,14 +180,26 @@ def find_process_by_port(port: int) -> str:
     try:
         if psutil is None:
             return format_error(ErrorType.CONFIG, "psutil is required for process inspection tools.")
-        for proc in psutil.process_iter(['pid', 'name', 'connections']):
-            try:
-                for conn in proc.connections(kind='inet'):
-                    if conn.laddr.port == port:
-                        return f"Found process '{proc.name()}' (PID: {proc.pid}) on port {port}."
-            except (psutil.AccessDenied, psutil.ZombieProcess):
+        for conn in psutil.net_connections(kind="inet"):
+            laddr = getattr(conn, "laddr", None)
+            pid = getattr(conn, "pid", None)
+            if not laddr or pid is None:
                 continue
-        return format_error(ErrorType.NOT_FOUND, f"No process found listening on port {port}.")
+            try:
+                local_port = laddr.port  # psutil _common.addr on most versions
+            except Exception:
+                # Older psutil may return tuple(host, port)
+                local_port = laddr[1] if isinstance(laddr, tuple) and len(laddr) > 1 else None
+            if local_port != port:
+                continue
+            try:
+                proc = psutil.Process(pid)
+                process_name = proc.name()
+            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+                process_name = "unknown"
+            return f"Found process '{process_name}' (PID: {pid}) on port {port}."
+        # Port is free -> valid inspection result, not an execution error.
+        return f"No process found listening on port {port}."
     except Exception as e:
         return format_error(ErrorType.EXECUTION, f"Error searching process: {e}")
 

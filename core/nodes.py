@@ -1,6 +1,9 @@
 import uuid
 import asyncio
+import hashlib
+import json
 import logging
+import re
 import time
 from contextlib import nullcontext
 from copy import deepcopy
@@ -10,6 +13,7 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from langchain_core.messages import (
     AIMessage,
+    AIMessageChunk,
     BaseMessage,
     HumanMessage,
     RemoveMessage,
@@ -26,11 +30,22 @@ from core import constants
 from core.run_logger import JsonlRunLogger
 from core.tool_policy import ToolMetadata, default_tool_metadata
 from core.tool_results import parse_tool_execution_result
-from core.validation import validate_tool_result
 from core.utils import truncate_output
 from core.errors import format_error, ErrorType
+from core.message_context import MessageContextHelper
+from core.policy_engine import PolicyEngine, classify_shell_command
 from core.message_utils import compact_text, is_error_text, stringify_content
+from core.self_correction_engine import RepairPlan, build_repair_plan, normalize_tool_args, repair_fingerprint
 from core.text_utils import format_exception_friendly
+from core.context_builder import ContextBuilder
+from core.recovery_manager import RecoveryManager
+from core.summarize_policy import (
+    choose_summary_boundary,
+    estimate_tokens,
+    format_history_for_summary,
+    should_summarize,
+)
+from core.tool_executor import ToolExecutor
 
 
 class ProviderContextError(RuntimeError):
@@ -47,9 +62,15 @@ class AgentNodes:
         "tools",
         "llm_with_tools",
         "tools_map",
+        "_all_tool_names",
         "tool_metadata",
         "run_logger",
         "_cached_base_prompt",
+        "message_context",
+        "policy_engine",
+        "context_builder",
+        "recovery_manager",
+        "tool_executor",
     )
 
     # Only these tools are allowed to run in parallel in a single tool-call batch.
@@ -91,7 +112,8 @@ class AgentNodes:
     # Planning/reasoning tools are helpful, but can easily create oscillation when
     # the model keeps "thinking" instead of switching to concrete actions.
     PLANNING_TOOL_NAMES = frozenset({"sequentialthinking", "sequential-thinking", "sequential_thinking"})
-    PLANNING_TOOL_MAX_CALLS_PER_TURN = 2
+    PLANNING_TOOL_MAX_CALLS_PER_TURN = 4
+    PROVIDER_SAFE_TOOL_CALL_ID_RE = re.compile(r"^[A-Za-z0-9]{9}$")
 
     def __init__(
         self,
@@ -109,11 +131,29 @@ class AgentNodes:
 
         # Оптимизация: O(1) доступ к инструментам вместо O(N) перебора списка
         self.tools_map = {t.name: t for t in tools}
+        self._all_tool_names = tuple(self.tools_map.keys())
         self.tool_metadata = tool_metadata or {}
         self.run_logger = run_logger
+        self.message_context = MessageContextHelper()
+        self.policy_engine = PolicyEngine()
+        self.recovery_manager = RecoveryManager()
 
         # Оптимизация: кэширование базового промпта (чтобы не читать с диска на каждый шаг)
         self._cached_base_prompt: Optional[str] = None
+        self.context_builder = ContextBuilder(
+            config=config,
+            prompt_loader=self._get_base_prompt,
+            is_internal_retry=self._is_internal_retry_message,
+            log_run_event=self._log_run_event,
+            recovery_message_builder=self.recovery_manager.build_recovery_system_message,
+            provider_safe_tool_call_id_re=self.PROVIDER_SAFE_TOOL_CALL_ID_RE,
+        )
+        self.tool_executor = ToolExecutor(
+            config=config,
+            metadata_for_tool=self._metadata_for_tool,
+            log_run_event=self._log_run_event,
+            workspace_boundary_violated=self._workspace_boundary_violated,
+        )
 
     def _log_run_event(self, state: AgentState | None, event_type: str, **payload: Any) -> None:
         if not self.run_logger:
@@ -217,33 +257,75 @@ class AgentNodes:
         metadata = self._metadata_for_tool(tool_name)
         return metadata.read_only and not metadata.mutating and not metadata.destructive
 
-    def _tool_requires_approval(self, tool_name: str) -> bool:
+    def _effective_tool_metadata(self, tool_name: str, tool_args: Dict[str, Any] | None = None) -> ToolMetadata:
+        metadata = self._metadata_for_tool(tool_name)
+        if self._normalize_tool_name(tool_name) != "cli_exec":
+            return metadata
+
+        command = str(((tool_args or {}).get("command")) or "").strip()
+        if not command:
+            return metadata
+
+        profile = classify_shell_command(command)
+        return ToolMetadata(
+            name=metadata.name,
+            read_only=metadata.read_only,
+            mutating=bool(metadata.mutating or profile.get("mutating") or profile.get("long_running_service")),
+            destructive=bool(metadata.destructive or profile.get("destructive")),
+            requires_approval=bool(metadata.requires_approval or profile.get("destructive")),
+            networked=bool(metadata.networked or profile.get("network_diagnostic") or profile.get("http_probe")),
+            source=metadata.source,
+        )
+
+    def _tool_requires_approval(self, tool_name: str, tool_args: Dict[str, Any] | None = None) -> bool:
+        """Approval gate: only destructive/HITL actions should interrupt the graph."""
         if not self.config.enable_approvals:
             return False
-        metadata = self._metadata_for_tool(tool_name)
-        return metadata.requires_approval or metadata.destructive or metadata.mutating
+        metadata = self._effective_tool_metadata(tool_name, tool_args)
+        return metadata.requires_approval or metadata.destructive
+
+    def _tool_error_requires_recovery_gate(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        parsed_result,
+    ) -> bool:
+        return self.tool_executor._tool_error_requires_recovery_gate(tool_name, tool_args, parsed_result)
+
+    def _maybe_build_open_tool_issue(
+        self,
+        *,
+        state: AgentState,
+        current_turn_id: int,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        parsed_result,
+        content: str,
+        issue_details: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any] | None:
+        return self.tool_executor._build_open_tool_issue(
+            state=state,
+            current_turn_id=current_turn_id,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            parsed_result=parsed_result,
+            content=content,
+            issue_details=issue_details,
+        )
 
     def tool_calls_require_approval(self, tool_calls: List[Dict[str, Any]]) -> bool:
-        return any(self._tool_requires_approval((tool_call.get("name") or "unknown_tool")) for tool_call in tool_calls)
+        return any(
+            self._tool_requires_approval(
+                (tool_call.get("name") or "unknown_tool"),
+                tool_call.get("args") or {},
+            )
+            for tool_call in tool_calls
+        )
 
     # --- NODE: SUMMARIZE ---
 
     def _estimate_tokens(self, messages: List[BaseMessage]) -> int:
-        """Грубая оценка токенов входящего контекста: сумма символов / 2.
-        Учитывает как текстовый контент, так и аргументы вызовов инструментов."""
-        total_chars = 0
-        for m in messages:
-            # 1. Текстовый контент (строка или мультимодальный список)
-            content = m.content
-            if isinstance(content, list):
-                content = " ".join(str(part) for part in content)
-            total_chars += len(str(content))
-
-            # 2. Вызовы инструментов (JSON аргументы от LLM могут быть огромными)
-            if hasattr(m, "tool_calls") and m.tool_calls:
-                total_chars += sum(len(str(tc)) for tc in m.tool_calls)
-
-        return total_chars // 2
+        return estimate_tokens(messages)
 
     async def summarize_node(self, state: AgentState):
         messages = state["messages"]
@@ -260,7 +342,7 @@ class AgentNodes:
             has_summary=bool(summary),
         )
 
-        if estimated_tokens <= self.config.summary_threshold:
+        if not should_summarize(messages, threshold=self.config.summary_threshold):
             self._log_node_end(
                 state,
                 "summarize",
@@ -273,13 +355,7 @@ class AgentNodes:
         logger.debug(f"📊 Context size: ~{estimated_tokens} tokens. Summarizing...")
 
         # Determine cut-off point
-        idx = max(0, len(messages) - self.config.summary_keep_last)
-
-        # Try to find a clean break at a HumanMessage
-        for scan_idx in range(idx, len(messages)):
-            if isinstance(messages[scan_idx], HumanMessage):
-                idx = scan_idx
-                break
+        idx = choose_summary_boundary(messages, keep_last=self.config.summary_keep_last)
 
         to_summarize = messages[:idx]
 
@@ -345,11 +421,7 @@ class AgentNodes:
             return {}
 
     def _format_history_for_summary(self, messages: List[BaseMessage]) -> str:
-        return "\n".join(
-            f"{m.type}: {str(m.content)[:500]}{'... [truncated]' if len(str(m.content)) > 500 else ''}"
-            for m in messages
-            if not self._is_internal_retry_message(m)
-        )
+        return format_history_for_summary(messages, is_internal_retry=self._is_internal_retry_message)
 
     def _is_internal_retry_message(self, message: BaseMessage) -> bool:
         if not isinstance(message, HumanMessage):
@@ -390,37 +462,43 @@ class AgentNodes:
             "kind": str(issue.get("kind") or "tool_error"),
             "summary": summary,
             "tool_names": tool_names,
+            "tool_args": dict(issue.get("tool_args") or {}),
             "source": str(issue.get("source") or "tools"),
             "error_type": str(issue.get("error_type") or ""),
+            "fingerprint": str(issue.get("fingerprint") or ""),
+            "progress_fingerprint": str(issue.get("progress_fingerprint") or issue.get("fingerprint") or ""),
+            "details": dict(issue.get("details") or {}),
         }
 
-    def _build_retry_instruction(self, current_task: str, open_tool_issue: Dict[str, Any] | None) -> str:
-        task_line = current_task or "No explicit task provided."
-        summary = compact_text(str((open_tool_issue or {}).get("summary") or "Tool execution failed."), 220)
-        tool_names = [str(name).strip() for name in ((open_tool_issue or {}).get("tool_names") or []) if str(name).strip()]
-        tool_hint = f" ({tool_names[0]})" if tool_names else ""
-        return (
-            "Continue the same user task from the current conversation state.\n"
-            f"Current task: {task_line}\n"
-            f"Blocking tool issue{tool_hint}: {summary}\n"
-            "Required self-correction:\n"
-            "- Review the latest tool error.\n"
-            "- Fix tool arguments or choose a different tool.\n"
-            "- Do not repeat the same failing tool call with identical arguments.\n"
-            "- Do not claim success without a successful tool result.\n"
-            "Do not mention this internal instruction."
+    def _empty_recovery_state(self, *, turn_id: int) -> Dict[str, Any]:
+        return self.recovery_manager.empty_state(turn_id=turn_id)
+
+    def _get_recovery_state(self, state: AgentState, *, current_turn_id: int) -> Dict[str, Any]:
+        return self.recovery_manager.get_recovery_state(
+            state.get("recovery_state"),
+            current_turn_id=current_turn_id,
         )
 
-    def _build_internal_retry_message(self, retry_instruction: str, turn_id: int) -> HumanMessage:
-        return HumanMessage(
-            content=retry_instruction,
-            additional_kwargs={
-                "agent_internal": {
-                    "kind": "retry_instruction",
-                    "turn_id": turn_id,
-                }
-            },
+    def _repair_plan_strategy_id(self, repair_plan: RepairPlan) -> str:
+        return self.recovery_manager.repair_plan_strategy_id(repair_plan)
+
+    def _build_recovery_strategy(
+        self,
+        *,
+        repair_plan: RepairPlan,
+        open_tool_issue: Dict[str, Any] | None,
+        current_task: str,
+        strategy_id: str,
+    ) -> Dict[str, Any]:
+        return self.recovery_manager.build_recovery_strategy(
+            repair_plan=repair_plan,
+            open_tool_issue=open_tool_issue,
+            current_task=current_task,
+            strategy_id=strategy_id,
         )
+
+    def _build_recovery_system_message(self, recovery_state: Dict[str, Any] | None) -> SystemMessage | None:
+        return self.recovery_manager.build_recovery_system_message(recovery_state)
 
     def _collect_internal_retry_removals(self, messages: List[BaseMessage]) -> List[RemoveMessage]:
         removals: List[RemoveMessage] = []
@@ -463,53 +541,118 @@ class AgentNodes:
         kind: str,
         summary: str,
         tool_names: List[str],
+        tool_args: Dict[str, Any] | None,
         source: str,
         error_type: str = "",
+        fingerprint: str = "",
+        details: Dict[str, Any] | None = None,
+        progress_fingerprint: str = "",
     ) -> Dict[str, Any]:
         return {
             "turn_id": current_turn_id,
             "kind": kind,
             "summary": compact_text(summary.strip(), 320),
             "tool_names": [name for name in tool_names if name],
+            "tool_args": deepcopy(tool_args) if isinstance(tool_args, dict) else {},
             "source": source,
             "error_type": error_type.strip().upper(),
+            "fingerprint": str(fingerprint or "").strip(),
+            "progress_fingerprint": str(progress_fingerprint or fingerprint or "").strip(),
+            "details": deepcopy(details) if isinstance(details, dict) else {},
         }
+
+    def _iter_path_like_targets(self, tool_args: Dict[str, Any]) -> List[Tuple[str, str]]:
+        if not isinstance(tool_args, dict):
+            return []
+        targets: List[Tuple[str, str]] = []
+        for key in ("path", "file_path", "dir_path", "source", "destination", "cwd"):
+            raw_value = tool_args.get(key)
+            if isinstance(raw_value, str) and raw_value.strip():
+                targets.append((key, raw_value.strip()))
+        return targets
+
+    def _tool_mutates_workspace(self, tool_name: str) -> bool:
+        metadata = self._metadata_for_tool(tool_name)
+        return metadata.mutating or metadata.destructive
+
+    def _workspace_boundary_violated(self, tool_name: str, tool_args: Dict[str, Any]) -> bool:
+        if not self._tool_mutates_workspace(tool_name):
+            return False
+
+        if tool_name == "run_background_process":
+            try:
+                from tools import process_tools
+
+                process_tools._resolve_cwd(str((tool_args or {}).get("cwd") or "."))
+                return False
+            except Exception:
+                return True
+
+        path_targets = self._iter_path_like_targets(tool_args)
+        if not path_targets:
+            return False
+
+        try:
+            from tools.filesystem import fs_manager
+        except Exception:
+            return False
+
+        for _, raw_value in path_targets:
+            try:
+                fs_manager._resolve_path(raw_value)
+            except Exception:
+                return True
+        return False
+
+    def _build_open_tool_issue_details(
+        self,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        parsed_result,
+        issue_details: Dict[str, Any] | None = None,
+    ) -> Dict[str, Any]:
+        details = deepcopy(issue_details) if isinstance(issue_details, dict) else {}
+        missing_fields = [
+            str(field).strip()
+            for field in (details.get("missing_required_fields") or [])
+            if str(field).strip()
+        ]
+        if missing_fields:
+            details["missing_required_fields"] = missing_fields
+        if str(parsed_result.error_type or "").strip().upper() == "LOOP_DETECTED":
+            details["loop_detected"] = True
+        details["safety_violation"] = bool(
+            details.get("safety_violation") or self._workspace_boundary_violated(tool_name, tool_args)
+        )
+        return details
 
     def _merge_open_tool_issues(
         self,
         issues: List[Dict[str, Any]],
         current_turn_id: int,
     ) -> Dict[str, Any] | None:
-        if not issues:
-            return None
+        return self.tool_executor.merge_issues(issues, current_turn_id=current_turn_id)
 
-        summaries: List[str] = []
-        tool_names: List[str] = []
-        kind = "tool_error"
-        source = "tools"
-        error_type = ""
-        for issue in issues:
-            summary = str(issue.get("summary", "")).strip()
-            if summary and summary not in summaries:
-                summaries.append(summary)
-            for tool_name in issue.get("tool_names") or []:
-                tool_name = str(tool_name).strip()
-                if tool_name and tool_name not in tool_names:
-                    tool_names.append(tool_name)
-            issue_error_type = str(issue.get("error_type") or "").strip().upper()
-            if issue_error_type and not error_type:
-                error_type = issue_error_type
-            if issue.get("kind") == "approval_denied":
-                kind = "approval_denied"
-                source = "approval"
+    def _current_turn_has_tool_evidence(self, messages: List[BaseMessage]) -> bool:
+        return self.message_context.current_turn_has_tool_evidence(
+            messages,
+            self._is_internal_retry_message,
+        )
 
-        return self._build_open_tool_issue(
-            current_turn_id=current_turn_id,
-            kind=kind,
-            summary=" | ".join(summaries[:3]),
-            tool_names=tool_names,
-            source=source,
-            error_type=error_type,
+    def _log_interrupted_tool_result_if_needed(
+        self,
+        state: AgentState,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+        tool_call_id: str,
+        parsed_result,
+    ) -> None:
+        self.tool_executor._log_interrupted_tool_result_if_needed(
+            state=state,
+            tool_name=tool_name,
+            tool_args=tool_args,
+            tool_call_id=tool_call_id,
+            parsed_result=parsed_result,
         )
 
     def _build_agent_context(
@@ -518,61 +661,65 @@ class AgentNodes:
         summary: str,
         current_task: str,
         tools_available: bool,
+        active_tool_names: List[str],
         open_tool_issue: Dict[str, Any] | None,
+        recovery_state: Dict[str, Any] | None = None,
         state: AgentState | None = None,
     ) -> List[BaseMessage]:
-        sanitized_messages = self._sanitize_messages_for_model(messages, state=state)
-        full_context: List[BaseMessage] = [
-            self._build_system_message(summary, tools_available=tools_available)
-        ]
-        safety_overlay = self._build_safety_overlay(tools_available=tools_available)
-        if safety_overlay:
-            full_context.append(SystemMessage(content=safety_overlay))
-        issue_message = self._build_tool_issue_system_message(open_tool_issue)
-        if issue_message:
-            full_context.append(issue_message)
-        full_context.extend(sanitized_messages)
-        return full_context
+        return self.context_builder.build(
+            messages,
+            state,
+            summary=summary,
+            current_task=current_task,
+            tools_available=tools_available,
+            active_tool_names=active_tool_names,
+            open_tool_issue=open_tool_issue,
+            recovery_state=recovery_state,
+        )
+
+    def _normalize_system_prefix_for_provider(
+        self,
+        context: List[BaseMessage],
+    ) -> List[BaseMessage]:
+        return self.context_builder.normalize_system_prefix(context)
+
+    def _message_role_for_provider(self, message: BaseMessage) -> str:
+        return self.context_builder._message_role_for_provider(message)
+
+    def _message_is_provider_system(self, message: BaseMessage) -> bool:
+        return self.context_builder.message_is_provider_system(message)
+
+    def _is_provider_safe_tool_call_id(self, tool_call_id: str) -> bool:
+        return bool(self.PROVIDER_SAFE_TOOL_CALL_ID_RE.fullmatch(str(tool_call_id or "").strip()))
+
+    def _normalize_tool_call_id_for_provider(self, tool_call_id: str, *, used_ids: set[str]) -> str:
+        return self.context_builder._normalize_tool_call_id_for_provider(tool_call_id, used_ids=used_ids)
 
     def _sanitize_messages_for_model(
         self,
         messages: List[BaseMessage],
         state: AgentState | None = None,
     ) -> List[BaseMessage]:
-        sanitized: List[BaseMessage] = []
-        for message in messages:
-            if isinstance(message, HumanMessage):
-                content = stringify_content(message.content).strip()
-                if content == constants.REFLECTION_PROMPT:
-                    continue
-                last_visible = self._get_last_model_visible_message(sanitized)
-                if isinstance(last_visible, ToolMessage):
-                    # Some OpenAI-compatible providers reject `tool -> user` transitions.
-                    # Insert a lightweight assistant bridge before the user turn.
-                    sanitized.append(
-                        AIMessage(
-                            content=(
-                                "Acknowledged previous tool output. "
-                                "Continuing with the next user instruction."
-                            )
-                        )
-                    )
-                    self._log_run_event(
-                        state,
-                        "provider_role_order_bridge",
-                        run_id=None if state is None else state.get("run_id", ""),
-                        reason="user_after_tool",
-                    )
-            sanitized.append(message)
-        return sanitized
+        return self.context_builder.sanitize_messages(messages, state=state)
 
     def _build_safety_overlay(self, tools_available: bool) -> str:
         if not tools_available:
             return ""
         overlay_lines: List[str] = []
+        
+        overlay_lines.append(
+        "MANDATORY: Before EVERY tool call, you MUST write 1-2 short sentences "
+        "in plain text describing what you are about to do. "
+        "A response that starts directly with a tool call (no text) is a protocol violation."
+        )
+
+        overlay_lines.append(
+            "SAFETY POLICY: Any write, delete, move, or process-launch working directory must stay inside the active workspace."
+        )
+
         if self.config.enable_approvals:
             overlay_lines.append(
-                "SAFETY POLICY: Mutating or destructive tools may require explicit user approval before execution."
+                "LEGACY POLICY: Some protected tools may still request explicit approval when approvals are enabled."
             )
         if self.config.enable_shell_tool:
             overlay_lines.append(
@@ -588,6 +735,7 @@ class AgentNodes:
         turn_id: int,
         messages: List[BaseMessage],
         open_tool_issue: Dict[str, Any] | None = None,
+        recovery_state: Dict[str, Any] | None = None,
     ) -> Dict[str, Any]:
         token_usage_update = {}
         if getattr(response, "usage_metadata", None):
@@ -626,15 +774,6 @@ class AgentNodes:
                     id=response.id,
                 )
                 has_tool_calls = False
-            elif has_tool_calls and self._open_tool_issue_requires_user_input(open_tool_issue):
-                response = AIMessage(
-                    content=self._build_tool_issue_handoff_text(open_tool_issue),
-                    additional_kwargs=response.additional_kwargs,
-                    response_metadata=response.response_metadata,
-                    usage_metadata=response.usage_metadata,
-                    id=response.id,
-                )
-                has_tool_calls = False
 
         outbound_messages.append(response)
 
@@ -643,7 +782,7 @@ class AgentNodes:
             "turn_id": turn_id,
             "current_task": current_task,
             "turn_outcome": "run_tools" if has_tool_calls else "",
-            "retry_instruction": "",
+            "recovery_state": recovery_state,
             "pending_approval": None,
             "open_tool_issue": open_tool_issue,
             "has_protocol_error": bool(protocol_error),
@@ -695,6 +834,7 @@ class AgentNodes:
         current_task = state.get("current_task") or self._derive_current_task(messages)
         current_turn_id = self._current_turn_id(state, messages)
         open_tool_issue = self._get_active_open_tool_issue(state, messages, current_turn_id)
+        recovery_state = self._get_recovery_state(state, current_turn_id=current_turn_id)
         self._log_run_event(
             state,
             "agent_node_start",
@@ -703,19 +843,52 @@ class AgentNodes:
             current_task=current_task,
         )
 
-        tools_available = bool(self.tools) and self.config.model_supports_tools
+        active_tool_names = list(self._all_tool_names) if self.config.model_supports_tools else []
+        llm_for_turn = self.llm_with_tools if active_tool_names else self.llm
+        tools_available = bool(active_tool_names)
+        turn_policy = self.policy_engine.evaluate_turn(
+            task=current_task,
+            messages=messages,
+            current_turn_id=current_turn_id,
+            is_internal_retry=self._is_internal_retry_message,
+        )
+        inspect_only_turn = turn_policy.inspect_only
+        operational_evidence_required = turn_policy.requires_operational_evidence
+        current_turn_has_tool_evidence = self._current_turn_has_tool_evidence(messages)
+        self._log_run_event(
+            state,
+            "intent_decision",
+            run_id=state.get("run_id", ""),
+            intent=turn_policy.intent,
+            inspect_only=inspect_only_turn,
+            requires_operational_evidence=operational_evidence_required,
+            should_force_tools=turn_policy.should_force_tools,
+            has_current_turn_evidence=current_turn_has_tool_evidence,
+            task_preview=compact_text(current_task, 180),
+        )
+        self._log_run_event(
+            state,
+            "policy_decision",
+            run_id=state.get("run_id", ""),
+            inspect_only=turn_policy.inspect_only,
+            requires_operational_evidence=turn_policy.requires_operational_evidence,
+            prefer_read_only_fallback=turn_policy.prefer_read_only_fallback,
+        )
         try:
+            validation_handoff_reason = ""
             full_context = self._build_agent_context(
                 messages,
                 summary,
                 current_task,
                 tools_available,
+                active_tool_names,
                 open_tool_issue,
+                recovery_state,
                 state=state,
             )
             self._assert_provider_safe_agent_context(full_context, state)
             response = await self._invoke_llm_with_retry(
-                self.llm_with_tools,
+                llm_for_turn,
                 full_context,
                 state=state,
                 node_name="agent",
@@ -727,6 +900,7 @@ class AgentNodes:
                 current_turn_id,
                 messages,
                 open_tool_issue=open_tool_issue,
+                recovery_state=recovery_state,
             )
             tool_calls_count = len(getattr(response, "tool_calls", []) or [])
             self._log_run_event(
@@ -734,6 +908,8 @@ class AgentNodes:
                 "agent_node_end",
                 run_id=state.get("run_id", ""),
                 tool_calls=tool_calls_count,
+                active_tool_names=active_tool_names,
+                validation_handoff_reason=validation_handoff_reason,
                 content_preview=compact_text(stringify_content(response.content), 240),
             )
             self._log_node_end(
@@ -742,6 +918,8 @@ class AgentNodes:
                 node_timer,
                 tool_calls=tool_calls_count,
                 tools_available=tools_available,
+                active_tool_count=len(active_tool_names),
+                validation_handoff_reason=validation_handoff_reason,
                 has_open_tool_issue=bool(open_tool_issue),
             )
             return result
@@ -755,6 +933,195 @@ class AgentNodes:
                 has_open_tool_issue=bool(open_tool_issue),
             )
             raise
+
+    def _hard_loop_ceiling(self) -> int:
+        return max(
+            int(self.config.max_loops or 0) * 3,
+            int(self.config.self_correction_hard_ceiling or 0) * 2,
+        )
+
+    def _handle_pending_tool_budget_exhaustion(
+        self,
+        *,
+        current_task: str,
+        last_ai: AIMessage | None,
+    ) -> Dict[str, Any]:
+        return {
+            "completion_reason": "loop_budget_exhausted_pending_tool_call",
+            "turn_outcome": "finish_turn",
+            "handoff_message": self._build_loop_budget_handoff_text(
+                current_task=current_task,
+                tool_names=[
+                    str(tool_call.get("name") or "").strip()
+                    for tool_call in (getattr(last_ai, "tool_calls", []) or [])
+                    if str(tool_call.get("name") or "").strip()
+                ],
+            ),
+            "drop_trailing_tool_call": True,
+            "next_open_tool_issue": None,
+        }
+
+    def _handle_clean_turn(
+        self,
+        *,
+        state: AgentState,
+        last_message: BaseMessage | None,
+        next_recovery_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        next_recovery_state["active_issue"] = None
+        next_recovery_state["active_strategy"] = None
+        next_recovery_state["strategy_queue"] = []
+        next_recovery_state["external_blocker"] = None
+        if isinstance(last_message, ToolMessage):
+            next_recovery_state["last_successful_evidence"] = str(
+                state.get("last_tool_result") or stringify_content(last_message.content)
+            ).strip()
+            return {
+                "completion_reason": "tool_result_ready_for_agent",
+                "turn_outcome": "continue_agent",
+                "next_open_tool_issue": None,
+            }
+        return {
+            "completion_reason": "no_open_tool_issue",
+            "turn_outcome": "finish_turn",
+            "next_open_tool_issue": None,
+        }
+
+    def _handle_terminal_tool_issue(
+        self,
+        *,
+        open_tool_issue: Dict[str, Any],
+        repair_plan: RepairPlan,
+        next_recovery_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        next_recovery_state["active_issue"] = open_tool_issue
+        next_recovery_state["active_strategy"] = None
+        next_recovery_state["strategy_queue"] = []
+        next_recovery_state["external_blocker"] = {
+            "reason": repair_plan.terminal_reason or repair_plan.reason,
+            "issue_summary": str(open_tool_issue.get("summary", "")),
+        }
+        return {
+            "completion_reason": repair_plan.terminal_reason or "needs_external_input",
+            "turn_outcome": "finish_turn",
+            "next_open_tool_issue": None,
+            "handoff_message": self._build_tool_issue_handoff_text(open_tool_issue, repair_plan=repair_plan),
+        }
+
+    def _handle_recoverable_tool_issue(
+        self,
+        *,
+        current_task: str,
+        open_tool_issue: Dict[str, Any],
+        repair_plan: RepairPlan | None,
+        issue_fingerprint: str,
+        next_recovery_state: Dict[str, Any],
+    ) -> Dict[str, Any]:
+        progress_markers = [
+            str(item).strip()
+            for item in (next_recovery_state.get("progress_markers") or [])
+            if str(item).strip()
+        ]
+        if issue_fingerprint and issue_fingerprint not in progress_markers:
+            progress_markers.append(issue_fingerprint)
+        next_recovery_state["progress_markers"] = progress_markers
+
+        if not repair_plan:
+            repair_plan = RepairPlan(
+                strategy="llm_replan",
+                reason="missing_repair_plan",
+                fingerprint=issue_fingerprint or "missing-plan",
+                tool_name=str((open_tool_issue.get("tool_names") or ["unknown_tool"])[0]),
+                suggested_tool_name=str((open_tool_issue.get("tool_names") or ["unknown_tool"])[0]),
+                original_args=dict(open_tool_issue.get("tool_args") or {}),
+                patched_args=dict(open_tool_issue.get("tool_args") or {}),
+                notes="Recovery fallback: inspect recent tool output and choose the best next step.",
+                llm_guidance="Inspect the failure, gather more context, and continue with a different valid approach.",
+            )
+
+        strategy_id = self._repair_plan_strategy_id(repair_plan)
+        attempts_by_strategy = dict(next_recovery_state.get("attempts_by_strategy") or {})
+        attempt_count = int(attempts_by_strategy.get(strategy_id, 0) or 0) + 1
+        attempts_by_strategy[strategy_id] = attempt_count
+        next_recovery_state["attempts_by_strategy"] = attempts_by_strategy
+
+        llm_replans = [
+            str(item).strip()
+            for item in (next_recovery_state.get("llm_replan_attempted_for") or [])
+            if str(item).strip()
+        ]
+        strategy_payload = self._build_recovery_strategy(
+            repair_plan=repair_plan,
+            open_tool_issue=open_tool_issue,
+            current_task=current_task,
+            strategy_id=strategy_id,
+        )
+
+        if attempt_count == 1:
+            next_recovery_state["active_issue"] = open_tool_issue
+            next_recovery_state["active_strategy"] = None
+            next_recovery_state["strategy_queue"] = [strategy_payload]
+            next_recovery_state["external_blocker"] = None
+            return {
+                "completion_reason": f"recover_{repair_plan.strategy}",
+                "turn_outcome": "recover_agent",
+                "next_open_tool_issue": open_tool_issue,
+                "next_retry_count": attempt_count,
+                "next_fingerprint_history": list(progress_markers),
+            }
+
+        if repair_plan.strategy != "llm_replan" and issue_fingerprint and issue_fingerprint not in llm_replans:
+            llm_replans.append(issue_fingerprint)
+            next_recovery_state["llm_replan_attempted_for"] = llm_replans
+            llm_replan = RepairPlan(
+                strategy="llm_replan",
+                reason=f"{repair_plan.reason}_llm_replan",
+                fingerprint=repair_plan.fingerprint,
+                tool_name=repair_plan.tool_name,
+                suggested_tool_name=repair_plan.suggested_tool_name,
+                original_args=repair_plan.original_args,
+                patched_args=repair_plan.patched_args,
+                notes="Deterministic recovery did not clear the issue. Replan from repository state and recent tool output.",
+                llm_guidance="Do not stop. Replan using repository state, recent tool failures, and alternative verification or edit paths until you either succeed or hit a real external blocker.",
+                progress_fingerprint=repair_plan.progress_fingerprint,
+            )
+            llm_strategy_id = self._repair_plan_strategy_id(llm_replan)
+            attempts_by_strategy[llm_strategy_id] = int(attempts_by_strategy.get(llm_strategy_id, 0) or 0) + 1
+            next_recovery_state["attempts_by_strategy"] = attempts_by_strategy
+            next_recovery_state["active_issue"] = open_tool_issue
+            next_recovery_state["active_strategy"] = None
+            next_recovery_state["strategy_queue"] = [
+                self._build_recovery_strategy(
+                    repair_plan=llm_replan,
+                    open_tool_issue=open_tool_issue,
+                    current_task=current_task,
+                    strategy_id=llm_strategy_id,
+                )
+            ]
+            next_recovery_state["external_blocker"] = None
+            return {
+                "completion_reason": "recover_llm_replan",
+                "turn_outcome": "recover_agent",
+                "next_open_tool_issue": open_tool_issue,
+                "next_retry_count": max(int(value or 0) for value in attempts_by_strategy.values()),
+                "next_fingerprint_history": list(progress_markers),
+            }
+
+        next_recovery_state["active_issue"] = open_tool_issue
+        next_recovery_state["active_strategy"] = None
+        next_recovery_state["strategy_queue"] = []
+        next_recovery_state["external_blocker"] = {
+            "reason": "recovery_stagnated",
+            "issue_summary": str(open_tool_issue.get("summary", "")),
+        }
+        return {
+            "completion_reason": "recovery_stagnated",
+            "turn_outcome": "finish_turn",
+            "next_open_tool_issue": None,
+            "handoff_message": self._build_tool_issue_handoff_text(open_tool_issue, repair_plan=repair_plan),
+            "next_retry_count": max(int(value or 0) for value in attempts_by_strategy.values()),
+            "next_fingerprint_history": list(progress_markers),
+        }
 
     # --- NODE: STABILITY GUARD ---
 
@@ -770,86 +1137,57 @@ class AgentNodes:
         current_task = (state.get("current_task") or self._derive_current_task(messages)).strip()
         open_tool_issue = self._get_active_open_tool_issue(state, messages, current_turn_id)
         last_ai = self._get_last_ai_message(messages)
-        loop_budget_reached = int(state.get("steps", 0) or 0) >= int(self.config.max_loops or 0)
-        pending_tool_calls = bool(last_ai and getattr(last_ai, "tool_calls", None))
-
-        retry_turn_id = int(state.get("self_correction_retry_turn_id", 0) or 0)
-        retry_count = int(state.get("self_correction_retry_count", 0) or 0)
-        if retry_turn_id != current_turn_id:
-            retry_count = 0
-            retry_turn_id = current_turn_id
-
-        turn_outcome = "finish_turn"
-        retry_instruction = ""
-        next_retry_count = retry_count
-        next_retry_turn_id = retry_turn_id
-        next_open_tool_issue = open_tool_issue
-        completion_reason = "no_open_tool_issue"
-        handoff_message = ""
-        drop_trailing_tool_call = False
+        last_message = messages[-1] if messages else None
+        step_count = int(state.get("steps", 0) or 0)
+        recovery_state = self._get_recovery_state(state, current_turn_id=current_turn_id)
+        hard_loop_ceiling = self._hard_loop_ceiling()
 
         try:
-            if loop_budget_reached:
-                completion_reason = "loop_budget_exhausted"
-                next_open_tool_issue = None
-                if open_tool_issue:
-                    handoff_message = self._build_tool_issue_handoff_text(open_tool_issue)
-                elif pending_tool_calls:
-                    completion_reason = "loop_budget_exhausted_pending_tool_call"
-                    handoff_message = self._build_loop_budget_handoff_text(
-                        current_task=current_task,
-                        tool_names=[
-                            str(tool_call.get("name") or "").strip()
-                            for tool_call in (getattr(last_ai, "tool_calls", []) or [])
-                            if str(tool_call.get("name") or "").strip()
-                        ],
-                    )
-                    drop_trailing_tool_call = True
-            elif not open_tool_issue:
-                completion_reason = "no_open_tool_issue"
-                next_open_tool_issue = None
-            elif self._assistant_handed_off_open_tool_issue(last_ai, open_tool_issue):
-                completion_reason = "assistant_handoff"
-                next_open_tool_issue = None
-            elif self._assistant_requests_user_input(last_ai):
-                completion_reason = "assistant_waits_for_user_input"
-                next_open_tool_issue = None
-            elif self._open_tool_issue_requires_user_input(open_tool_issue):
-                completion_reason = "input_required"
-                next_open_tool_issue = None
-                handoff_message = self._build_tool_issue_handoff_text(open_tool_issue)
-            elif retry_count < 1:
-                completion_reason = "auto_retry"
-                turn_outcome = "retry_agent"
-                retry_instruction = self._build_retry_instruction(current_task, open_tool_issue)
-                next_retry_count = retry_count + 1
-                next_retry_turn_id = current_turn_id
-                next_open_tool_issue = open_tool_issue
-            else:
-                completion_reason = "retry_budget_exhausted"
-                next_open_tool_issue = None
-                handoff_message = self._build_tool_issue_handoff_text(open_tool_issue)
-
+            result = self.recovery_manager.plan_recovery(
+                state=state,
+                messages=messages,
+                current_task=current_task,
+                current_turn_id=current_turn_id,
+                open_tool_issue=open_tool_issue,
+                recovery_state=recovery_state,
+                last_ai=last_ai,
+                last_message=last_message,
+                step_count=step_count,
+                max_loops=int(self.config.max_loops or 0),
+                hard_loop_ceiling=hard_loop_ceiling,
+                auto_repair_enabled=bool(self.config.self_correction_enable_auto_repair),
+                max_auto_repairs=int(self.config.self_correction_max_auto_repairs or 2),
+                successful_tool_stagnation_limit=self._successful_tool_stagnation_limit(
+                    str(getattr(last_message, "name", "") or "")
+                ),
+            )
             outbound_messages: List[BaseMessage] = []
-            if drop_trailing_tool_call and last_ai and getattr(last_ai, "tool_calls", None) and getattr(last_ai, "id", None):
-                outbound_messages.append(RemoveMessage(id=last_ai.id))
             if (
-                turn_outcome == "finish_turn"
-                and handoff_message
-                and not self._assistant_handed_off_open_tool_issue(last_ai, open_tool_issue)
-                and not self._assistant_requests_user_input(last_ai)
+                result["drop_trailing_tool_call"]
+                and last_ai
+                and getattr(last_ai, "tool_calls", None)
+                and getattr(last_ai, "id", None)
             ):
-                handoff_metadata: Dict[str, Any] = {}
-                if completion_reason.startswith("loop_budget_exhausted"):
-                    handoff_metadata = {
-                        "agent_internal": {
-                            "kind": "loop_budget_handoff",
-                            "turn_id": current_turn_id,
-                        }
+                outbound_messages.append(RemoveMessage(id=last_ai.id))
+            if result["turn_outcome"] == "finish_turn" and result["handoff_message"]:
+                handoff_kind = (
+                    "loop_budget_handoff"
+                    if str(result["completion_reason"]).startswith("loop_budget_exhausted")
+                    else "tool_issue_handoff"
+                )
+                handoff_metadata: Dict[str, Any] = {
+                    "agent_internal": {
+                        "kind": handoff_kind,
+                        "turn_id": current_turn_id,
+                        "visible_in_ui": False,
+                        "ui_notice": self.recovery_manager.build_internal_ui_notice(
+                            str(result["completion_reason"])
+                        ),
                     }
+                }
                 outbound_messages.append(
                     AIMessage(
-                        content=handoff_message,
+                        content=result["handoff_message"],
                         additional_kwargs=handoff_metadata,
                     )
                 )
@@ -858,35 +1196,29 @@ class AgentNodes:
                 state,
                 "stability_guard_verdict",
                 run_id=state.get("run_id", ""),
-                outcome=turn_outcome,
-                reason=completion_reason,
-                retry_count_before=retry_count,
-                retry_count_after=next_retry_count,
+                outcome=result["turn_outcome"],
+                reason=result["completion_reason"],
+                retry_count_before=int(state.get("self_correction_retry_count", 0) or 0),
+                retry_count_after=result["self_correction_retry_count"],
                 has_open_tool_issue=bool(open_tool_issue),
-                loop_budget_reached=loop_budget_reached,
-                had_pending_tool_calls=pending_tool_calls,
+                loop_budget_reached=result["loop_budget_reached"],
+                had_pending_tool_calls=result["had_pending_tool_calls"],
+                successful_tool_repeat_count=result.get("successful_tool_repeat_count", 0),
+                successful_tool_name=result.get("successful_tool_name", ""),
             )
             self._log_node_end(
                 state,
                 "stability_guard",
                 node_timer,
-                turn_outcome=turn_outcome,
-                reason=completion_reason,
-                retry_count=next_retry_count,
+                turn_outcome=result["turn_outcome"],
+                reason=result["completion_reason"],
+                retry_count=result["self_correction_retry_count"],
                 has_open_tool_issue=bool(open_tool_issue),
-                loop_budget_reached=loop_budget_reached,
-                had_pending_tool_calls=pending_tool_calls,
+                loop_budget_reached=result["loop_budget_reached"],
+                had_pending_tool_calls=result["had_pending_tool_calls"],
+                successful_tool_repeat_count=result.get("successful_tool_repeat_count", 0),
+                successful_tool_name=result.get("successful_tool_name", ""),
             )
-            result: Dict[str, Any] = {
-                "turn_id": current_turn_id,
-                "current_task": current_task,
-                "turn_outcome": turn_outcome,
-                "retry_instruction": retry_instruction,
-                "open_tool_issue": next_open_tool_issue,
-                "has_protocol_error": False,
-                "self_correction_retry_count": next_retry_count,
-                "self_correction_retry_turn_id": next_retry_turn_id,
-            }
             if outbound_messages:
                 result["messages"] = outbound_messages
             return result
@@ -897,48 +1229,51 @@ class AgentNodes:
                 node_timer,
                 e,
                 has_open_tool_issue=bool(open_tool_issue),
-                retry_count=retry_count,
+                retry_count=int(state.get("self_correction_retry_count", 0) or 0),
             )
             raise
 
-    async def prepare_retry_node(self, state: AgentState):
+    async def recovery_node(self, state: AgentState):
         node_timer = self._log_node_start(
             state,
-            "prepare_retry",
-            has_retry_instruction=bool((state.get("retry_instruction") or "").strip()),
+            "recovery",
+            has_recovery_state=bool(state.get("recovery_state")),
         )
-        retry_instruction = (state.get("retry_instruction") or "").strip()
-        if not retry_instruction:
-            self._log_node_end(
-                state,
-                "prepare_retry",
-                node_timer,
-                outcome="finish_turn",
-                reason="empty_retry_instruction",
-            )
-            return {"turn_outcome": "finish_turn"}
-
         messages = state.get("messages", [])
         current_turn_id = self._current_turn_id(state, messages)
-        retry_message = self._build_internal_retry_message(retry_instruction, current_turn_id)
+        recovery_state = self._get_recovery_state(state, current_turn_id=current_turn_id)
+        result = self.recovery_manager.apply_recovery(recovery_state, current_turn_id=current_turn_id)
+        if result["recovery_status"] == "empty_strategy_queue":
+            self._log_node_end(
+                state,
+                "recovery",
+                node_timer,
+                outcome="finish_turn",
+                reason="empty_strategy_queue",
+            )
+            return {
+                "turn_outcome": "finish_turn",
+                "recovery_state": recovery_state,
+            }
         self._log_run_event(
             state,
-            "retry_prepared",
+            "recovery_prepared",
             run_id=state.get("run_id", ""),
             turn_id=current_turn_id,
-            instruction_preview=compact_text(retry_instruction, 240),
+            strategy_id=str((result.get("active_strategy") or {}).get("id") or ""),
+            strategy=str((result.get("active_strategy") or {}).get("strategy") or ""),
+            suggested_tool=str((result.get("active_strategy") or {}).get("suggested_tool_name") or ""),
         )
         self._log_node_end(
             state,
-            "prepare_retry",
+            "recovery",
             node_timer,
-            outcome="retry_prepared",
+            outcome="recovery_prepared",
             turn_id=current_turn_id,
         )
         return {
-            "messages": [retry_message],
             "turn_outcome": "",
-            "retry_instruction": "",
+            "recovery_state": result["recovery_state"],
         }
 
     async def approval_node(self, state: AgentState):
@@ -958,8 +1293,8 @@ class AgentNodes:
             )
             return {"pending_approval": None}
 
-        last_msg = messages[-1]
-        if not isinstance(last_msg, AIMessage) or not last_msg.tool_calls:
+        pending_ai_with_tools = self._get_last_pending_ai_with_tool_calls(messages)
+        if not pending_ai_with_tools:
             self._log_node_end(
                 state,
                 "approval",
@@ -970,16 +1305,17 @@ class AgentNodes:
             return {"pending_approval": None}
 
         protected_calls = []
-        for tool_call in last_msg.tool_calls:
+        for tool_call in pending_ai_with_tools.tool_calls:
             tool_name = tool_call.get("name") or "unknown_tool"
-            if not self._tool_requires_approval(tool_name):
+            tool_args = tool_call.get("args") or {}
+            if not self._tool_requires_approval(tool_name, tool_args):
                 continue
-            metadata = self._metadata_for_tool(tool_name)
+            metadata = self._effective_tool_metadata(tool_name, tool_args)
             protected_calls.append(
                 {
                     "id": tool_call.get("id") or "",
                     "name": tool_name,
-                    "args": tool_call.get("args") or {},
+                    "args": tool_args,
                     "policy": metadata.to_dict(),
                 }
             )
@@ -1054,10 +1390,10 @@ class AgentNodes:
         self._check_invariants(state)
 
         messages = state["messages"]
-        last_msg = messages[-1]
+        last_msg = self._get_last_pending_ai_with_tool_calls(messages)
         current_turn_id = self._current_turn_id(state, messages)
 
-        if not isinstance(last_msg, AIMessage) or not last_msg.tool_calls:
+        if not last_msg:
             self._log_node_end(
                 state,
                 "tools",
@@ -1155,7 +1491,6 @@ class AgentNodes:
                 "messages": final_messages,
                 "turn_id": current_turn_id,
                 "turn_outcome": "run_tools",
-                "retry_instruction": "",
                 "pending_approval": None,
                 "open_tool_issue": merged_issue,
                 "has_protocol_error": False,
@@ -1185,6 +1520,18 @@ class AgentNodes:
             for tc in tool_calls
         )
 
+    def _tool_is_allowed_for_turn(
+        self,
+        tool_name: str,
+    ) -> bool:
+        return (
+            bool(self.config.model_supports_tools)
+            and bool(self._all_tool_names)
+            and self._normalize_tool_name(tool_name) in {
+                self._normalize_tool_name(name) for name in self._all_tool_names
+            }
+        )
+
     async def _process_tool_call(
         self,
         tool_call: Dict[str, Any],
@@ -1196,82 +1543,77 @@ class AgentNodes:
         # Безопасное извлечение с фоллбеками
         t_name = tool_call.get("name") or "unknown_tool"
         t_args = tool_call.get("args") or {}
-    
+        normalized_args, normalized_changes = normalize_tool_args(
+            t_name,
+            t_args if isinstance(t_args, dict) else {},
+            current_task=str(state.get("current_task") or ""),
+        )
+        if normalized_changes:
+            self._log_run_event(
+                state,
+                "tool_call_args_repaired",
+                run_id=state.get("run_id", ""),
+                tool_name=t_name,
+                original_args=t_args,
+                patched_args=normalized_args,
+                changes=normalized_changes,
+            )
+            t_args = normalized_args
+
         # Генерируем фейковый ID, если LLM забыла его указать, чтобы Pydantic не упал
         t_id = tool_call.get("id")
         if not t_id:
             t_id = f"call_missing_{uuid.uuid4().hex[:8]}"
 
         had_error = False
-        metadata = self._metadata_for_tool(t_name)
+        tool_duration_seconds: float | None = None
+        metadata = self._effective_tool_metadata(t_name, t_args)
+        active_tool_names = list(self._all_tool_names) if self.config.model_supports_tools else []
 
-        if self._tool_requires_approval(t_name) and not self._tool_call_is_approved(t_id, approval_state):
-            content = format_error(
-                ErrorType.ACCESS_DENIED,
-                f"Execution of '{t_name}' was cancelled by approval policy.",
-            )
-            self._log_run_event(
-                state,
-                "tool_call_denied",
-                run_id=state.get("run_id", ""),
+        if not self._tool_is_allowed_for_turn(t_name):
+            outcome = self.tool_executor.build_not_allowed_result(
+                state=state,
+                current_turn_id=current_turn_id,
                 tool_name=t_name,
                 tool_args=t_args,
-                policy=metadata.to_dict(),
-            )
-            limit = self.config.safety.max_tool_output
-            parsed_result = parse_tool_execution_result(content)
-            issue = self._build_open_tool_issue(
-                current_turn_id=current_turn_id,
-                kind="approval_denied",
-                summary=parsed_result.message or content,
-                tool_names=[t_name],
-                source="approval",
-                error_type=parsed_result.error_type,
+                tool_call_id=t_id,
+                allowed_tool_names=active_tool_names,
             )
             return (
-                self._build_tool_message(
-                    content=truncate_output(content, limit, source=t_name),
-                    tool_call_id=t_id,
-                    tool_name=t_name,
-                    tool_args=t_args,
-                ),
-                True,
-                issue,
+                outcome.tool_message,
+                outcome.had_error,
+                outcome.issue,
+            )
+
+        if self._tool_requires_approval(t_name, t_args) and not self._tool_call_is_approved(t_id, approval_state):
+            outcome = self.tool_executor.build_denied_result(
+                state=state,
+                current_turn_id=current_turn_id,
+                tool_name=t_name,
+                tool_args=t_args,
+                tool_call_id=t_id,
+                policy=metadata.to_dict(),
+            )
+            return (
+                outcome.tool_message,
+                outcome.had_error,
+                outcome.issue,
             )
 
         missing_required = self._missing_required_tool_fields(t_name, t_args)
         if missing_required:
-            content = format_error(
-                ErrorType.VALIDATION,
-                f"Missing required field(s): {', '.join(missing_required)}.",
-            )
-            self._log_run_event(
-                state,
-                "tool_call_preflight_validation_failed",
-                run_id=state.get("run_id", ""),
+            outcome = self.tool_executor.build_missing_required_result(
+                state=state,
+                current_turn_id=current_turn_id,
                 tool_name=t_name,
                 tool_args=t_args,
+                tool_call_id=t_id,
                 missing_required=missing_required,
             )
-            limit = self.config.safety.max_tool_output
-            parsed_result = parse_tool_execution_result(content)
-            issue = self._build_open_tool_issue(
-                current_turn_id=current_turn_id,
-                kind="tool_error",
-                summary=parsed_result.message or content,
-                tool_names=[t_name],
-                source="tools",
-                error_type=parsed_result.error_type,
-            )
             return (
-                self._build_tool_message(
-                    content=truncate_output(content, limit, source=t_name),
-                    tool_call_id=t_id,
-                    tool_name=t_name,
-                    tool_args=t_args,
-                ),
-                True,
-                issue,
+                outcome.tool_message,
+                outcome.had_error,
+                outcome.issue,
             )
 
         # Проверка на зацикливание
@@ -1334,51 +1676,36 @@ class AgentNodes:
                 tool_args=t_args,
                 policy=metadata.to_dict(),
             )
+            started_at = time.perf_counter()
             content = await self._execute_tool(t_name, t_args, state=state, tool_call_id=t_id)
+            tool_duration_seconds = max(0.0, time.perf_counter() - started_at)
 
-        # Post-Tool Validation Layer
-        validation_error = validate_tool_result(t_name, t_args, content)
-        if validation_error:
-            content = f"{content}\n\n{validation_error}"
-            had_error = True
-
-        if is_error_text(content):
-            had_error = True
-
-        limit = self.config.safety.max_tool_output
-        content = truncate_output(content, limit, source=t_name)
-        parsed_result = parse_tool_execution_result(content)
-        self._log_run_event(
-            state,
-            "tool_call_end",
-            run_id=state.get("run_id", ""),
+        outcome = self.tool_executor.handle_result(
+            state=state,
+            current_turn_id=current_turn_id,
             tool_name=t_name,
             tool_args=t_args,
-            result=parsed_result.to_event_payload(),
+            tool_call_id=t_id,
+            content=content,
+            tool_duration_seconds=tool_duration_seconds,
+            had_error=had_error,
+            issue_details=(
+                {
+                    "loop_detected": True,
+                    "loop_count": loop_count,
+                    "loop_limit": (
+                        self.PLANNING_TOOL_MAX_CALLS_PER_TURN if planning_limit_reached else loop_limit
+                    ),
+                }
+                if planning_limit_reached or loop_count >= loop_limit
+                else None
+            ),
         )
 
-        issue = None
-        if not parsed_result.ok:
-            issue_kind = "approval_denied" if parsed_result.error_type == "ACCESS_DENIED" else "tool_error"
-            issue_source = "approval" if issue_kind == "approval_denied" else "tools"
-            issue = self._build_open_tool_issue(
-                current_turn_id=current_turn_id,
-                kind=issue_kind,
-                summary=parsed_result.message or content,
-                tool_names=[t_name],
-                source=issue_source,
-                error_type=parsed_result.error_type,
-            )
-
         return (
-            self._build_tool_message(
-                content=content,
-                tool_call_id=t_id,
-                tool_name=t_name,
-                tool_args=t_args,
-            ),
-            had_error,
-            issue,
+            outcome.tool_message,
+            outcome.had_error,
+            outcome.issue,
         )
 
     def _build_tool_message(
@@ -1388,12 +1715,20 @@ class AgentNodes:
         tool_call_id: str,
         tool_name: str,
         tool_args: Dict[str, Any],
+        tool_duration_seconds: float | None = None,
     ) -> ToolMessage:
+        parsed_result = parse_tool_execution_result(content)
+        additional_kwargs: Dict[str, Any] = {
+            "tool_args": deepcopy(tool_args) if isinstance(tool_args, dict) else {}
+        }
+        if tool_duration_seconds is not None:
+            additional_kwargs["tool_duration_seconds"] = float(tool_duration_seconds)
         return ToolMessage(
             content=content,
             tool_call_id=tool_call_id,
             name=tool_name,
-            additional_kwargs={"tool_args": deepcopy(tool_args) if isinstance(tool_args, dict) else {}},
+            additional_kwargs=additional_kwargs,
+            status="error" if not parsed_result.ok else "success",
         )
 
     def _tool_call_is_approved(self, tool_call_id: str, approval_state: Dict[str, Any]) -> bool:
@@ -1414,32 +1749,17 @@ class AgentNodes:
             logger.error(f"INVARIANT VIOLATION: steps ({steps}) < 0")
 
     def _get_last_model_visible_message(self, context: List[BaseMessage]) -> BaseMessage | None:
-        for message in reversed(context):
-            if isinstance(message, SystemMessage):
-                continue
-            return message
-        return None
+        return self.context_builder.get_last_model_visible_message(context)
 
     def _assert_provider_safe_agent_context(
         self,
         context: List[BaseMessage],
         state: AgentState | None = None,
     ) -> None:
-        last_visible = self._get_last_model_visible_message(context)
-        valid = isinstance(last_visible, (HumanMessage, ToolMessage))
-        self._log_run_event(
-            state,
-            "provider_context_valid",
-            run_id=None if state is None else state.get("run_id", ""),
-            valid=valid,
-            last_visible_type=type(last_visible).__name__ if last_visible else "",
-        )
-        if valid:
-            return
-
-        raise ProviderContextError(
-            "Provider-unsafe agent context: the last model-visible message must be HumanMessage or ToolMessage."
-        )
+        try:
+            self.context_builder.assert_provider_safe_context(context, state=state)
+        except RuntimeError as exc:
+            raise ProviderContextError(str(exc)) from exc
 
     async def _execute_tool(
         self,
@@ -1482,6 +1802,17 @@ class AgentNodes:
                 )
                 return format_error(ErrorType.EXECUTION, "Tool returned empty response.")
             return content
+        except asyncio.CancelledError:
+            self._log_run_event(
+                state,
+                "tool_call_cancelled",
+                run_id=None if state is None else state.get("run_id", ""),
+                tool_name=name,
+                tool_args=args,
+                tool_call_id=tool_call_id,
+                reason="task_cancelled",
+            )
+            raise
         except Exception as e:
             self._log_run_event(
                 state,
@@ -1504,198 +1835,53 @@ class AgentNodes:
                     return content
         return ""
 
-    def _open_tool_issue_requires_user_input(self, open_tool_issue: Dict[str, Any] | None) -> bool:
-        if not isinstance(open_tool_issue, dict):
-            return False
-        if str(open_tool_issue.get("kind") or "").strip().lower() != "tool_error":
-            return False
-
-        error_type = str(open_tool_issue.get("error_type") or "").strip().upper()
-        tool_names = [str(name).strip() for name in (open_tool_issue.get("tool_names") or []) if str(name).strip()]
-        only_planning_tools = bool(tool_names) and all(self._is_planning_tool(name) for name in tool_names)
-        summary = str(open_tool_issue.get("summary") or "").strip().lower()
-        input_required_markers = (
-            "укажите путь",
-            "укажите правильный путь",
-            "предоставьте путь",
-            "provide path",
-            "specify the path",
-            "provide file",
-            "предоставьте файл",
-        )
-        if error_type == "VALIDATION":
-            if only_planning_tools:
-                return False
-            # Validation issues for edit operations (missing old/new string, ambiguous matches, aliases)
-            # are usually recoverable by another tool pass and should not force immediate handoff.
-            recoverable_validation_markers = (
-                "accepted aliases",
-                "identical occurrences",
-                "exact target text",
-                "old_string",
-                "new_string",
-                "search_text",
-                "find_text",
-                "replace_text",
-                "replacement",
-            )
-            if any(marker in summary for marker in recoverable_validation_markers):
-                return False
-            # Missing path/file fields are often model-side argument issues and can be auto-corrected
-            # by one guarded retry; do not force immediate handoff on the first failure.
-            return any(marker in summary for marker in input_required_markers)
-
-        user_input_markers = (
-            "missing required field",
-            "required field",
-            "accepted aliases",
-            *input_required_markers,
-        )
-        return any(marker in summary for marker in user_input_markers)
-
-    def _build_tool_issue_handoff_text(self, open_tool_issue: Dict[str, Any] | None) -> str:
-        summary = ""
-        tool_names: List[str] = []
-        if isinstance(open_tool_issue, dict):
-            summary = compact_text(str(open_tool_issue.get("summary", "")).strip(), 220)
-            tool_names = [str(name).strip() for name in (open_tool_issue.get("tool_names") or []) if str(name).strip()]
-
-        tool_hint = f" (`{tool_names[0]}`)" if tool_names else ""
-        summary_line = f"\nДетали ошибки: {summary}" if summary else ""
-        return (
-            f"Не могу продолжить автоматический вызов инструмента{tool_hint}: не хватает корректных входных данных."
-            f"{summary_line}\n"
-            "Пожалуйста, укажите путь к файлу и недостающие параметры (что искать и на что заменить), "
-            "и я продолжу без повторного цикла."
+    def _build_tool_issue_handoff_text(
+        self,
+        open_tool_issue: Dict[str, Any] | None,
+        *,
+        repair_plan: RepairPlan | None = None,
+    ) -> str:
+        return self.recovery_manager.build_tool_issue_handoff_text(
+            open_tool_issue,
+            repair_plan=repair_plan,
         )
 
     def _build_loop_budget_handoff_text(self, current_task: str, tool_names: List[str]) -> str:
-        tool_hint = f" (последний: `{tool_names[0]}`)" if tool_names else ""
-        task_hint = compact_text(current_task.strip(), 180) if current_task else "текущей задачи"
-        return (
-            f"Остановился по лимиту внутренних шагов до завершения {task_hint}{tool_hint}.\n"
-            "Чтобы не терять корректность, я не выполнял новые вызовы инструмента после достижения лимита.\n"
-            "Напишите «продолжай» (или уточните следующий конкретный шаг), и я продолжу с текущего состояния."
-        )
+        return self.recovery_manager.build_loop_budget_handoff_text(current_task, tool_names)
 
-    def _assistant_handed_off_open_tool_issue(
-        self,
-        last_ai: AIMessage | None,
-        open_tool_issue: Dict[str, Any] | None,
-    ) -> bool:
-        if not open_tool_issue or not last_ai or getattr(last_ai, "tool_calls", None):
-            return False
-
-        content = stringify_content(last_ai.content).strip().lower()
-        if not content:
-            return False
-
-        if open_tool_issue.get("kind") == "approval_denied":
-            return True
-
-        blocker_terms = (
-            "не удалось",
-            "не найден",
-            "не найдено",
-            "ошиб",
-            "не смог",
-            "не получилось",
-            "не могу",
-            "укажите путь",
-            "укажи путь",
-            "предоставьте файл",
-            "предоставь файл",
-            "предоставьте код",
-            "предоставь код",
-            "cannot",
-            "unable",
-            "not found",
-            "failed",
-            "failure",
-            "error",
-            "blocked",
-            "denied",
-            "cancelled",
-            "provide path",
-            "provide the path",
-            "specify the path",
-            "provide file",
-            "provide the file",
-            "provide code",
-        )
-        success_terms = (
-            "успеш",
-            "готово",
-            "сделал",
-            "сделано",
-            "создан",
-            "заверш",
-            "completed",
-            "success",
-            "done",
-            "finished",
-        )
-
-        if any(term in content for term in blocker_terms):
-            return True
-        if any(term in content for term in success_terms):
-            return False
-        return False
-
-    def _assistant_requests_user_input(self, last_ai: AIMessage | None) -> bool:
-        if not last_ai or getattr(last_ai, "tool_calls", None):
-            return False
-
-        content = stringify_content(last_ai.content).strip().lower()
-        if not content:
-            return False
-
-        decision_terms = (
-            "какой вариант",
-            "какой способ",
-            "какой из вариантов",
-            "выберите",
-            "укажите номер",
-            "укажите путь",
-            "укажите правильный путь",
-            "предоставьте путь",
-            "предоставьте файл",
-            "предоставьте код",
-            "подтвердите",
-            "как поступить",
-            "нужно ваше подтверждение",
-            "нужно ваше решение",
-            "which option",
-            "which approach",
-            "choose",
-            "select",
-            "confirm",
-            "please confirm",
-            "provide path",
-            "provide the path",
-            "specify the path",
-            "provide file",
-            "provide code",
-            "let me know your choice",
-        )
-        waiting_terms = (
-            "жду вашего ответа",
-            "жду вашего решения",
-            "ожидаю вашего ответа",
-            "wait for your input",
-            "waiting for your input",
-            "waiting for your confirmation",
-        )
-
-        if any(term in content for term in decision_terms):
-            return True
-        if any(term in content for term in waiting_terms):
-            return True
-        return content.endswith("?")
+    def _successful_tool_stagnation_limit(self, tool_name: str) -> int:
+        return 3 if self._tool_is_read_only(tool_name) else 2
 
     def _get_last_ai_message(self, messages: List[BaseMessage]) -> Optional[AIMessage]:
         for message in reversed(messages):
             if isinstance(message, AIMessage):
+                return message
+        return None
+
+    def _get_last_pending_ai_with_tool_calls(self, messages: List[BaseMessage]) -> Optional[AIMessage]:
+        """
+        Returns the latest AI message that still has at least one unresolved tool call.
+        This is robust to provider id collisions where the newest AI message may replace
+        an older message and stop being the last list item.
+        """
+        resolved_tool_call_ids: set[str] = {
+            str(message.tool_call_id or "").strip()
+            for message in messages
+            if isinstance(message, ToolMessage) and str(message.tool_call_id or "").strip()
+        }
+
+        for message in reversed(messages):
+            if not isinstance(message, AIMessage):
+                continue
+            tool_calls = list(getattr(message, "tool_calls", []) or [])
+            if not tool_calls:
+                continue
+            unresolved_calls = [
+                call for call in tool_calls
+                if not str(call.get("id") or "").strip()
+                or str(call.get("id") or "").strip() not in resolved_tool_call_ids
+            ]
+            if unresolved_calls:
                 return message
         return None
 
@@ -1727,7 +1913,12 @@ class AgentNodes:
                 )
         return self._cached_base_prompt
 
-    def _build_system_message(self, summary: str, tools_available: bool = True) -> SystemMessage:
+    def _build_system_message(
+        self,
+        summary: str,
+        tools_available: bool = True,
+        active_tool_names: Optional[List[str]] = None,
+    ) -> SystemMessage:
         raw_prompt = self._get_base_prompt()
 
         prompt = raw_prompt.replace("{{current_date}}", datetime.now().strftime("%Y-%m-%d"))
@@ -1737,7 +1928,19 @@ class AgentNodes:
             prompt += "\nNOTE: STRICT MODE ENABLED. Be precise. No guessing."
 
         if not tools_available:
-            prompt += "\nNOTE: You are in CHAT-ONLY mode. Tools are disabled."
+            prompt += "\nNOTE: You are in CHAT-ONLY mode. Tools are disabled for this request."
+            prompt += (
+                "\nACTIVE_TOOLS_FOR_THIS_REQUEST: none. "
+                "Do not claim any tool is available in this request."
+            )
+        else:
+            names = [str(name).strip() for name in (active_tool_names or []) if str(name).strip()]
+            if names:
+                prompt += (
+                    "\nACTIVE_TOOLS_FOR_THIS_REQUEST: "
+                    + ", ".join(names)
+                    + ". Do not claim other tools are available."
+                )
 
         if summary:
             prompt += f"\n\n<memory>\n{summary}\n</memory>"
@@ -1752,6 +1955,7 @@ class AgentNodes:
         node_name: str = "",
     ) -> AIMessage:
         current_llm = llm
+        context = list(context)
         max_attempts = max(1, self.config.max_retries)
         retry_delay = max(0, self.config.retry_delay)
         self._log_run_event(
@@ -1765,7 +1969,8 @@ class AgentNodes:
 
         for attempt in range(max_attempts):
             try:
-                response = await current_llm.ainvoke(context)
+                normalized_context = self._normalize_system_prefix_for_provider(context)
+                response = await current_llm.ainvoke(normalized_context)
                 invalid_calls = getattr(response, "invalid_tool_calls", None)
                 if not response.content and not response.tool_calls and not invalid_calls:
                     raise ValueError("Empty response from LLM")

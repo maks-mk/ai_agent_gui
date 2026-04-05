@@ -1,3 +1,4 @@
+import logging
 import re
 import sys
 from pathlib import Path
@@ -70,6 +71,7 @@ class AgentConfig(BaseSettings):
         env_file_encoding="utf-8",
         extra="ignore",
         populate_by_name=True,
+        case_sensitive=False,
     )
 
     # Paths
@@ -89,6 +91,7 @@ class AgentConfig(BaseSettings):
         alias="SESSION_STATE_PATH",
     )
     run_log_dir: Path = Field(default=BASE_DIR / "logs" / "runs", alias="RUN_LOG_DIR")
+    log_file: Path = Field(default=BASE_DIR / "logs" / "agent.log", alias="LOG_FILE")
 
     # Provider Settings
     provider: Literal["gemini", "openai"] = Field(default="gemini", alias="PROVIDER")
@@ -124,6 +127,12 @@ class AgentConfig(BaseSettings):
 
     # Tools Limits
     max_tool_output_length: int = Field(default=4000, alias="MAX_TOOL_OUTPUT")
+    stream_text_max_chars: int = Field(default=120000, alias="STREAM_TEXT_MAX_CHARS")
+    stream_events_max: int = Field(default=400, alias="STREAM_EVENTS_MAX")
+    stream_tool_buffer_max: int = Field(default=128, alias="STREAM_TOOL_BUFFER_MAX")
+    self_correction_max_auto_repairs: int = Field(default=2, alias="SELF_CORRECTION_MAX_AUTO_REPAIRS")
+    self_correction_hard_ceiling: int = Field(default=8, alias="SELF_CORRECTION_HARD_CEILING")
+    self_correction_enable_auto_repair: bool = Field(default=True, alias="SELF_CORRECTION_ENABLE_AUTO_REPAIR")
     max_file_size: int = Field(
         default=DEFAULT_MAX_FILE_SIZE,
         alias="MAX_FILE_SIZE",
@@ -148,6 +157,7 @@ class AgentConfig(BaseSettings):
     max_retries: int = Field(default=3, alias="MAX_RETRIES")
     retry_delay: int = Field(default=2, alias="RETRY_DELAY")
     debug: bool = Field(default=False, alias="DEBUG")
+    log_level: str = Field(default="INFO", alias="LOG_LEVEL")
 
     @field_validator("max_file_size", mode="before")
     @classmethod
@@ -187,11 +197,18 @@ class AgentConfig(BaseSettings):
         "checkpoint_sqlite_path",
         "session_state_path",
         "run_log_dir",
+        "log_file",
         mode="before",
     )
     @classmethod
     def resolve_path_fields(cls, v: Union[str, Path]) -> Path:
         return _resolve_runtime_path(v)
+
+    @field_validator("log_level", mode="before")
+    @classmethod
+    def normalize_log_level(cls, v: Any) -> str:
+        value = str(v or "INFO").strip().upper()
+        return value if value in logging.getLevelNamesMapping() else "INFO"
 
     @field_validator("max_loops", mode="before")
     @classmethod
@@ -242,6 +259,26 @@ class AgentConfig(BaseSettings):
             return 10000
         return value
 
+    @field_validator(
+        "stream_text_max_chars",
+        "stream_events_max",
+        "stream_tool_buffer_max",
+        "self_correction_max_auto_repairs",
+        "self_correction_hard_ceiling",
+        mode="before",
+    )
+    @classmethod
+    def validate_positive_runtime_limits(cls, v: Union[int, float, str]) -> int:
+        try:
+            value = int(float(v))
+        except (TypeError, ValueError):
+            return 1
+        if value < 1:
+            return 1
+        if value > 1_000_000:
+            return 1_000_000
+        return value
+
     # Private cache attributes — PrivateAttr is the correct Pydantic v2 way to cache
     # computed values on BaseSettings instances (functools.cached_property doesn't work
     # because Pydantic v2 models don't expose a writable __dict__ slot for it).
@@ -262,18 +299,18 @@ class AgentConfig(BaseSettings):
     @property
     def effective_tool_loop_limit_mutating(self) -> int:
         """Mutating tools duplicate limit.
-        Formula default: max(3, min(8, MAX_LOOPS // 10))."""
+        Formula default: max(6, min(24, MAX_LOOPS))."""
         if self._cache_tool_loop_limit_mutating is None:
-            value = self.tool_loop_limit_mutating if self.tool_loop_limit_mutating is not None else max(3, min(8, self.max_loops // 10))
+            value = self.tool_loop_limit_mutating if self.tool_loop_limit_mutating is not None else max(6, min(24, self.max_loops))
             self._cache_tool_loop_limit_mutating = value
         return self._cache_tool_loop_limit_mutating
 
     @property
     def effective_tool_loop_limit_readonly(self) -> int:
         """Read-only tools duplicate limit.
-        Formula default: max(6, min(20, MAX_LOOPS // 4))."""
+        Formula default: max(12, min(40, MAX_LOOPS * 2))."""
         if self._cache_tool_loop_limit_readonly is None:
-            value = self.tool_loop_limit_readonly if self.tool_loop_limit_readonly is not None else max(6, min(20, self.max_loops // 4))
+            value = self.tool_loop_limit_readonly if self.tool_loop_limit_readonly is not None else max(12, min(40, self.max_loops * 2))
             self._cache_tool_loop_limit_readonly = value
         return self._cache_tool_loop_limit_readonly
 

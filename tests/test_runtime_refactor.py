@@ -23,6 +23,7 @@ from core.session_store import SessionSnapshot, SessionStore
 from core.stream_processor import StreamProcessor
 from core.tool_policy import ToolMetadata
 from tools import process_tools
+from tools.tool_registry import ToolRegistry
 
 
 class FakeLLM:
@@ -45,6 +46,14 @@ class ProviderSafeFakeLLM(FakeLLM):
         last_visible = next((message for message in reversed(context) if message.type != "system"), None)
         if isinstance(last_visible, AIMessage):
             raise AssertionError("provider-unsafe assistant-last context")
+        return await super().ainvoke(context)
+
+
+class OpenAIContentSafeFakeLLM(FakeLLM):
+    async def ainvoke(self, context):
+        for message in context:
+            if isinstance(message, AIMessage) and not isinstance(message.content, str):
+                raise AssertionError(f"assistant content must be string for OpenAI chat history, got {type(message.content).__name__}")
         return await super().ainvoke(context)
 
 
@@ -101,9 +110,19 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             "token_usage": {},
             "current_task": task,
             "turn_outcome": "",
-            "retry_instruction": "",
             "self_correction_retry_count": 0,
             "self_correction_retry_turn_id": 0,
+            "recovery_state": {
+                "turn_id": 1,
+                "active_issue": None,
+                "active_strategy": None,
+                "strategy_queue": [],
+                "attempts_by_strategy": {},
+                "progress_markers": [],
+                "last_successful_evidence": "",
+                "external_blocker": None,
+                "llm_replan_attempted_for": [],
+            },
             "session_id": session_id,
             "run_id": run_id,
             "turn_id": 1,
@@ -201,6 +220,230 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool.calls, [{"action": "apply"}])
         self.assertEqual(resumed["messages"][-1].content, "Готово.")
 
+    async def test_destructive_cli_exec_interrupts_before_execution(self):
+        config = self._make_config(ENABLE_APPROVALS=True, ENABLE_SHELL_TOOL=True)
+        tool = FakeTool("cli_exec", "Success: command completed.")
+        nodes = AgentNodes(
+            config=config,
+            llm=FakeLLM([AIMessage(content="STATUS: FINISHED\nREASON: done\nNEXT_STEP: NONE")]),
+            tools=[tool],
+            llm_with_tools=FakeLLM(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "cli_exec",
+                                "args": {"command": "Remove-Item -LiteralPath demo.txt -Force"},
+                                "id": "tc-cli-delete",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Команда подтверждена и выполнена."),
+                ]
+            ),
+            tool_metadata={
+                "cli_exec": ToolMetadata(
+                    name="cli_exec",
+                    mutating=True,
+                )
+            },
+        )
+        app = create_agent_workflow(nodes, config, tools_enabled=True).compile(checkpointer=MemorySaver())
+        thread_config = {"configurable": {"thread_id": "approval-cli-thread"}, "recursion_limit": 36}
+
+        interrupted = await app.ainvoke(self._initial_state("Удалить файл через shell"), config=thread_config)
+        self.assertIn("__interrupt__", interrupted)
+        self.assertEqual(tool.calls, [])
+
+        interrupt_entries = interrupted["__interrupt__"]
+        interrupt_value = getattr(interrupt_entries[0], "value", interrupt_entries[0])
+        self.assertEqual(interrupt_value["tools"][0]["name"], "cli_exec")
+        self.assertTrue(interrupt_value["tools"][0]["policy"]["destructive"])
+        self.assertTrue(interrupt_value["tools"][0]["policy"]["requires_approval"])
+
+        resumed = await app.ainvoke(Command(resume={"approved": True}), config=thread_config)
+        self.assertEqual(tool.calls, [{"command": "Remove-Item -LiteralPath demo.txt -Force"}])
+        self.assertEqual(resumed["messages"][-1].content, "Команда подтверждена и выполнена.")
+
+    async def test_safe_delete_file_interrupts_before_execution(self):
+        config = self._make_config(ENABLE_APPROVALS=True)
+        tool = FakeTool("safe_delete_file", "Success: file deleted.")
+        nodes = AgentNodes(
+            config=config,
+            llm=FakeLLM([AIMessage(content="STATUS: FINISHED\nREASON: done\nNEXT_STEP: NONE")]),
+            tools=[tool],
+            llm_with_tools=FakeLLM(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "safe_delete_file",
+                                "args": {"path": "demo.txt"},
+                                "id": "tc-delete-file",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="Файл удален после подтверждения."),
+                ]
+            ),
+            tool_metadata={
+                "safe_delete_file": ToolMetadata(
+                    name="safe_delete_file",
+                    mutating=True,
+                    destructive=True,
+                    requires_approval=True,
+                )
+            },
+        )
+        app = create_agent_workflow(nodes, config, tools_enabled=True).compile(checkpointer=MemorySaver())
+        thread_config = {"configurable": {"thread_id": "approval-safe-delete"}, "recursion_limit": 36}
+
+        interrupted = await app.ainvoke(self._initial_state("Удали файл"), config=thread_config)
+        self.assertIn("__interrupt__", interrupted)
+        self.assertEqual(tool.calls, [])
+
+        resumed = await app.ainvoke(Command(resume={"approved": True}), config=thread_config)
+        self.assertEqual(tool.calls, [{"path": "demo.txt"}])
+        self.assertEqual(resumed["messages"][-1].content, "Файл удален после подтверждения.")
+
+    async def test_mcp_execution_tool_interrupts_before_execution(self):
+        config = self._make_config(ENABLE_APPROVALS=True)
+        tool = FakeTool("terminal:run_command", "Success: command completed.")
+        mcp_metadata = ToolRegistry._infer_mcp_metadata(tool)
+        nodes = AgentNodes(
+            config=config,
+            llm=FakeLLM([AIMessage(content="STATUS: FINISHED\nREASON: done\nNEXT_STEP: NONE")]),
+            tools=[tool],
+            llm_with_tools=FakeLLM(
+                [
+                    AIMessage(
+                        content="",
+                        tool_calls=[
+                            {
+                                "name": "terminal:run_command",
+                                "args": {"command": "git status"},
+                                "id": "tc-mcp-run",
+                            }
+                        ],
+                    ),
+                    AIMessage(content="MCP команда выполнена после подтверждения."),
+                ]
+            ),
+            tool_metadata={"terminal:run_command": mcp_metadata},
+        )
+        app = create_agent_workflow(nodes, config, tools_enabled=True).compile(checkpointer=MemorySaver())
+        thread_config = {"configurable": {"thread_id": "approval-mcp-exec"}, "recursion_limit": 36}
+
+        interrupted = await app.ainvoke(self._initial_state("Запусти MCP команду"), config=thread_config)
+        self.assertIn("__interrupt__", interrupted)
+        self.assertEqual(tool.calls, [])
+
+        interrupt_entries = interrupted["__interrupt__"]
+        interrupt_value = getattr(interrupt_entries[0], "value", interrupt_entries[0])
+        self.assertEqual(interrupt_value["tools"][0]["name"], "terminal:run_command")
+        self.assertTrue(interrupt_value["tools"][0]["policy"]["requires_approval"])
+
+        resumed = await app.ainvoke(Command(resume={"approved": True}), config=thread_config)
+        self.assertEqual(tool.calls, [{"command": "git status"}])
+        self.assertEqual(resumed["messages"][-1].content, "MCP команда выполнена после подтверждения.")
+
+    async def test_regular_edit_runs_without_approval_interrupt(self):
+        config = self._make_config(ENABLE_APPROVALS=True)
+        tool = FakeTool("edit_file", "Success: File edited.")
+        nodes = AgentNodes(
+            config=config,
+            llm=FakeLLM([AIMessage(content="STATUS: FINISHED\nREASON: done\nNEXT_STEP: NONE")]),
+            tools=[tool],
+            llm_with_tools=FakeLLM(
+                [
+                    AIMessage(content="", tool_calls=[{"name": "edit_file", "args": {"path": "demo.txt", "old_string": "a", "new_string": "b"}, "id": "tc-edit-plain"}]),
+                    AIMessage(content="Готово без дополнительного approval."),
+                ]
+            ),
+            tool_metadata={
+                "edit_file": ToolMetadata(
+                    name="edit_file",
+                    mutating=True,
+                    requires_approval=False,
+                )
+            },
+        )
+        app = create_agent_workflow(nodes, config, tools_enabled=True).compile(checkpointer=MemorySaver())
+
+        result = await app.ainvoke(
+            self._initial_state("Исправь файл"),
+            config={"configurable": {"thread_id": "plain-edit-no-approval"}, "recursion_limit": 36},
+        )
+
+        self.assertNotIn("__interrupt__", result)
+        self.assertEqual(tool.calls, [{"path": "demo.txt", "old_string": "a", "new_string": "b"}])
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertIn("без дополнительного approval", str(result["messages"][-1].content).lower())
+
+    async def test_mutating_non_destructive_tool_error_enters_recovery_without_approval(self):
+        config = self._make_config(ENABLE_APPROVALS=True)
+
+        def _edit_result(args):
+            if args.get("old_string") == "bad":
+                return "ERROR[VALIDATION]: Could not find a match for 'old_string'."
+            return "Success: File edited."
+
+        edit_tool = FakeTool("edit_file", _edit_result)
+        read_tool = FakeTool("read_file", "import sys\nimport logging")
+        nodes = AgentNodes(
+            config=config,
+            llm=FakeLLM([AIMessage(content="STATUS: FINISHED\nREASON: done\nNEXT_STEP: NONE")]),
+            tools=[edit_tool, read_tool],
+            llm_with_tools=FakeLLM(
+                [
+                    AIMessage(content="", tool_calls=[{"name": "edit_file", "args": {"path": "demo.txt", "old_string": "bad", "new_string": "good"}, "id": "tc-edit-1"}]),
+                    AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"path": "demo.txt"}, "id": "tc-read-1"}]),
+                    AIMessage(content="", tool_calls=[{"name": "edit_file", "args": {"path": "demo.txt", "old_string": "import sys", "new_string": "import sys\nimport json"}, "id": "tc-edit-2"}]),
+                    AIMessage(content="Исправление завершено после recovery."),
+                ]
+            ),
+            tool_metadata={
+                "edit_file": ToolMetadata(name="edit_file", mutating=True, destructive=False, requires_approval=False),
+                "read_file": ToolMetadata(name="read_file", read_only=True),
+            },
+        )
+        app = create_agent_workflow(nodes, config, tools_enabled=True).compile(checkpointer=MemorySaver())
+
+        result = await app.ainvoke(
+            self._initial_state("Исправь файл"),
+            config={"configurable": {"thread_id": "mutating-recovery-no-approval"}, "recursion_limit": 64},
+        )
+
+        self.assertNotIn("__interrupt__", result)
+        self.assertEqual(len(edit_tool.calls), 2)
+        self.assertEqual(len(read_tool.calls), 1)
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertIsNone(result["open_tool_issue"])
+
+    async def test_invoke_llm_with_retry_normalizes_context_once_per_attempt(self):
+        config = self._make_config(MAX_RETRIES=2, RETRY_DELAY=0)
+        llm = FakeLLM([RuntimeError("temporary"), AIMessage(content="ok")])
+        nodes = AgentNodes(
+            config=config,
+            llm=llm,
+            tools=[],
+            llm_with_tools=llm,
+        )
+        context = [HumanMessage(content="Проверь задачу")]
+
+        with mock.patch.object(
+            AgentNodes,
+            "_normalize_system_prefix_for_provider",
+            autospec=True,
+            side_effect=lambda _self, payload: list(payload),
+        ) as normalize_mock:
+            response = await nodes._invoke_llm_with_retry(llm, context, state=self._initial_state(), node_name="agent")
+
+        self.assertEqual(str(response.content), "ok")
+        self.assertEqual(normalize_mock.call_count, 2)
+
     async def test_approval_rejection_returns_access_denied_without_tool_execution(self):
         config = self._make_config(ENABLE_APPROVALS=True)
         tool = FakeTool("danger_tool", "Изменение применено.")
@@ -277,7 +520,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied_tool.calls, [])
         self.assertEqual(fallback_tool.calls, [])
         self.assertIsInstance(resumed["messages"][-1], AIMessage)
-        self.assertIn("you chose No", str(resumed["messages"][-1].content))
+        self.assertIn("вы отклонили", str(resumed["messages"][-1].content).lower())
         self.assertIsNone(resumed["open_tool_issue"])
 
     async def test_approval_rejection_resume_keeps_provider_safe_order(self):
@@ -301,7 +544,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             llm_with_tools=ProviderSafeFakeLLM(
                 [
                     AIMessage(content="", tool_calls=[{"name": "danger_tool", "args": {"action": "apply"}, "id": "tc-safe"}]),
-                    AIMessage(content="Okay, I did not do that because you chose No. Tell me what you want to do instead."),
+                    AIMessage(content="Действие не выполнено: вы выбрали Нет для необратимой операции."),
                 ]
             ),
             tool_metadata={
@@ -322,7 +565,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(tool.calls, [])
         self.assertEqual(resumed["turn_outcome"], "finish_turn")
-        self.assertIn("you chose No", str(resumed["messages"][-1].content))
+        self.assertIn("вы отклонили", str(resumed["messages"][-1].content).lower())
 
     async def test_approval_rejection_finishes_turn_without_secondary_verifier(self):
         config = self._make_config(ENABLE_APPROVALS=True)
@@ -357,8 +600,75 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool.calls, [])
         self.assertEqual(resumed["turn_outcome"], "finish_turn")
         self.assertIsNone(resumed["open_tool_issue"])
-        self.assertEqual(len(agent_llm.invocations), 2)
-        self.assertIn("вы выбрали Нет", str(resumed["messages"][-1].content))
+        self.assertEqual(len(agent_llm.invocations), 1)
+        final_text = str(resumed["messages"][-1].content).lower()
+        self.assertIn("вы отклонили", final_text)
+
+    def test_sanitize_messages_for_model_remaps_non_compliant_tool_call_ids(self):
+        config = self._make_config()
+        nodes = AgentNodes(
+            config=config,
+            llm=FakeLLM([]),
+            tools=[],
+            llm_with_tools=FakeLLM([]),
+        )
+        source_id = "chatcmpl-tool-9d8dc0bbe38d6202"
+        sanitized = nodes._sanitize_messages_for_model(
+            [
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "id": source_id,
+                            "name": "read_file",
+                            "args": {"path": "README.md"},
+                        }
+                    ],
+                ),
+                ToolMessage(
+                    tool_call_id=source_id,
+                    name="read_file",
+                    content="ok",
+                ),
+            ]
+        )
+
+        self.assertEqual(len(sanitized), 2)
+        self.assertIsInstance(sanitized[0], AIMessage)
+        self.assertIsInstance(sanitized[1], ToolMessage)
+        remapped_id = sanitized[0].tool_calls[0]["id"]
+        self.assertRegex(remapped_id, r"^[A-Za-z0-9]{9}$")
+        self.assertEqual(sanitized[1].tool_call_id, remapped_id)
+
+    async def test_openai_context_stringifies_assistant_content_lists_before_invoke(self):
+        config = self._make_config()
+        llm = OpenAIContentSafeFakeLLM([AIMessage(content="ok")])
+        nodes = AgentNodes(
+            config=config,
+            llm=llm,
+            tools=[],
+            llm_with_tools=llm,
+        )
+        state = self._initial_state("Продолжай анализ")
+        context = nodes.context_builder.build(
+            [
+                HumanMessage(content="Проверь файл"),
+                AIMessage(content=["Промежуточный ", "ответ."]),
+                HumanMessage(content="Продолжай анализ"),
+            ],
+            state,
+            summary="",
+            current_task="Продолжай анализ",
+            tools_available=False,
+            active_tool_names=[],
+            open_tool_issue=None,
+            recovery_state=None,
+        )
+
+        response = await nodes._invoke_llm_with_retry(llm, context, state=state, node_name="agent")
+
+        self.assertEqual(str(response.content), "ok")
+        self.assertTrue(any(isinstance(message, AIMessage) and message.content == "Промежуточный ответ." for message in llm.invocations[0]))
 
     async def test_tools_node_marks_approval_denied_as_open_issue_before_agent_ack(self):
         config = self._make_config(ENABLE_APPROVALS=True)
@@ -583,6 +893,32 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(block_types, ["tool", "assistant"])
         self.assertEqual(payload["turns"][0]["blocks"][0]["payload"]["name"], "edit_file")
         self.assertIn("Готово", payload["turns"][0]["blocks"][1]["markdown"])
+
+    def test_build_transcript_payload_hides_internal_handoff_and_restores_notice(self):
+        payload = build_transcript_payload(
+            {
+                "messages": [
+                    HumanMessage(content="Проверь завершение"),
+                    AIMessage(
+                        content="internal handoff",
+                        additional_kwargs={
+                            "agent_internal": {
+                                "kind": "tool_issue_handoff",
+                                "visible_in_ui": False,
+                                "ui_notice": "Автопродолжение остановлено. Нужен новый запрос.",
+                            }
+                        },
+                    ),
+                ],
+            }
+        )
+
+        self.assertEqual(len(payload["turns"]), 1)
+        self.assertEqual(payload["turns"][0]["user_text"], "Проверь завершение")
+        blocks = payload["turns"][0]["blocks"]
+        self.assertEqual([block["type"] for block in blocks], ["notice"])
+        self.assertEqual(blocks[0]["message"], "Автопродолжение остановлено. Нужен новый запрос.")
+        self.assertEqual(blocks[0]["level"], "warning")
 
     async def test_worker_initialize_can_force_new_session_on_reinitialize(self):
         tmp = self._workspace_tempdir()
@@ -812,7 +1148,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         agent_llm = FakeLLM([AIMessage(content="Короткая сводка на экране.")])
         nodes = AgentNodes(
             config=self._make_config(),
-            llm=FakeLLM([]),
+            llm=agent_llm,
             tools=[],
             llm_with_tools=agent_llm,
         )
@@ -1028,6 +1364,48 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(worker.model_profiles["active_profile"], "gpt-4o")
         self.assertEqual(worker.profile_store.load_or_initialize()["active_profile"], "gpt-4o")
 
+    async def test_set_active_profile_notice_mentions_target_model(self):
+        tmp = self._workspace_tempdir()
+        profile_path = tmp / "config.json"
+        worker = gui_runtime.AgentRunWorker()
+        worker.profile_store = ModelProfileStore(profile_path)
+        worker.model_profiles = worker.profile_store.save(
+            {
+                "active_profile": "gpt-4o",
+                "profiles": [
+                    {
+                        "id": "gpt-4o",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "api_key": "sk-old",
+                        "base_url": "",
+                    },
+                    {
+                        "id": "gemini-1-5-flash",
+                        "provider": "gemini",
+                        "model": "gemini-1.5-flash",
+                        "api_key": "gm-new",
+                        "base_url": "",
+                    },
+                ],
+            }
+        )
+        emitted_events = []
+        worker.event_emitted.connect(emitted_events.append)
+        worker._emit_session_payload = mock.AsyncMock(return_value={})
+
+        await worker._set_active_profile_async("gemini-1-5-flash")
+
+        notice_events = [
+            event for event in emitted_events
+            if getattr(event, "type", "") == "summary_notice" and (event.payload or {}).get("kind") == "model_switched"
+        ]
+        self.assertEqual(len(notice_events), 1)
+        self.assertEqual(
+            notice_events[0].payload.get("message"),
+            "Модель переключена на gemini-1.5-flash. Новый выбор будет использован в следующем запросе.",
+        )
+
     async def test_runtime_switch_happens_lazy_on_next_request_path(self):
         worker = gui_runtime.AgentRunWorker()
         worker.model_profiles = {
@@ -1098,6 +1476,45 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         processor = StreamProcessor()
         processor._remember_tool_call({"name": "broken_tool", "args": {"x": 1}})
         self.assertEqual(processor.tool_buffer, {})
+
+    def test_stream_processor_emits_notice_for_hidden_internal_message(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._handle_agent_message(
+            AIMessage(
+                content="internal handoff",
+                additional_kwargs={
+                    "agent_internal": {
+                        "kind": "tool_issue_handoff",
+                        "visible_in_ui": False,
+                        "ui_notice": "Нужен новый запрос.",
+                    }
+                },
+            )
+        )
+
+        self.assertEqual([event.type for event in events], ["summary_notice"])
+        self.assertEqual(events[0].payload.get("kind"), "agent_internal_notice")
+        self.assertEqual(events[0].payload.get("message"), "Нужен новый запрос.")
+        self.assertEqual(events[0].payload.get("level"), "warning")
+        self.assertEqual(processor.full_text, "")
+        self.assertEqual(processor.clean_full, "")
+
+    def test_core_gui_shims_reexport_ui_symbols(self):
+        from core.gui_runtime import AgentRuntimeController as ShimController
+        from core.gui_widgets import ComposerTextEdit as ShimComposer
+        from core.stream_processor import StreamProcessor as ShimStreamProcessor
+        from core.ui_theme import build_stylesheet as shim_build_stylesheet
+        from ui.runtime import AgentRuntimeController as UiController
+        from ui.streaming import StreamProcessor as UiStreamProcessor
+        from ui.theme import build_stylesheet as ui_build_stylesheet
+        from ui.widgets import ComposerTextEdit as UiComposer
+
+        self.assertIs(ShimController, UiController)
+        self.assertIs(ShimStreamProcessor, UiStreamProcessor)
+        self.assertIs(ShimComposer, UiComposer)
+        self.assertIs(shim_build_stylesheet, ui_build_stylesheet)
 
 
 if __name__ == "__main__":

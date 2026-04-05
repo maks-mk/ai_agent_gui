@@ -148,10 +148,10 @@ class ToolRegistry:
                     "file_info_tool": ToolMetadata(name="file_info", read_only=True),
                     "read_file_tool": ToolMetadata(name="read_file", read_only=True),
                     "write_file_tool": ToolMetadata(
-                        name="write_file", mutating=True, requires_approval=True
+                        name="write_file", mutating=True
                     ),
                     "edit_file_tool": ToolMetadata(
-                        name="edit_file", mutating=True, requires_approval=True
+                        name="edit_file", mutating=True
                     ),
                     "list_directory_tool": ToolMetadata(name="list_directory", read_only=True),
                     "safe_delete_file": ToolMetadata(
@@ -169,7 +169,6 @@ class ToolRegistry:
                     "download_file": ToolMetadata(
                         name="download_file",
                         mutating=True,
-                        requires_approval=True,
                         networked=True,
                     ),
                     "search_in_file_tool": ToolMetadata(name="search_in_file", read_only=True),
@@ -248,7 +247,6 @@ class ToolRegistry:
                     "run_background_process": ToolMetadata(
                         name="run_background_process",
                         mutating=True,
-                        requires_approval=True,
                     ),
                     "stop_background_process": ToolMetadata(
                         name="stop_background_process",
@@ -271,8 +269,6 @@ class ToolRegistry:
                     "cli_exec": ToolMetadata(
                         name="cli_exec",
                         mutating=True,
-                        destructive=True,
-                        requires_approval=True,
                     )
                 },
             ),
@@ -343,20 +339,38 @@ class ToolRegistry:
         ToolRegistry._configure_safety(module, config)
 
     @staticmethod
-    def _infer_mcp_metadata(tool_name: str) -> ToolMetadata:
-        normalized = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", tool_name).lower()
-        tokens = set(_MCP_TOKEN_RE.findall(normalized))
+    def _infer_mcp_metadata(tool: BaseTool | str) -> ToolMetadata:
+        if isinstance(tool, str):
+            tool_name = tool
+            description = ""
+            raw_metadata = {}
+        else:
+            tool_name = str(getattr(tool, "name", "") or "")
+            description = str(getattr(tool, "description", "") or "")
+            candidate_metadata = getattr(tool, "metadata", None)
+            raw_metadata = candidate_metadata if isinstance(candidate_metadata, dict) else {}
 
-        destructive = bool(tokens & _MCP_DESTRUCTIVE_KEYWORDS)
+        normalized_name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", tool_name).lower()
+        normalized_description = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", description).lower()
+        title = str(raw_metadata.get("title") or "")
+        normalized_title = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", title).lower()
+        token_source = " ".join(part for part in (normalized_name, normalized_title, normalized_description) if part)
+        tokens = set(_MCP_TOKEN_RE.findall(token_source))
+
+        read_only_hint = bool(raw_metadata.get("readOnlyHint"))
+        destructive_hint = bool(raw_metadata.get("destructiveHint"))
+        destructive = destructive_hint or bool(tokens & _MCP_DESTRUCTIVE_KEYWORDS)
         execution = bool(tokens & _MCP_EXECUTION_KEYWORDS)
-        mutating = destructive or execution or bool(tokens & _MCP_MUTATING_KEYWORDS)
-        requires_approval = mutating or destructive
+        mutating_signal = bool(tokens & _MCP_MUTATING_KEYWORDS)
+        mutating = destructive or execution or mutating_signal
+        read_only = read_only_hint and not destructive and not execution and not mutating_signal
+        requires_approval = destructive or execution or mutating
 
         return ToolMetadata(
             name=tool_name,
-            read_only=not mutating and not destructive,
+            read_only=read_only or (not mutating and not destructive),
             mutating=mutating,
-            destructive=destructive or execution,
+            destructive=destructive,
             requires_approval=requires_approval,
             networked=True,
             source="mcp",
@@ -430,11 +444,11 @@ class ToolRegistry:
                     logger.error("❌ MCP Server '%s' Error: %s", name, err)
                     continue
 
-                self.mcp_clients.append(client)
+                    self.mcp_clients.append(client)
                 if mcp_tools:
                     self.tools.extend(mcp_tools)
                     for tool in mcp_tools:
-                        metadata = self._infer_mcp_metadata(tool.name)
+                        metadata = self._infer_mcp_metadata(tool)
                         self.tool_metadata[tool.name] = metadata
                         if metadata.requires_approval:
                             logger.warning(

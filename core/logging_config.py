@@ -20,13 +20,25 @@ class NoisyLogFilter(logging.Filter):
         return not any(phrase in message for phrase in self.BLOCKED_PHRASES)
 
 
-def setup_logging(level: Optional[int] = None, log_file: Optional[str] = None) -> logging.Logger:
+def _coerce_log_level(level: int | str | None) -> int:
     if level is None:
-        env_level = os.getenv("LOG_LEVEL", "INFO").upper()
-        level = getattr(logging, env_level, logging.INFO)
+        level = os.getenv("LOG_LEVEL", "INFO")
+    if isinstance(level, int):
+        return level
+    normalized = str(level or "INFO").strip().upper()
+    return getattr(logging, normalized, logging.INFO)
+
+
+def setup_logging(level: int | str | None = None, log_file: str | Path | None = None) -> logging.Logger:
+    if level is None:
+        level = _coerce_log_level(None)
+    else:
+        level = _coerce_log_level(level)
 
     if log_file is None:
         log_file = str(BASE_DIR / os.getenv("LOG_FILE", "logs/agent.log"))
+    else:
+        log_file = str(log_file)
 
     handlers: List[logging.Handler] = []
 

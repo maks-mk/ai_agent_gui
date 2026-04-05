@@ -1,0 +1,70 @@
+import unittest
+
+from langchain_core.messages import AIMessage, HumanMessage, ToolMessage
+
+from core.intent_engine import IntentEngine, TurnIntent
+from core.message_context import MessageContextHelper
+
+
+class IntentEngineTests(unittest.TestCase):
+    def setUp(self) -> None:
+        self.engine = IntentEngine()
+        self.helper = MessageContextHelper()
+        self.no_internal_retry = lambda _msg: False
+
+    def test_recent_tool_context_uses_previous_turn_activity(self):
+        messages = [
+            HumanMessage(content="Запусти сервер"),
+            AIMessage(content="", tool_calls=[{"id": "tc-1", "name": "run_background_process", "args": {}}]),
+            ToolMessage(name="run_background_process", tool_call_id="tc-1", content="ok"),
+            HumanMessage(content="Повтори ещё раз"),
+        ]
+        recent_names = self.helper.recent_tool_context_names(
+            messages=messages,
+            is_internal_retry=self.no_internal_retry,
+        )
+        self.assertEqual(recent_names, ["run_background_process"])
+
+    def test_current_turn_has_tool_evidence_detects_tool_result(self):
+        messages = [
+            HumanMessage(content="Проверь лог"),
+            ToolMessage(name="read_file", tool_call_id="tc-1", content="ok"),
+        ]
+        self.assertTrue(
+            self.helper.current_turn_has_tool_evidence(
+                messages,
+                is_internal_retry=self.no_internal_retry,
+            )
+        )
+
+    def test_had_tool_activity_in_previous_turn_uses_history_not_keywords(self):
+        messages = [
+            HumanMessage(content="Сделай проверку"),
+            AIMessage(content="", tool_calls=[{"id": "tc-1", "name": "read_file", "args": {}}]),
+            ToolMessage(name="read_file", tool_call_id="tc-1", content="ok"),
+            HumanMessage(content="Продолжай"),
+        ]
+        self.assertTrue(
+            self.helper.had_tool_activity_in_previous_turn(
+                messages=messages,
+                current_turn_id=2,
+                is_internal_retry=self.no_internal_retry,
+            )
+        )
+
+    def test_compat_intent_engine_is_neutral_without_phrase_lexicon(self):
+        task = "Проверь статус процесса на порту 8080"
+        decision = self.engine.decide(
+            task=task,
+            messages=[HumanMessage(content=task)],
+            current_turn_id=1,
+            is_internal_retry=self.no_internal_retry,
+        )
+        self.assertEqual(decision.intent, TurnIntent.CHAT)
+        self.assertFalse(decision.inspect_only)
+        self.assertFalse(decision.requires_operational_evidence)
+        self.assertFalse(decision.should_force_tools)
+
+
+if __name__ == "__main__":
+    unittest.main()

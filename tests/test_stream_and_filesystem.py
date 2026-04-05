@@ -6,7 +6,7 @@ from uuid import uuid4
 from unittest import mock
 
 import httpx
-from langchain_core.messages import RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, RemoveMessage, ToolMessage
 
 from core.text_utils import prepare_markdown_for_render
 from core.stream_processor import StreamProcessor
@@ -25,13 +25,24 @@ class StreamAndFilesystemTests(unittest.TestCase):
             return b""
 
     class _FakeProcess:
-        def __init__(self, stdout_chunks: list[bytes], stderr_chunks: list[bytes], returncode: int = 0):
+        def __init__(
+            self,
+            stdout_chunks: list[bytes],
+            stderr_chunks: list[bytes],
+            returncode: int = 0,
+            wait_exception: Exception | None = None,
+            pid: int | None = None,
+        ):
             self.stdout = StreamAndFilesystemTests._FakeReader(stdout_chunks)
             self.stderr = StreamAndFilesystemTests._FakeReader(stderr_chunks)
             self.returncode = returncode
+            self.wait_exception = wait_exception
             self.killed = False
+            self.pid = pid
 
         async def wait(self) -> int:
+            if self.wait_exception is not None:
+                raise self.wait_exception
             return self.returncode
 
         def kill(self) -> None:
@@ -96,7 +107,25 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertTrue(any(payload["name"] == "edit_file" and payload["diff"] for payload in tool_finished_payloads))
         self.assertTrue(any(payload["is_error"] and "boom" in payload["content"] for payload in tool_finished_payloads))
 
-    def test_stream_processor_injects_preface_before_tool_when_model_text_is_empty(self):
+    def test_stream_processor_treats_free_port_result_as_success(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        processor.tool_buffer["call-port-check"] = {"name": "find_process_by_port", "args": {"port": 8000}}
+
+        processor._handle_tool_result(
+            ToolMessage(
+                tool_call_id="call-port-check",
+                name="find_process_by_port",
+                content="No process found listening on port 8000.",
+            )
+        )
+
+        finished = [event.payload for event in events if event.type == "tool_finished"]
+        self.assertEqual(len(finished), 1)
+        self.assertFalse(finished[0]["is_error"])
+        self.assertIn("No process found listening on port 8000.", finished[0]["content"])
+
+    def test_stream_processor_does_not_inject_preface_before_tool_when_model_text_is_empty(self):
         events = []
         processor = StreamProcessor(events.append)
         processor._remember_tool_call({"id": "call-preface", "name": "read_file", "args": {"path": "demo.txt"}})
@@ -104,13 +133,8 @@ class StreamAndFilesystemTests(unittest.TestCase):
         processor._emit_tool_started({"id": "call-preface", "name": "read_file", "args": {"path": "demo.txt"}})
 
         event_types = [event.type for event in events]
-        self.assertIn("assistant_delta", event_types)
         self.assertIn("tool_started", event_types)
-        assistant_idx = event_types.index("assistant_delta")
-        tool_idx = event_types.index("tool_started")
-        self.assertLess(assistant_idx, tool_idx)
-        preface_payload = [event.payload for event in events if event.type == "assistant_delta"][0]
-        self.assertIn("вызов инструмента", preface_payload["text"].lower())
+        self.assertNotIn("assistant_delta", event_types)
 
     def test_stream_processor_emits_summarization_notice(self):
         events = []
@@ -130,6 +154,76 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIn("Context compressed automatically", notice_events[0].payload["message"])
         self.assertEqual(notice_events[0].payload["count"], 2)
         self.assertEqual(notice_events[0].payload["kind"], "auto_summary")
+
+    def test_stream_processor_stats_use_numeric_input_fallback_when_usage_missing(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        async def _stream():
+            yield {
+                "type": "messages",
+                "data": (AIMessage(content="Готово"), {"langgraph_node": "agent"}),
+            }
+
+        result = asyncio.run(processor.process_stream(_stream()))
+        self.assertIsNotNone(result.stats)
+        assert result.stats is not None
+        self.assertIn("↓ 0", result.stats)
+        self.assertNotIn("↓ ?", result.stats)
+
+    def test_stream_processor_reads_token_usage_from_update_payload(self):
+        processor = StreamProcessor()
+        processor._handle_updates({"agent": {"token_usage": {"prompt_tokens": 321, "completion_tokens": 8}}})
+        stats = processor.tracker.render(0.1)
+        self.assertIn("↓ 321", stats)
+        self.assertIn("↑ 8", stats)
+
+    def test_stream_processor_renders_stability_guard_handoff_messages(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        processor._handle_updates(
+            {
+                "stability_guard": {
+                    "messages": [AIMessage(content="Автовыполнение остановлено. Уточните следующий шаг.")],
+                }
+            }
+        )
+
+        deltas = [event.payload for event in events if event.type == "assistant_delta"]
+        self.assertEqual(len(deltas), 1)
+        self.assertIn("Автовыполнение остановлено", deltas[0]["full_text"])
+
+    def test_stream_processor_uses_bounded_memory_caps(self):
+        processor = StreamProcessor(
+            emit_event=None,
+            text_max_chars=24,
+            events_max=3,
+            tool_buffer_max=2,
+        )
+
+        processor._handle_agent_message(AIMessage(content="0123456789" * 6))
+        self.assertLessEqual(len(processor.full_text), 24)
+        self.assertLessEqual(len(processor.clean_full), 24)
+
+        for idx in range(6):
+            processor._emit(f"evt_{idx}", {"i": idx})
+        self.assertEqual(len(processor.events), 3)
+        self.assertEqual(processor.events[-1].type, "evt_5")
+
+        for idx in range(4):
+            processor._remember_tool_call(
+                {"id": f"tool-{idx}", "name": "read_file", "args": {"path": f"{idx}.txt"}}
+            )
+        self.assertLessEqual(len(processor.tool_buffer), 2)
+        self.assertLessEqual(len(processor.tool_start_times), 2)
+
+    def test_stream_processor_emit_trims_oldest_events_directly(self):
+        processor = StreamProcessor(events_max=2)
+        processor._emit("evt_1", {"i": 1})
+        processor._emit("evt_2", {"i": 2})
+        processor._emit("evt_3", {"i": 3})
+
+        self.assertEqual([event.type for event in processor.events], ["evt_2", "evt_3"])
 
     def test_stream_processor_merges_tool_args_and_finishes_with_canonical_payload(self):
         events = []
@@ -260,6 +354,56 @@ class StreamAndFilesystemTests(unittest.TestCase):
         )
         self.assertIn("parse_yandex_forecast_fixed.py", finished[0]["display"])
 
+    def test_stream_processor_prefers_tool_execution_duration_from_metadata(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        processor.tool_buffer["call-late-duration"] = {
+            "name": "cli_exec",
+            "args": {"command": "ping -n 4 google.com"},
+        }
+
+        processor._handle_tool_result(
+            ToolMessage(
+                tool_call_id="call-late-duration",
+                name="cli_exec",
+                content="done",
+                additional_kwargs={
+                    "tool_args": {"command": "ping -n 4 google.com"},
+                    "tool_duration_seconds": 1.75,
+                },
+            )
+        )
+
+        finished = [event.payload for event in events if event.type == "tool_finished"]
+        self.assertEqual(len(finished), 1)
+        self.assertEqual(finished[0]["duration"], 1.75)
+
+    def test_stream_processor_deduplicates_duplicate_tool_results(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._remember_tool_call({"id": "call-dir", "name": "list_directory", "args": {"path": "."}})
+        processor._handle_tool_result(
+            ToolMessage(
+                tool_call_id="call-dir",
+                name="list_directory",
+                content="Directory '.':\n[FILE] demo.py",
+            )
+        )
+        processor._handle_tool_result(
+            ToolMessage(
+                tool_call_id="call-dir",
+                name="list_directory",
+                content="Directory '.':\n[FILE] demo.py",
+            )
+        )
+
+        finished = [event.payload for event in events if event.type == "tool_finished"]
+        missing = [event for event in events if event.type == "tool_args_missing"]
+        self.assertEqual(len(finished), 1)
+        self.assertEqual(finished[0]["args"], {"path": "."})
+        self.assertEqual(missing, [])
+
     def test_filesystem_delete_uses_virtual_mode_path_guard(self):
         tmp = self._workspace_tempdir()
         manager = FilesystemManager(root_dir=tmp, virtual_mode=True)
@@ -374,10 +518,13 @@ class StreamAndFilesystemTests(unittest.TestCase):
         live_events: list[dict[str, str]] = []
         self.addCleanup(lambda: local_shell.set_cli_output_emitter(None))
 
-        async def _fake_create_subprocess_shell(*_args, **_kwargs):
+        async def _fake_create_subprocess(*_args, **_kwargs):
             return process
 
-        with mock.patch.object(local_shell.asyncio, "create_subprocess_shell", side_effect=_fake_create_subprocess_shell):
+        with (
+            mock.patch.object(local_shell.asyncio, "create_subprocess_exec", side_effect=_fake_create_subprocess),
+            mock.patch.object(local_shell.asyncio, "create_subprocess_shell", side_effect=_fake_create_subprocess),
+        ):
             local_shell.set_cli_output_emitter(live_events.append)
             with local_shell.cli_output_context("call-cli-1"):
                 result = asyncio.run(local_shell.cli_exec.ainvoke({"command": "demo"}))
@@ -390,6 +537,50 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertTrue(any(item.get("stream") == "stdout" for item in live_events))
         self.assertTrue(any(item.get("stream") == "stderr" for item in live_events))
 
+    def test_cli_exec_uses_non_interactive_stdin_and_npm_env(self):
+        process = self._FakeProcess(
+            stdout_chunks=[b"ok\n"],
+            stderr_chunks=[],
+            returncode=0,
+        )
+        captured_kwargs: dict[str, object] = {}
+
+        async def _fake_create_subprocess(*_args, **kwargs):
+            captured_kwargs.update(kwargs)
+            return process
+
+        with (
+            mock.patch.object(local_shell.asyncio, "create_subprocess_exec", side_effect=_fake_create_subprocess),
+            mock.patch.object(local_shell.asyncio, "create_subprocess_shell", side_effect=_fake_create_subprocess),
+        ):
+            result = asyncio.run(local_shell.cli_exec.ainvoke({"command": "npm --version"}))
+
+        self.assertIn("ok", result)
+        self.assertEqual(captured_kwargs.get("stdin"), asyncio.subprocess.DEVNULL)
+        env = dict(captured_kwargs.get("env") or {})
+        self.assertEqual(env.get("CI"), "1")
+        self.assertEqual(env.get("npm_config_yes"), "true")
+
+    def test_cli_exec_detects_interactive_prompt_and_aborts(self):
+        process = self._FakeProcess(
+            stdout_chunks=[b"npx@10.2.2\n", b"Ok to proceed? (y)\n"],
+            stderr_chunks=[],
+            returncode=0,
+        )
+
+        async def _fake_create_subprocess(*_args, **_kwargs):
+            return process
+
+        with (
+            mock.patch.object(local_shell.asyncio, "create_subprocess_exec", side_effect=_fake_create_subprocess),
+            mock.patch.object(local_shell.asyncio, "create_subprocess_shell", side_effect=_fake_create_subprocess),
+        ):
+            result = asyncio.run(local_shell.cli_exec.ainvoke({"command": "npm install demo-package"}))
+
+        self.assertIn("Interactive prompt detected", result)
+        self.assertIn("npm/npx", result)
+        self.assertTrue(process.killed)
+
     def test_cli_exec_stream_preserves_error_result_on_non_zero_exit(self):
         process = self._FakeProcess(
             stdout_chunks=[b"partial-out\n"],
@@ -399,10 +590,13 @@ class StreamAndFilesystemTests(unittest.TestCase):
         live_events: list[dict[str, str]] = []
         self.addCleanup(lambda: local_shell.set_cli_output_emitter(None))
 
-        async def _fake_create_subprocess_shell(*_args, **_kwargs):
+        async def _fake_create_subprocess(*_args, **_kwargs):
             return process
 
-        with mock.patch.object(local_shell.asyncio, "create_subprocess_shell", side_effect=_fake_create_subprocess_shell):
+        with (
+            mock.patch.object(local_shell.asyncio, "create_subprocess_exec", side_effect=_fake_create_subprocess),
+            mock.patch.object(local_shell.asyncio, "create_subprocess_shell", side_effect=_fake_create_subprocess),
+        ):
             local_shell.set_cli_output_emitter(live_events.append)
             with local_shell.cli_output_context("call-cli-2"):
                 result = asyncio.run(local_shell.cli_exec.ainvoke({"command": "demo --fail"}))
@@ -412,31 +606,136 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIn("fatal-err", result)
         self.assertGreaterEqual(len(live_events), 2)
 
+    def test_cli_exec_rejects_foreground_service_commands(self):
+        result = asyncio.run(local_shell.cli_exec.ainvoke({"command": "npm exec -- npx http-server -p 8080"}))
+
+        self.assertIn("Foreground service/server commands are not supported", result)
+        self.assertIn("run_background_process", result)
+
     def test_cli_exec_converts_python_heredoc_to_powershell_on_windows(self):
         process = self._FakeProcess(
             stdout_chunks=[b"ok\n"],
             stderr_chunks=[],
             returncode=0,
         )
-        captured_commands: list[str] = []
+        captured_argv: list[tuple[str, ...]] = []
 
-        async def _fake_create_subprocess_shell(*args, **_kwargs):
+        async def _fake_create_subprocess_exec(*args, **_kwargs):
             if args:
-                captured_commands.append(str(args[0]))
+                captured_argv.append(tuple(str(part) for part in args))
             return process
 
         heredoc_command = "python - <<'PY'\nprint('hello')\nPY"
         with (
             mock.patch.object(local_shell.os, "name", "nt"),
-            mock.patch.object(local_shell.asyncio, "create_subprocess_shell", side_effect=_fake_create_subprocess_shell),
+            mock.patch.object(local_shell.asyncio, "create_subprocess_exec", side_effect=_fake_create_subprocess_exec),
         ):
             result = asyncio.run(local_shell.cli_exec.ainvoke({"command": heredoc_command}))
 
         self.assertIn("ok", result)
-        self.assertTrue(captured_commands)
-        self.assertIn("powershell -NoProfile -Command", captured_commands[0])
-        self.assertIn("@'", captured_commands[0])
-        self.assertIn("'@ | python -", captured_commands[0])
+        self.assertTrue(captured_argv)
+        self.assertEqual(captured_argv[0][1:3], ("-NoProfile", "-Command"))
+        self.assertIn("@'", captured_argv[0][3])
+        self.assertIn("'@ | python -", captured_argv[0][3])
+
+    def test_cli_exec_unwraps_nested_powershell_wrapper_on_windows(self):
+        process = self._FakeProcess(
+            stdout_chunks=[b"ok\n"],
+            stderr_chunks=[],
+            returncode=0,
+        )
+        captured_argv: list[tuple[str, ...]] = []
+
+        async def _fake_create_subprocess_exec(*args, **_kwargs):
+            if args:
+                captured_argv.append(tuple(str(part) for part in args))
+            return process
+
+        nested = 'powershell -Command "try { $r = 1; Write-Output $r } catch { Write-Output $_ }"'
+        with (
+            mock.patch.object(local_shell.os, "name", "nt"),
+            mock.patch.object(local_shell.asyncio, "create_subprocess_exec", side_effect=_fake_create_subprocess_exec),
+        ):
+            result = asyncio.run(local_shell.cli_exec.ainvoke({"command": nested}))
+
+        self.assertIn("ok", result)
+        self.assertTrue(captured_argv)
+        self.assertEqual(captured_argv[0][1:3], ("-NoProfile", "-Command"))
+        self.assertEqual(captured_argv[0][3], "try { $r = 1; Write-Output $r } catch { Write-Output $_ }")
+
+    def test_cli_exec_rewrites_posix_null_device_on_windows(self):
+        process = self._FakeProcess(
+            stdout_chunks=[b"200\n"],
+            stderr_chunks=[],
+            returncode=0,
+        )
+        captured_argv: list[tuple[str, ...]] = []
+
+        async def _fake_create_subprocess_exec(*args, **_kwargs):
+            if args:
+                captured_argv.append(tuple(str(part) for part in args))
+            return process
+
+        command = 'curl -s -o /dev/null -w "%{http_code}" http://localhost:8000'
+        with (
+            mock.patch.object(local_shell.os, "name", "nt"),
+            mock.patch.object(local_shell.asyncio, "create_subprocess_exec", side_effect=_fake_create_subprocess_exec),
+        ):
+            result = asyncio.run(local_shell.cli_exec.ainvoke({"command": command}))
+
+        self.assertIn("200", result)
+        self.assertTrue(captured_argv)
+        normalized_command = captured_argv[0][3]
+        self.assertIn("-o NUL", normalized_command)
+        self.assertNotIn("/dev/null", normalized_command)
+
+    def test_cli_exec_cancellation_terminates_running_process(self):
+        process = self._FakeProcess(
+            stdout_chunks=[],
+            stderr_chunks=[],
+            wait_exception=asyncio.CancelledError(),
+        )
+
+        async def _fake_create_subprocess(*_args, **_kwargs):
+            return process
+
+        with (
+            mock.patch.object(local_shell.asyncio, "create_subprocess_exec", side_effect=_fake_create_subprocess),
+            mock.patch.object(local_shell.asyncio, "create_subprocess_shell", side_effect=_fake_create_subprocess),
+        ):
+            with self.assertRaises(asyncio.CancelledError):
+                asyncio.run(local_shell.cli_exec.ainvoke({"command": "Get-Process | Select-Object Id"}))
+
+        self.assertTrue(process.killed)
+
+    def test_stream_processor_emits_interrupted_tool_finish_on_cancel(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        async def _stream():
+            yield {
+                "type": "updates",
+                "data": {
+                    "agent": {
+                        "messages": [
+                            AIMessage(
+                                content="",
+                                tool_calls=[{"id": "tc-cancel", "name": "cli_exec", "args": {"command": "echo 1"}}],
+                            )
+                        ]
+                    }
+                },
+            }
+            raise asyncio.CancelledError()
+
+        result = asyncio.run(processor.process_stream(_stream()))
+
+        self.assertTrue(result.cancelled)
+        self.assertEqual(len(result.cancelled_tools), 1)
+        finished = [event.payload for event in events if event.type == "tool_finished"]
+        self.assertEqual(len(finished), 1)
+        self.assertTrue(finished[0]["interrupted"])
+        self.assertIn("Execution interrupted", finished[0]["content"])
 
 
 if __name__ == "__main__":

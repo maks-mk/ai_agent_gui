@@ -39,6 +39,31 @@ class SessionRepairTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(tool_messages), 1)
         self.assertEqual(tool_messages[0].tool_call_id, "tc-1")
         self.assertIn("Execution interrupted", str(tool_messages[0].content))
+        self.assertEqual(tool_messages[0].additional_kwargs["tool_args"], {"command": "echo 1"})
+
+    async def test_repair_logs_structured_event_for_inserted_tool_message(self):
+        app = _FakeAgentApp(
+            [
+                HumanMessage(content="Сделай шаг"),
+                AIMessage(
+                    content="",
+                    tool_calls=[{"id": "tc-log", "name": "cli_exec", "args": {"command": "echo 1"}}],
+                ),
+            ]
+        )
+        logged_events = []
+
+        notices = await repair_session_if_needed(
+            app,
+            "thread-log",
+            event_logger=lambda event_type, payload: logged_events.append((event_type, payload)),
+        )
+
+        self.assertGreaterEqual(len(notices), 2)
+        self.assertEqual(len(logged_events), 1)
+        self.assertEqual(logged_events[0][0], "tool_repair_inserted")
+        self.assertEqual(logged_events[0][1]["tool_call_id"], "tc-log")
+        self.assertEqual(logged_events[0][1]["tool_args"], {"command": "echo 1"})
 
     async def test_repair_skips_when_loop_budget_handoff_exists_after_pending_tool_call(self):
         app = _FakeAgentApp(
@@ -65,4 +90,3 @@ class SessionRepairTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
-

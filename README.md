@@ -1,6 +1,6 @@
 # Autonomous AI Agent (GUI)
 
-Версия: `v0.63.2b`
+Версия: `v0.65.3b`
 
 Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PySide6`.
 Приложение ориентировано на повседневную разработку: работа с файлами проекта, запуск инструментов, безопасные approvals для рискованных действий и удобная история чатов по проектам.
@@ -20,7 +20,7 @@ Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PyS
   - навигация `↑/↓` как в терминале,
   - работает по текущей сессии,
   - восстановление после перезапуска из transcript.
-- Approval-поток для mutating/destructive инструментов (`Approve`, `Deny`, `Always for this session`).
+- Approval-поток для действительно destructive инструментов (`Approve`, `Deny`, `Always for this session`).
 - Поддержка MCP-инструментов (включая Context7 при соответствующей конфигурации).
 - Runtime-статусы (`Thinking`, `Self-correcting`, `Ready`, ошибки) в UI.
 - Профили моделей в GUI:
@@ -35,21 +35,88 @@ Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PyS
 
 ## Архитектура
 
-- [`agent.py`](agent.py): сборка агентного графа (`summarize -> agent -> tools/approval -> stability_guard`), LLM, реестр инструментов, checkpoint backend.
-- [`main.py`](main.py): главное окно GUI, меню, sidebar, transcript, composer, обработка UI-событий.
-- [`core/gui_runtime.py`](core/gui_runtime.py): runtime-контроллер, запуск графа, стриминг событий, переключение/восстановление сессий.
-- [`core/gui_widgets.py`](core/gui_widgets.py): UI-виджеты (composer, transcript, popup, tool cards, sidebar).
-- [`core/nodes.py`](core/nodes.py): узлы графа, self-correction (`stability_guard`), loop-guards, tool-preflight и safety flow.
+- [`agent.py`](agent.py): сборка агентного графа (`summarize -> update_step -> agent -> tools/approval -> stability_guard -> recovery -> update_step -> agent`), LLM, реестр инструментов и checkpoint backend.
+- [`main.py`](main.py): тонкая точка входа GUI-приложения.
+- [`ui/main_window.py`](ui/main_window.py): главное окно, меню, sidebar, transcript, composer и обработка UI-событий.
+- [`ui/runtime.py`](ui/runtime.py): runtime-контроллер, запуск графа, стриминг событий, переключение и восстановление сессий, сборка payload для UI.
+- [`ui/streaming.py`](ui/streaming.py): обработка LangGraph stream-событий, tool lifecycle, статусы, notices и summary-сигналы.
+- [`ui/widgets/`](ui/widgets): UI-виджеты, разложенные по зонам ответственности.
+- [`ui/theme.py`](ui/theme.py): палитра, размеры и stylesheet для PySide6.
+- [`ui/visibility.py`](ui/visibility.py): контракт внутренних assistant/recovery сообщений и политика их показа в UI.
+- [`core/nodes.py`](core/nodes.py): узлы графа, recovery-loop (`stability_guard` + `recovery`), structured repair strategies, loop-guards, tool-preflight и safety flow.
+- [`core/context_builder.py`](core/context_builder.py): сборка и нормализация LLM-контекста с provider-safe ordering.
 - [`core/session_store.py`](core/session_store.py): хранение и индекс сессий.
-- [`core/ui_theme.py`](core/ui_theme.py): единая тема и стили.
 - [`core/config.py`](core/config.py): загрузка env-конфигурации.
-- [`tools/tool_registry.py`](tools/tool_registry.py): локальные + MCP инструменты, метаданные, политика безопасности.
+- [`tools/tool_registry.py`](tools/tool_registry.py): локальные и MCP инструменты, метаданные, политика безопасности.
+
+## Модульная Карта
+
+### `core/`
+
+- [`core/config.py`](core/config.py): типизированные настройки приложения и `.env`-валидация.
+- [`core/constants.py`](core/constants.py): базовые константы и пути проекта.
+- [`core/checkpointing.py`](core/checkpointing.py): backend checkpoint-хранилища для LangGraph.
+- [`core/errors.py`](core/errors.py): единый формат ошибок.
+- [`core/intent_engine.py`](core/intent_engine.py): детерминированная классификация turn intent и follow-up сигналов.
+- [`core/logging_config.py`](core/logging_config.py): конфигурация логирования приложения.
+- [`core/message_utils.py`](core/message_utils.py): утилиты для работы с сообщениями и текстом.
+- [`core/model_profiles.py`](core/model_profiles.py): профили моделей и merge логика для GUI.
+- [`core/nodes.py`](core/nodes.py): узлы LangGraph, agent flow, tool execution и self-correction.
+- [`core/policy_engine.py`](core/policy_engine.py): turn policy и правила fallback/approval для tool calls.
+- [`core/run_logger.py`](core/run_logger.py): JSONL-логирование событий запуска.
+- [`core/safety_policy.py`](core/safety_policy.py): ограничения на инструменты, файлы и процессы.
+- [`core/self_correction_engine.py`](core/self_correction_engine.py): ремонт tool-call аргументов и repair plan.
+- [`core/session_store.py`](core/session_store.py): persistence для чатов и индексов сессий.
+- [`core/session_utils.py`](core/session_utils.py): вспомогательная логика по сессиям.
+- [`core/state.py`](core/state.py): схема состояния LangGraph.
+- [`core/stream_processor.py`](core/stream_processor.py): сборка и буферизация стрим-событий.
+- [`core/text_utils.py`](core/text_utils.py): компактное форматирование и текстовые helper-ы.
+- [`core/tool_policy.py`](core/tool_policy.py): метаданные инструментов и default policy.
+- [`core/tool_results.py`](core/tool_results.py): парсинг результатов инструментов и статусов.
+- [`core/ui_theme.py`](core/ui_theme.py): compatibility-shim на `ui/theme.py`.
+- [`core/utils.py`](core/utils.py): общие helper-ы.
+- [`core/validation.py`](core/validation.py): валидация результатов и входных данных.
+
+### `ui/`
+
+- [`ui/main_window.py`](ui/main_window.py): центральный координатор GUI и wiring сигналов.
+- [`ui/runtime.py`](ui/runtime.py): мост между runtime и интерфейсом, snapshot/payload, approvals, восстановление transcript.
+- [`ui/streaming.py`](ui/streaming.py): интерпретация LangGraph stream, tool start/finish, статусы и уведомления.
+- [`ui/theme.py`](ui/theme.py): тема, цвета, размеры и генерация stylesheet.
+- [`ui/visibility.py`](ui/visibility.py): внутренние сообщения агента и правила их показа в transcript.
+- [`ui/tool_message_utils.py`](ui/tool_message_utils.py): единый разбор `tool_args` и `tool_duration` из `ToolMessage`.
+- [`ui/widgets/foundation.py`](ui/widgets/foundation.py): базовые текстовые, code и diff-виджеты, общие helper-ы.
+- [`ui/widgets/composer.py`](ui/widgets/composer.py): composer, история запросов, paste-логика, `@`-mentions.
+- [`ui/widgets/sidebar.py`](ui/widgets/sidebar.py): список сессий и sidebar-логика.
+- [`ui/widgets/panels.py`](ui/widgets/panels.py): info/help панели и вспомогательные карточки.
+- [`ui/widgets/dialogs.py`](ui/widgets/dialogs.py): диалоги настроек и approval.
+- [`ui/widgets/messages.py`](ui/widgets/messages.py): user/assistant bubbles, notices, статусы и summary.
+- [`ui/widgets/tools.py`](ui/widgets/tools.py): tool cards, CLI output, diffs и tool-result presentation.
+- [`ui/widgets/transcript.py`](ui/widgets/transcript.py): сборка turn-ов и восстановление transcript из payload.
+
+### `tools/`
+
+- [`tools/tool_registry.py`](tools/tool_registry.py): загрузка локальных и MCP инструментов.
+- [`tools/filesystem.py`](tools/filesystem.py): файловые инструменты верхнего уровня.
+- [`tools/delete_tools.py`](tools/delete_tools.py): удаление файлов и директорий.
+- [`tools/local_shell.py`](tools/local_shell.py): shell/terminal execution tools.
+- [`tools/process_tools.py`](tools/process_tools.py): управление процессами.
+- [`tools/search_tools.py`](tools/search_tools.py): web/search tools.
+- [`tools/system_tools.py`](tools/system_tools.py): системные и диагностические инструменты.
+
+## Tool Routing
+
+- Отдельный `tool selector` удалён: агент получает полный набор доступных инструментов на turn.
+- Безопасность исполнения обеспечивают метаданные инструментов, `PolicyEngine`, `stability_guard` и реальные platform/workspace boundaries.
+- Словарный `intent` больше не участвует в боевом control flow; живая message-context логика вынесена в `MessageContextHelper`, а `IntentEngine` оставлен только как совместимый advisory-слой.
+- Если turn-policy требует инструменты, а модель отвечает без tool-calls, включается детерминированный путь self-correction/handoff (reason: `action_requires_tools`).
+- Для коротких follow-up (`продолжай`, `еще раз`) при наличии tool-контекста приоритет отдаётся контексту предыдущего turn, а не только словарю ключевых фраз.
 
 ## Поведение self-correction
 
-- В графе нет отдельного LLM-узла критика: контроль стабильности выполняет детерминированный `stability_guard`.
-- При незакрытой ошибке инструмента выполняется максимум **1** внутренний auto-retry в рамках user turn.
-- Если после auto-retry проблема не закрыта или требуется пользовательский ввод, агент делает безопасный handoff без ложного сообщения об успехе.
+- В графе нет отдельного LLM-узла критика: контроль стабильности выполняют `stability_guard` и явный узел `recovery`.
+- При ошибке инструмента runtime сначала пробует детерминированные recovery-стратегии (`normalize_args`, `switch_tool`, `verify_side_effect`, `repair_then_rerun`, `resume_after_transient_failure`), затем при необходимости включает LLM-replan.
+- Остановка допустима только при подтверждённом успехе, реальном внешнем блокере, platform/workspace boundary или опасной необратимой операции, требующей явного approval.
 
 ## Хранение данных
 
@@ -125,6 +192,8 @@ python main.py
 - `ENABLE_SYSTEM_TOOLS`
 - `ENABLE_PROCESS_TOOLS`
 - `ENABLE_SHELL_TOOL`
+- `SELF_CORRECTION_ENABLE_AUTO_REPAIR`
+- `SELF_CORRECTION_MAX_AUTO_REPAIRS`
 - `ENABLE_APPROVALS`
 - `ALLOW_EXTERNAL_PROCESS_CONTROL`
 
@@ -135,6 +204,9 @@ python main.py
 - `MAX_FILE_SIZE`
 - `MAX_READ_LINES`
 - `MAX_BACKGROUND_PROCESSES`
+- `STREAM_TEXT_MAX_CHARS`
+- `STREAM_EVENTS_MAX`
+- `STREAM_TOOL_BUFFER_MAX`
 
 ### Контекст и retry
 
@@ -172,18 +244,22 @@ python main.py
 .\venv\Scripts\python.exe -m unittest discover -s tests -v
 ```
 
+Примечание: GUI-наборы (`PySide6`) проверяйте через локальный `venv`. Вне `venv` часть UI-тестов может не стартовать из-за отсутствующих desktop-зависимостей.
+
 Ключевые наборы:
 
 - [`tests/test_cli_ux.py`](tests/test_cli_ux.py)
 - [`tests/test_critic_graph.py`](tests/test_critic_graph.py)
+- [`tests/test_intent_engine.py`](tests/test_intent_engine.py)
 - [`tests/test_model_profiles.py`](tests/test_model_profiles.py)
 - [`tests/test_runtime_refactor.py`](tests/test_runtime_refactor.py)
 - [`tests/test_stream_and_filesystem.py`](tests/test_stream_and_filesystem.py)
 - [`tests/test_tooling_refactor.py`](tests/test_tooling_refactor.py)
+- [`tests/test_stability_guard.py`](tests/test_stability_guard.py)
 
 ## Безопасность
 
 - Не храните реальные API-ключи в репозитории.
-- Включайте `ENABLE_SHELL_TOOL=true` только при необходимости и с approvals.
+- Включайте `ENABLE_SHELL_TOOL=true` только при необходимости; destructive shell-операции всё ещё должны проходить через policy/safety boundaries.
 - Для production persistence рекомендуется `postgres` backend.
 - Проверяйте политику инструментов перед запуском mutating/destructive действий.

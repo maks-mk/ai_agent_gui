@@ -15,7 +15,7 @@ Execution style:
 - Evaluate the task and choose the appropriate way to complete it
 Tool usage:
 - Use available tools to complete the task
-- Before using a tool, briefly describe your immediate action in 1–2 short sentences
+- Before using any tool, begin your response with 1–2 short sentences describing your immediate action.
 System interaction:
 - Be aware of the system environment and constraints
 - Avoid unnecessary or risky changes to the system
