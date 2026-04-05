@@ -15,8 +15,33 @@ if not exist "%VENV_PYTHON%" (
     exit /b 1
 )
 
-call "%VENV_PYTHON%" -m PyInstaller --name ai-agent --onefile --windowed --clean --collect-all tiktoken --collect-all langgraph --collect-all langchain --collect-all langchain_openai --collect-all langchain_google_genai --collect-all PySide6 --collect-all qtawesome --collect-all dotenv --collect-submodules tools --hidden-import=tiktoken_ext --hidden-import=tiktoken_ext.openai_public --icon=icon.ico main.py
+pushd "%SCRIPT_DIR%"
+
+call "%VENV_PYTHON%" -m PyInstaller ^
+--name ai-agent ^
+--onefile ^
+--windowed ^
+--clean ^
+--paths "%SCRIPT_DIR%" ^
+--collect-all tiktoken ^
+--collect-all langgraph ^
+--collect-all langchain ^
+--collect-all langchain_openai ^
+--collect-all langchain_google_genai ^
+--collect-all qtawesome ^
+--collect-submodules tools ^
+--collect-submodules ui ^
+--hidden-import=PySide6.QtCore ^
+--hidden-import=PySide6.QtGui ^
+--hidden-import=PySide6.QtWidgets ^
+--hidden-import=PySide6.QtSvg ^
+--hidden-import=tiktoken_ext ^
+--hidden-import=tiktoken_ext.openai_public ^
+--icon="%SCRIPT_DIR%icon.ico" ^
+"%SCRIPT_DIR%main.py"
 set "BUILD_EXIT=%ERRORLEVEL%"
+
+popd
 
 pause
 exit /b %BUILD_EXIT%
