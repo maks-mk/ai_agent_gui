@@ -193,6 +193,64 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual(len(deltas), 1)
         self.assertIn("Автовыполнение остановлено", deltas[0]["full_text"])
 
+    def test_stream_processor_does_not_parse_choice_requests_from_plain_text(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._handle_agent_message(
+            AIMessage(
+                content=(
+                    "Нужно выбрать один из вариантов.\n\n"
+                    "Как продолжаем?\n"
+                    "- direct_api: тестируем только API\n"
+                    "- keep_mcp: оставляем MCP\n"
+                )
+            )
+        )
+
+        choice_events = [event for event in events if event.type == "user_choice_requested"]
+        self.assertEqual(len(choice_events), 0)
+        deltas = [event.payload for event in events if event.type == "assistant_delta"]
+        self.assertEqual(len(deltas), 1)
+        self.assertIn("Как продолжаем?", deltas[0]["full_text"])
+
+    def test_stream_processor_returns_user_choice_interrupt_from_updates(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        async def _stream():
+            yield {
+                "type": "updates",
+                "data": {
+                    "__interrupt__": [
+                        {
+                            "kind": "user_choice",
+                            "question": "Введите ключ API или выберите другой вариант:",
+                            "options": [
+                                "Ввести ключ API",
+                                "Пропустить проверку и вернуть скрипт",
+                                "Завершить проверку",
+                            ],
+                            "recommended": "Ввести ключ API",
+                        }
+                    ]
+                },
+            }
+
+        result = asyncio.run(processor.process_stream(_stream()))
+        self.assertIsNotNone(result.interrupt)
+        assert result.interrupt is not None
+        self.assertEqual(result.interrupt["kind"], "user_choice")
+        self.assertEqual(result.interrupt["question"], "Введите ключ API или выберите другой вариант:")
+        self.assertEqual(
+            result.interrupt["options"],
+            [
+                "Ввести ключ API",
+                "Пропустить проверку и вернуть скрипт",
+                "Завершить проверку",
+            ],
+        )
+
     def test_stream_processor_uses_bounded_memory_caps(self):
         processor = StreamProcessor(
             emit_event=None,

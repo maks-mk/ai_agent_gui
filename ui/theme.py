@@ -245,6 +245,12 @@ def build_stylesheet() -> str:
         background: transparent;
     }}
 
+    QFrame#UserChoiceCard {{
+        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.04)};
+        border: none;
+        border-radius: {SOFT_RADIUS_MD}px;
+    }}
+
     QFrame#TranscriptRow,
     QFrame#ToolRow,
     QFrame#FlatNoticeRow,
@@ -281,6 +287,25 @@ def build_stylesheet() -> str:
     QLabel#TranscriptMeta {{
         color: {TEXT_MUTED};
         font-size: 8.5pt;
+        background: transparent;
+    }}
+
+    QLabel#UserChoiceCardTitle {{
+        color: {TEXT_PRIMARY};
+        font-size: 10.2pt;
+        font-weight: 700;
+        background: transparent;
+    }}
+
+    QLabel#UserChoiceCardQuestion {{
+        color: {TEXT_PRIMARY};
+        font-size: 10pt;
+        background: transparent;
+    }}
+
+    QLabel#UserChoiceCardHint {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.34)};
+        font-size: 8.8pt;
         background: transparent;
     }}
 
@@ -532,6 +557,39 @@ def build_stylesheet() -> str:
         background: {_COMPOSER_BG};
         border: none;
         border-radius: 18px;
+    }}
+
+    QPushButton#UserChoiceOptionButton,
+    QPushButton#UserChoiceCustomButton {{
+        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.03)};
+        border: none;
+        border-radius: {SOFT_RADIUS_SM}px;
+        padding: 10px 12px;
+        color: {TEXT_PRIMARY};
+        text-align: left;
+        font-size: 9.6pt;
+        font-weight: 500;
+    }}
+
+    QPushButton#UserChoiceOptionButton:hover,
+    QPushButton#UserChoiceCustomButton:hover {{
+        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.09)};
+    }}
+
+    QPushButton#UserChoiceOptionButton:pressed,
+    QPushButton#UserChoiceCustomButton:pressed {{
+        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.14)};
+    }}
+
+    QPushButton#UserChoiceOptionButton[recommended="true"] {{
+        background: {blend_hex(SURFACE_ALT, ACCENT_BLUE, 0.18)};
+        color: {TEXT_PRIMARY};
+    }}
+
+    QPushButton#UserChoiceOptionButton:disabled,
+    QPushButton#UserChoiceCustomButton:disabled {{
+        background: {blend_hex(SURFACE_ALT, SURFACE_CARD, 0.35)};
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)};
     }}
 
     QPlainTextEdit#ComposerEdit {{

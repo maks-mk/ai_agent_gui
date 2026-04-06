@@ -1,7 +1,14 @@
 from .composer import ComposerTextEdit
 from .dialogs import ApprovalDialog, ModelSettingsDialog
 from .foundation import TRANSCRIPT_MAX_WIDTH, _fa_icon
-from .messages import AssistantMessageWidget, NoticeWidget, RunStatsWidget, StatusIndicatorWidget, UserMessageWidget
+from .messages import (
+    AssistantMessageWidget,
+    NoticeWidget,
+    RunStatsWidget,
+    StatusIndicatorWidget,
+    UserChoiceCardWidget,
+    UserMessageWidget,
+)
 from .panels import InfoPopupDialog, OverviewPanelWidget, ToolsPanelWidget
 from .sidebar import SessionItemDelegate, SessionListModel, SessionSidebarWidget
 from .tools import CliExecWidget, ToolCardWidget
@@ -26,6 +33,7 @@ __all__ = [
     "ToolCardWidget",
     "ToolsPanelWidget",
     "TRANSCRIPT_MAX_WIDTH",
+    "UserChoiceCardWidget",
     "UserMessageWidget",
     "_fa_icon",
 ]

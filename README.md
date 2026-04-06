@@ -1,15 +1,19 @@
 # Autonomous AI Agent (GUI)
 
-Версия: `v0.65.3b`
+Версия: `v0.65.4b`
 
 Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PySide6`.
-Приложение ориентировано на повседневную разработку: работа с файлами проекта, запуск инструментов, безопасные approvals для рискованных действий и удобная история чатов по проектам.
+Приложение ориентировано на повседневную разработку: работа с файлами проекта, запуск инструментов, безопасные approvals для рискованных действий, структурированный user-choice flow через `interrupt()` и удобная история чатов по проектам.
 
 ## Ключевые возможности
 
 - Чат-интерфейс с persistent-сессиями по проектам.
 - Sidebar с историей чатов, быстрым переключением и удалением сессий.
 - Transcript с компактным отображением шагов агента и инструментов.
+- Inline-карточка выбора для `request_user_input`:
+  - tool вызывает `interrupt()` и паузит граф,
+  - ответ пользователя резюмирует текущий run,
+  - `Свой вариант` отправляет строку обратно в тот же interrupt.
 - Composer с автоподстройкой высоты и отправкой `Enter` (`Shift+Enter` — новая строка).
 - Быстрое добавление файлов через `@`:
   - popup-список рядом с курсором,
@@ -21,13 +25,15 @@ Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PyS
   - работает по текущей сессии,
   - восстановление после перезапуска из transcript.
 - Approval-поток для действительно destructive инструментов (`Approve`, `Deny`, `Always for this session`).
+- Отдельный user-choice flow для обычных вопросов к пользователю, не требующий approval.
 - Поддержка MCP-инструментов (включая Context7 при соответствующей конфигурации).
 - Runtime-статусы (`Thinking`, `Self-correcting`, `Ready`, ошибки) в UI.
 - Профили моделей в GUI:
   - окно `Settings` (CRUD профилей),
   - селектор активной модели рядом с `+` в composer,
-  - безопасное переключение только вне `busy/approval`,
+  - безопасное переключение только вне активного выполнения и approval,
   - применение выбранной модели к **следующему** запросу без сброса чата.
+- User-choice и approval flow строятся на LangGraph `interrupt()` и `Command(resume=...)`, а не на парсинге текста ответа модели.
 - Автоподхват модели из `.env`:
   - при первом запуске env-модель записывается в настройки,
   - при последующих запусках env-модели аккуратно подмешиваются в профильный список,
@@ -35,7 +41,7 @@ Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PyS
 
 ## Архитектура
 
-- [`agent.py`](agent.py): сборка агентного графа (`summarize -> update_step -> agent -> tools/approval -> stability_guard -> recovery -> update_step -> agent`), LLM, реестр инструментов и checkpoint backend.
+- [`agent.py`](agent.py): сборка агентного графа, LLM, реестр инструментов и checkpoint backend.
 - [`main.py`](main.py): тонкая точка входа GUI-приложения.
 - [`ui/main_window.py`](ui/main_window.py): главное окно, меню, sidebar, transcript, composer и обработка UI-событий.
 - [`ui/runtime.py`](ui/runtime.py): runtime-контроллер, запуск графа, стриминг событий, переключение и восстановление сессий, сборка payload для UI.
@@ -48,6 +54,7 @@ Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PyS
 - [`core/session_store.py`](core/session_store.py): хранение и индекс сессий.
 - [`core/config.py`](core/config.py): загрузка env-конфигурации.
 - [`tools/tool_registry.py`](tools/tool_registry.py): локальные и MCP инструменты, метаданные, политика безопасности.
+- [`tools/user_input_tool.py`](tools/user_input_tool.py): `request_user_input`, который использует `interrupt()` для пользовательского выбора.
 
 ## Модульная Карта
 
@@ -80,7 +87,7 @@ Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PyS
 ### `ui/`
 
 - [`ui/main_window.py`](ui/main_window.py): центральный координатор GUI и wiring сигналов.
-- [`ui/runtime.py`](ui/runtime.py): мост между runtime и интерфейсом, snapshot/payload, approvals, восстановление transcript.
+- [`ui/runtime.py`](ui/runtime.py): мост между runtime и интерфейсом, snapshot/payload, approvals, user-choice, восстановление transcript.
 - [`ui/streaming.py`](ui/streaming.py): интерпретация LangGraph stream, tool start/finish, статусы и уведомления.
 - [`ui/theme.py`](ui/theme.py): тема, цвета, размеры и генерация stylesheet.
 - [`ui/visibility.py`](ui/visibility.py): внутренние сообщения агента и правила их показа в transcript.
@@ -108,7 +115,8 @@ Desktop AI-агент с графовым runtime (`LangGraph`) и GUI на `PyS
 
 - Отдельный `tool selector` удалён: агент получает полный набор доступных инструментов на turn.
 - Безопасность исполнения обеспечивают метаданные инструментов, `PolicyEngine`, `stability_guard` и реальные platform/workspace boundaries.
-- Словарный `intent` больше не участвует в боевом control flow; живая message-context логика вынесена в `MessageContextHelper`, а `IntentEngine` оставлен только как совместимый advisory-слой.
+- `request_user_input` всегда доступен и не проходит через approval flow.
+- Словарный `intent` больше не участвует в боевом control flow; живая message-context логика вынесена в `MessageContextHelper`, а `IntentEngine` оставлен только для совместимости.
 - Если turn-policy требует инструменты, а модель отвечает без tool-calls, включается детерминированный путь self-correction/handoff (reason: `action_requires_tools`).
 - Для коротких follow-up (`продолжай`, `еще раз`) при наличии tool-контекста приоритет отдаётся контексту предыдущего turn, а не только словарю ключевых фраз.
 
@@ -196,6 +204,7 @@ python main.py
 - `SELF_CORRECTION_MAX_AUTO_REPAIRS`
 - `ENABLE_APPROVALS`
 - `ALLOW_EXTERNAL_PROCESS_CONTROL`
+- Отдельного флага для `request_user_input` нет, tool всегда включен.
 
 ### Лимиты
 

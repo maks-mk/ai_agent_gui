@@ -22,6 +22,7 @@ from langchain_core.messages import (
 )
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
+from langgraph.errors import GraphInterrupt
 from langgraph.types import interrupt
 
 from core.state import AgentState
@@ -114,7 +115,6 @@ class AgentNodes:
     PLANNING_TOOL_NAMES = frozenset({"sequentialthinking", "sequential-thinking", "sequential_thinking"})
     PLANNING_TOOL_MAX_CALLS_PER_TURN = 4
     PROVIDER_SAFE_TOOL_CALL_ID_RE = re.compile(r"^[A-Za-z0-9]{9}$")
-
     def __init__(
         self,
         config: AgentConfig,
@@ -324,6 +324,7 @@ class AgentNodes:
                 tool_call.get("args") or {},
             )
             for tool_call in tool_calls
+            if tool_call.get("name") != "request_user_input"
         )
 
     # --- NODE: SUMMARIZE ---
@@ -835,7 +836,7 @@ class AgentNodes:
         )
         messages = state["messages"]
         summary = state.get("summary", "")
-        current_task = state.get("current_task") or self._derive_current_task(messages)
+        current_task = self._resolve_current_task(state, messages)
         current_turn_id = self._current_turn_id(state, messages)
         open_tool_issue = self._get_active_open_tool_issue(state, messages, current_turn_id)
         recovery_state = self._get_recovery_state(state, current_turn_id=current_turn_id)
@@ -1135,7 +1136,7 @@ class AgentNodes:
         )
         messages = state.get("messages", [])
         current_turn_id = self._current_turn_id(state, messages)
-        current_task = (state.get("current_task") or self._derive_current_task(messages)).strip()
+        current_task = self._resolve_current_task(state, messages).strip()
         open_tool_issue = self._get_active_open_tool_issue(state, messages, current_turn_id)
         last_ai = self._get_last_ai_message(messages)
         last_message = messages[-1] if messages else None
@@ -1814,6 +1815,8 @@ class AgentNodes:
                 reason="task_cancelled",
             )
             raise
+        except GraphInterrupt:
+            raise
         except Exception as e:
             self._log_run_event(
                 state,
@@ -1835,6 +1838,21 @@ class AgentNodes:
                 if content and content != constants.REFLECTION_PROMPT:
                     return content
         return ""
+
+    def _resolve_current_task(self, state: AgentState | None, messages: List[BaseMessage]) -> str:
+        derived_task = self._derive_current_task(messages).strip()
+        stored_task = str((state or {}).get("current_task") or "").strip()
+        if derived_task:
+            if stored_task and stored_task != derived_task:
+                self._log_run_event(
+                    state,
+                    "current_task_overridden_by_latest_user_message",
+                    run_id=None if state is None else state.get("run_id", ""),
+                    previous_task=compact_text(stored_task, 180),
+                    latest_user_message=compact_text(derived_task, 180),
+                )
+            return derived_task
+        return stored_task
 
     def _build_tool_issue_handoff_text(
         self,

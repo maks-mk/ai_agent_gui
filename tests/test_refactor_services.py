@@ -74,6 +74,30 @@ class RefactorServicesTests(unittest.TestCase):
         self.assertIsInstance(sanitized[1], AIMessage)
         self.assertEqual(str(sanitized[1].content), "Continuing.")
 
+    def test_context_builder_repeats_current_task_after_tool_result(self):
+        builder = ContextBuilder(
+            config=self._make_config(),
+            prompt_loader=lambda: "Base prompt {{current_date}}",
+            is_internal_retry=lambda _msg: False,
+            log_run_event=lambda *_args, **_kwargs: None,
+            recovery_message_builder=lambda _state: None,
+            provider_safe_tool_call_id_re=__import__("re").compile(r"^[A-Za-z0-9]{9}$"),
+        )
+
+        context = builder.build(
+            [ToolMessage(content="ok", tool_call_id="tool-1", name="read_file")],
+            None,
+            summary="",
+            current_task="Проверь list_mistral_models.py",
+            tools_available=True,
+            active_tool_names=["read_file"],
+            open_tool_issue=None,
+            recovery_state=None,
+        )
+
+        self.assertIsInstance(context[-1], HumanMessage)
+        self.assertIn("Проверь list_mistral_models.py", str(context[-1].content))
+
     def test_context_builder_stringifies_openai_assistant_content_lists(self):
         builder = ContextBuilder(
             config=self._make_config(),

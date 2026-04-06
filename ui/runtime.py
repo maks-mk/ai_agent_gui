@@ -350,7 +350,7 @@ def build_transcript_payload(state_values: dict[str, Any] | None) -> dict[str, A
             text = _extract_ai_text(message)
             if text.strip():
                 _thought, clean_text, _has_thought = parse_thought(text)
-                markdown = prepare_markdown_for_render(clean_text.strip())
+                markdown = prepare_markdown_for_render(clean_text.strip()) if clean_text.strip() else ""
                 if markdown:
                     current_turn["blocks"].append({"type": "assistant", "markdown": markdown})
             continue
@@ -449,6 +449,47 @@ def normalize_approval_mode(value: str | None) -> str:
     return APPROVAL_MODE_PROMPT
 
 
+def build_user_choice_payload(interrupt_payload: dict) -> dict[str, Any]:
+    options_payload: list[dict[str, Any]] = []
+    raw_options = interrupt_payload.get("options", []) if isinstance(interrupt_payload, dict) else []
+    recommended = str((interrupt_payload or {}).get("recommended", "") or "").strip()
+    normalized_recommended = recommended.casefold()
+    matched_recommended_label = ""
+
+    for index, raw_option in enumerate(raw_options, start=1):
+        if isinstance(raw_option, dict):
+            label = str(raw_option.get("label") or raw_option.get("value") or "").strip()
+            submit_text = str(raw_option.get("submit_text") or raw_option.get("value") or label).strip()
+            key = str(raw_option.get("key") or f"option_{index}").strip()
+        else:
+            label = str(raw_option or "").strip()
+            submit_text = label
+            key = f"option_{index}"
+        if not label or not submit_text:
+            continue
+        candidates = {key.casefold(), submit_text.casefold(), label.casefold()}
+        is_recommended = bool(normalized_recommended and normalized_recommended in candidates)
+        if is_recommended and not matched_recommended_label:
+            matched_recommended_label = label
+        options_payload.append(
+            {
+                "key": key,
+                "label": label,
+                "submit_text": submit_text,
+                "recommended": is_recommended,
+            }
+        )
+
+    recommended_key = matched_recommended_label
+
+    return {
+        "kind": "user_choice",
+        "question": interrupt_payload.get("question", "How would you like to proceed?"),
+        "options": options_payload,
+        "recommended_key": recommended_key,
+    }
+
+
 def build_approval_payload(interrupt_payload: dict, current_session: SessionSnapshot) -> dict[str, Any]:
     req_tools = interrupt_payload.get("tools", []) if isinstance(interrupt_payload, dict) else []
     summary = summarize_approval_request(req_tools)
@@ -508,6 +549,7 @@ class AgentRunWorker(QObject):
     initialization_failed = Signal(str)
     event_emitted = Signal(object)
     approval_requested = Signal(object)
+    user_choice_requested = Signal(object)
     session_changed = Signal(object)
     busy_changed = Signal(bool)
     shutdown_complete = Signal()
@@ -528,6 +570,7 @@ class AgentRunWorker(QObject):
         self.ui_run_logger: JsonlRunLogger | None = None
         self._is_busy = False
         self._awaiting_approval = False
+        self._awaiting_interrupt_kind = ""
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
         if self._loop is None:
@@ -1060,6 +1103,14 @@ class AgentRunWorker(QObject):
                     self._set_busy(False)
                     return
 
+                interrupt_kind = str((result.interrupt or {}).get("kind", "") or "")
+                if interrupt_kind == "user_choice":
+                    self._awaiting_approval = True
+                    self._awaiting_interrupt_kind = "user_choice"
+                    self.user_choice_requested.emit(build_user_choice_payload(result.interrupt))
+                    self._set_busy(False)
+                    return
+
                 approval_payload = build_approval_payload(result.interrupt, self.current_session)
                 if self.current_session.approval_mode == APPROVAL_MODE_ALWAYS:
                     self.event_emitted.emit(
@@ -1069,6 +1120,7 @@ class AgentRunWorker(QObject):
                     continue
 
                 self._awaiting_approval = True
+                self._awaiting_interrupt_kind = interrupt_kind or "tool_approval"
                 self.approval_requested.emit(approval_payload)
                 self._set_busy(False)
                 return
@@ -1078,7 +1130,11 @@ class AgentRunWorker(QObject):
 
     @Slot(bool, bool)
     def resume_approval(self, approved: bool, always: bool = False) -> None:
-        if not self.current_session or not self._awaiting_approval:
+        if (
+            not self.current_session
+            or not self._awaiting_approval
+            or self._awaiting_interrupt_kind == "user_choice"
+        ):
             return
         self._set_busy(True)
         try:
@@ -1089,6 +1145,7 @@ class AgentRunWorker(QObject):
 
     async def _resume_approval_async(self, approved: bool, always: bool) -> None:
         self._awaiting_approval = False
+        self._awaiting_interrupt_kind = ""
         if always:
             self.current_session.approval_mode = APPROVAL_MODE_ALWAYS
             self.store.save_active_session(self.current_session, touch=False, set_active=True)
@@ -1098,6 +1155,30 @@ class AgentRunWorker(QObject):
             StreamEvent("approval_resolved", {"approved": approved, "always": always, "auto": False})
         )
         await self._run_graph_payload(Command(resume={"approved": approved}))
+
+    @Slot(str)
+    def resume_user_choice(self, chosen: str) -> None:
+        if (
+            not self.current_session
+            or not self._awaiting_approval
+            or self._awaiting_interrupt_kind != "user_choice"
+        ):
+            return
+        chosen_text = str(chosen or "").strip()
+        if not chosen_text:
+            return
+        self._set_busy(True)
+        try:
+            self._run(self._resume_user_choice_async(chosen_text))
+        except Exception as exc:
+            self.event_emitted.emit(StreamEvent("run_failed", {"message": str(exc)}))
+            self._set_busy(False)
+
+    async def _resume_user_choice_async(self, chosen: str) -> None:
+        self._awaiting_approval = False
+        self._awaiting_interrupt_kind = ""
+        self.event_emitted.emit(StreamEvent("user_choice_resolved", {"chosen": chosen}))
+        await self._run_graph_payload(Command(resume=chosen))
 
     @Slot()
     def stop_run(self) -> None:
@@ -1309,6 +1390,7 @@ class AgentRuntimeController(QObject):
     initialization_failed = Signal(str)
     event_emitted = Signal(object)
     approval_requested = Signal(object)
+    user_choice_requested = Signal(object)
     session_changed = Signal(object)
     busy_changed = Signal(bool)
 
@@ -1316,6 +1398,7 @@ class AgentRuntimeController(QObject):
     _start_run_requested = Signal(str)
     _stop_run_requested = Signal()
     _resume_requested = Signal(bool, bool)
+    _resume_user_choice_requested = Signal(str)
     _new_session_requested = Signal()
     _switch_session_requested = Signal(str)
     _delete_session_requested = Signal(str)
@@ -1335,6 +1418,7 @@ class AgentRuntimeController(QObject):
         self._start_run_requested.connect(self._worker.start_run)
         self._stop_run_requested.connect(self._worker.stop_run, Qt.DirectConnection)
         self._resume_requested.connect(self._worker.resume_approval)
+        self._resume_user_choice_requested.connect(self._worker.resume_user_choice)
         self._new_session_requested.connect(self._worker.new_session)
         self._switch_session_requested.connect(self._worker.switch_session)
         self._delete_session_requested.connect(self._worker.delete_session)
@@ -1346,6 +1430,7 @@ class AgentRuntimeController(QObject):
         self._worker.initialization_failed.connect(self.initialization_failed)
         self._worker.event_emitted.connect(self.event_emitted)
         self._worker.approval_requested.connect(self.approval_requested)
+        self._worker.user_choice_requested.connect(self.user_choice_requested)
         self._worker.session_changed.connect(self.session_changed)
         self._worker.busy_changed.connect(self.busy_changed)
         self._worker.shutdown_complete.connect(self._thread.quit)
@@ -1367,6 +1452,9 @@ class AgentRuntimeController(QObject):
 
     def resume_approval(self, approved: bool, always: bool = False) -> None:
         self._resume_requested.emit(approved, always)
+
+    def resume_user_choice(self, chosen: str) -> None:
+        self._resume_user_choice_requested.emit(chosen)
 
     def new_session(self) -> None:
         self._new_session_requested.emit()

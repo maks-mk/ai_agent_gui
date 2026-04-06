@@ -15,7 +15,13 @@ from agent import create_agent_workflow
 from core.checkpointing import create_checkpoint_runtime
 from core.config import AgentConfig
 from core import gui_runtime
-from core.gui_runtime import append_project_label, build_transcript_payload, generate_chat_title, short_project_label
+from core.gui_runtime import (
+    append_project_label,
+    build_transcript_payload,
+    build_user_choice_payload,
+    generate_chat_title,
+    short_project_label,
+)
 from core.model_profiles import ModelProfileStore
 from core.nodes import AgentNodes
 from core.run_logger import JsonlRunLogger
@@ -946,6 +952,75 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(blocks[0]["message"], "Автопродолжение остановлено. Нужен новый запрос.")
         self.assertEqual(blocks[0]["level"], "warning")
 
+    def test_build_transcript_payload_keeps_assistant_text_without_pending_choice_state(self):
+        payload = build_transcript_payload(
+            {
+                "messages": [
+                    HumanMessage(content="Нужно выбрать режим"),
+                    AIMessage(
+                        content=(
+                            "Сначала нужно решить, какой путь подтверждаем.\n\n"
+                            "Сделаю паузу и запрошу выбор через tool.\n"
+                        )
+                    ),
+                ],
+            }
+        )
+
+        self.assertEqual(len(payload["turns"]), 1)
+        blocks = payload["turns"][0]["blocks"]
+        self.assertEqual([block["type"] for block in blocks], ["assistant"])
+        self.assertIn("Сначала нужно решить", blocks[0]["markdown"])
+        legacy_choice_key = "_".join(("pending", "user", "choice"))
+        self.assertNotIn(legacy_choice_key, payload)
+
+    def test_build_user_choice_payload_adapts_interrupt_options_for_card(self):
+        payload = build_user_choice_payload(
+            {
+                "kind": "user_choice",
+                "question": "Введите ключ API или выберите другой вариант:",
+                "options": [
+                    "Ввести ключ API",
+                    "Пропустить проверку и вернуть скрипт",
+                    "Завершить проверку",
+                ],
+                "recommended": "Ввести ключ API",
+            }
+        )
+
+        self.assertEqual(payload["kind"], "user_choice")
+        self.assertEqual(payload["question"], "Введите ключ API или выберите другой вариант:")
+        self.assertEqual(payload["recommended_key"], "Ввести ключ API")
+        self.assertEqual(
+            [option["submit_text"] for option in payload["options"]],
+            [
+                "Ввести ключ API",
+                "Пропустить проверку и вернуть скрипт",
+                "Завершить проверку",
+            ],
+        )
+        recommended = [option for option in payload["options"] if option["recommended"]]
+        self.assertEqual(len(recommended), 1)
+        self.assertEqual(recommended[0]["submit_text"], "Ввести ключ API")
+
+    def test_build_user_choice_payload_matches_recommended_by_synthesized_option_key(self):
+        payload = build_user_choice_payload(
+            {
+                "kind": "user_choice",
+                "question": "Как продолжаем?",
+                "options": [
+                    "Вариант 1: direct_api",
+                    "Вариант 2: keep_mcp",
+                ],
+                "recommended": "option_1",
+            }
+        )
+
+        recommended = [option for option in payload["options"] if option["recommended"]]
+        self.assertEqual(len(recommended), 1)
+        self.assertEqual(recommended[0]["key"], "option_1")
+        self.assertEqual(payload["recommended_key"], "Вариант 1: direct_api")
+
     async def test_worker_initialize_can_force_new_session_on_reinitialize(self):
         tmp = self._workspace_tempdir()
         session_path = tmp / "session.json"
@@ -1206,6 +1281,35 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             if "UNRESOLVED TOOL FAILURE" in str(message.content) or "TOOL EXECUTION DENIED BY USER" in str(message.content)
         ]
         self.assertFalse(unresolved_messages)
+
+    async def test_latest_user_message_overrides_stale_current_task_in_state(self):
+        agent_llm = FakeLLM([AIMessage(content="Проверяю только указанный файл.")])
+        nodes = AgentNodes(
+            config=self._make_config(),
+            llm=agent_llm,
+            tools=[],
+            llm_with_tools=agent_llm,
+        )
+        state = {
+            **self._initial_state("проверь list_mistral_models.py"),
+            "messages": [
+                HumanMessage(content="восстанови проверку mistral api"),
+                AIMessage(content="Промежуточный результат."),
+                HumanMessage(content="проверь list_mistral_models.py"),
+            ],
+            "current_task": "восстанови проверку mistral api",
+            "turn_id": 1,
+        }
+
+        result = await nodes.agent_node(state)
+
+        self.assertEqual(result["current_task"], "проверь list_mistral_models.py")
+        visible_humans = [
+            str(message.content)
+            for message in agent_llm.invocations[0]
+            if isinstance(message, HumanMessage)
+        ]
+        self.assertIn("проверь list_mistral_models.py", visible_humans)
 
     async def test_worker_delete_active_session_switches_to_fallback_session(self):
         tmp = self._workspace_tempdir()

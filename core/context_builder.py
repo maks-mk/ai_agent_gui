@@ -81,7 +81,14 @@ class ContextBuilder:
         if not isinstance(last_visible, (HumanMessage, ToolMessage)):
             full_context.append(HumanMessage(content=current_task))
         if isinstance(last_visible, ToolMessage) and not recovery_message and not open_tool_issue:
-            full_context.append(HumanMessage(content=constants.RECOVERY_CONTINUE_PROMPT))
+            task_text = current_task.strip() or "Continue the user's latest explicit request."
+            full_context.append(
+                HumanMessage(
+                    content=constants.RECOVERY_CONTINUE_PROMPT_TEMPLATE.format(
+                        current_task=task_text
+                    )
+                )
+            )
         return self.normalize_system_prefix(full_context)
 
     def sanitize_messages(

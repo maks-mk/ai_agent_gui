@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 # Agent version (single source of truth)
-AGENT_VERSION = "v0.65.3b"
+AGENT_VERSION = "v0.65.4b"
 
 # Определение корневой директории проекта
 if getattr(sys, 'frozen', False):
@@ -37,8 +37,8 @@ UNRESOLVED_TOOL_ERROR_PROMPT_TEMPLATE = (
     "or clearly explain the blocker to the user."
 )
 
-RECOVERY_CONTINUE_PROMPT = (
-    "Continue recovery for the current task. "
+RECOVERY_CONTINUE_PROMPT_TEMPLATE = (
+    "Continue the current task: {current_task}. "
     "Use tools or another verifiable step instead of stopping."
 )
 

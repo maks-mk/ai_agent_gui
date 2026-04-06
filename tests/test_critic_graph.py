@@ -9,6 +9,7 @@ from agent import create_agent_workflow
 from core.config import AgentConfig
 from core.nodes import AgentNodes
 from core.tool_policy import ToolMetadata
+from tools.user_input_tool import request_user_input
 from ui.runtime import build_graph_config
 
 
@@ -149,6 +150,88 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertEqual(len(agent_llm.invocations), 1)
         self.assertIsNone(result["open_tool_issue"])
+
+    async def test_request_user_input_interrupts_and_resumes_with_selected_option(self):
+        tool = FakeTool("edit_file", "Success: File edited.")
+        app, agent_llm = self._build_app(
+            agent_responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "request_user_input",
+                            "args": {
+                                "question": "Какой вариант выбираем?",
+                                "options": ["direct_api", "keep_mcp"],
+                                "recommended": "direct_api",
+                            },
+                            "id": "tc-choice-1",
+                        }
+                    ],
+                ),
+                AIMessage(
+                    content="",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {"path": "demo.txt", "old_string": "a", "new_string": "b"},
+                            "id": "tc-edit-1",
+                        }
+                    ]
+                ),
+                AIMessage(content="Режим выбран, правка готова."),
+            ],
+            tools=[request_user_input, tool],
+            tool_metadata={
+                "request_user_input": ToolMetadata(name="request_user_input", read_only=True),
+                "edit_file": ToolMetadata(name="edit_file", mutating=True),
+            },
+        )
+
+        thread_config = {"configurable": {"thread_id": "await-user-input"}, "recursion_limit": 24}
+        interrupted = await app.ainvoke(
+            self._initial_state("Выбери стратегию"),
+            config=thread_config,
+        )
+
+        self.assertIn("__interrupt__", interrupted)
+        self.assertEqual(tool.calls, [])
+        self.assertEqual(len(agent_llm.invocations), 1)
+
+        resumed = await app.ainvoke(Command(resume="direct_api"), config=thread_config)
+
+        self.assertEqual(tool.calls, [{"path": "demo.txt", "old_string": "a", "new_string": "b"}])
+        self.assertEqual(len(agent_llm.invocations), 3)
+        self.assertEqual(resumed["turn_outcome"], "finish_turn")
+        self.assertIn("правка готова", str(resumed["messages"][-1].content).lower())
+
+    async def test_plain_text_without_await_control_does_not_pause_tool_execution(self):
+        tool = FakeTool("edit_file", "Success: File edited.")
+        app, _agent_llm = self._build_app(
+            agent_responses=[
+                AIMessage(
+                    content="Нужно уточнение, но сначала быстро подготовлю правку.",
+                    tool_calls=[
+                        {
+                            "name": "edit_file",
+                            "args": {"path": "demo.txt", "old_string": "a", "new_string": "b"},
+                            "id": "tc-no-await-1",
+                        }
+                    ],
+                ),
+                AIMessage(content="Готово."),
+            ],
+            tools=[tool],
+        )
+
+        result = await app.ainvoke(
+            self._initial_state("Подготовь правку"),
+            config={"configurable": {"thread_id": "no-await-user-input"}, "recursion_limit": 24},
+        )
+
+        self.assertEqual(tool.calls, [{"path": "demo.txt", "old_string": "a", "new_string": "b"}])
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertIn("готово", str(result["messages"][-1].content).lower())
 
     async def test_retryable_cli_exec_issue_gets_auto_retry_then_finishes_after_success(self):
         cli_tool = FakeTool(

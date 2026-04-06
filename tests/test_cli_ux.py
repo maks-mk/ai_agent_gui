@@ -8,14 +8,14 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QEvent, QMimeData, QObject, Qt, Signal
 from PySide6.QtGui import QKeyEvent, QTextCursor, QTextFormat
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QLabel, QFrame, QSizePolicy, QToolBar
+from PySide6.QtWidgets import QApplication, QLabel, QFrame, QPushButton, QSizePolicy, QToolBar
 
 import main as agent_cli
 from core.gui_runtime import build_runtime_snapshot, summarize_approval_request
 from core.stream_processor import StreamEvent
 from core.tool_policy import ToolMetadata
 from core.ui_theme import AMBER_WARNING, BORDER, ERROR_RED, SURFACE_BG, SURFACE_CARD, TEXT_MUTED
-from ui.widgets.foundation import AutoTextBrowser, CopySafePlainTextEdit
+from ui.widgets.foundation import AutoTextBrowser, CopySafePlainTextEdit, TRANSCRIPT_MAX_WIDTH
 
 
 class FakeTool:
@@ -64,6 +64,7 @@ class FakeController(QObject):
     initialization_failed = Signal(str)
     event_emitted = Signal(object)
     approval_requested = Signal(object)
+    user_choice_requested = Signal(object)
     session_changed = Signal(object)
     busy_changed = Signal(bool)
 
@@ -71,6 +72,7 @@ class FakeController(QObject):
         super().__init__()
         self.start_calls: list[str] = []
         self.resume_calls: list[tuple[bool, bool]] = []
+        self.resume_choice_calls: list[str] = []
         self.new_session_calls = 0
         self.switch_session_calls: list[str] = []
         self.delete_session_calls: list[str] = []
@@ -88,6 +90,9 @@ class FakeController(QObject):
 
     def resume_approval(self, approved: bool, always: bool = False):
         self.resume_calls.append((approved, always))
+
+    def resume_user_choice(self, chosen: str):
+        self.resume_choice_calls.append(chosen)
 
     def new_session(self):
         self.new_session_calls += 1
@@ -255,6 +260,77 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(self.controller.start_calls, ["Собери summary"])
         self.assertEqual(self.window.composer.toPlainText(), "")
+
+    def test_user_choice_card_renders_above_composer_and_resumes_selected_option(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Выбери режим"}))
+        self.controller.user_choice_requested.emit(
+            {
+                "question": "Какой режим выбираем?",
+                "recommended_key": "direct_api",
+                "options": [
+                    {
+                        "key": "direct_api",
+                        "label": "direct_api: убрать MCP и проверить только API",
+                        "submit_text": "direct_api",
+                        "recommended": True,
+                    },
+                    {
+                        "key": "keep_mcp",
+                        "label": "keep_mcp: оставить MCP и настроить сервер",
+                        "submit_text": "keep_mcp",
+                        "recommended": False,
+                    },
+                ],
+            }
+        )
+        self._process_events()
+
+        self.assertFalse(self.window.user_choice_card.isHidden())
+        self.assertEqual(self.window.user_choice_card.title_label.text(), "Нужен выбор пользователя")
+        self.assertEqual(self.window.user_choice_card.question_label.text(), "Какой режим выбираем?")
+        option_buttons = self.window.user_choice_card.findChildren(QPushButton, "UserChoiceOptionButton")
+        self.assertEqual(len(option_buttons), 2)
+        self.assertTrue(option_buttons[0].property("recommended"))
+
+        QTest.mouseClick(option_buttons[0], Qt.LeftButton)
+        self._process_events()
+
+        self.assertEqual(self.controller.start_calls, [])
+        self.assertEqual(self.controller.resume_choice_calls, ["direct_api"])
+        self.assertTrue(self.window.user_choice_card.isHidden())
+
+    def test_user_choice_card_custom_option_arms_composer_and_resumes_on_submit(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.controller.user_choice_requested.emit(
+            {
+                "question": "Как продолжаем?",
+                "recommended_key": "",
+                "options": [
+                    {
+                        "key": "direct_api",
+                        "label": "direct_api: тестируем только API",
+                        "submit_text": "direct_api",
+                        "recommended": False,
+                    }
+                ],
+            }
+        )
+        self.window.composer.setPlainText("Мой вариант")
+        self._process_events()
+
+        QTest.mouseClick(self.window.user_choice_card.custom_button, Qt.LeftButton)
+        self._process_events()
+
+        self.assertFalse(self.window.user_choice_card.isHidden())
+        self.assertEqual(self.window.composer.toPlainText(), "Мой вариант")
+        self.assertEqual(self.window.composer.textCursor().selectedText(), "Мой вариант")
+
+        self.window._submit_request()
+
+        self.assertEqual(self.controller.start_calls, [])
+        self.assertEqual(self.controller.resume_choice_calls, ["Мой вариант"])
+        self.assertTrue(self.window.user_choice_card.isHidden())
 
     def test_composer_enter_submits_while_shift_enter_adds_newline(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1276,9 +1352,9 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(scrollbar.value(), scrollbar.maximum())
 
     def test_transcript_uses_centered_column_instead_of_full_width_feed(self):
-        self.assertEqual(self.window.transcript.column.maximumWidth(), 1180)
+        self.assertEqual(self.window.transcript.column.maximumWidth(), TRANSCRIPT_MAX_WIDTH)
         self.assertEqual(self.window.transcript.column.objectName(), "TranscriptColumn")
-        self.assertEqual(self.window.composer_container.maximumWidth(), 1180)
+        self.assertEqual(self.window.composer_container.maximumWidth(), TRANSCRIPT_MAX_WIDTH)
         self.assertEqual(self.window.composer_container.objectName(), "CenteredComposerRow")
 
     def test_composer_buttons_have_correct_tooltips(self):

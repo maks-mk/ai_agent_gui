@@ -111,7 +111,6 @@ class StreamProcessor:
         if self.pending_interrupt is not None:
             interrupt_payload = self.pending_interrupt
             self.pending_interrupt = None
-            self._emit("approval_requested", {"interrupt": interrupt_payload})
             return StreamProcessResult(stats=None, interrupt=interrupt_payload, events=list(self.events))
 
         duration = time.time() - self.start_time
@@ -267,14 +266,16 @@ class StreamProcessor:
         else:
             self.clean_full = self.full_text
             self.has_thought = False
+
         self._trim_text_buffers()
 
         self._emit_status()
+        rendered_markdown = prepare_markdown_for_render(self.clean_full) if self.clean_full else ""
         self._emit(
             "assistant_delta",
             {
                 "text": chunk,
-                "full_text": prepare_markdown_for_render(self.clean_full),
+                "full_text": rendered_markdown,
                 "has_thought": self.has_thought,
             },
         )

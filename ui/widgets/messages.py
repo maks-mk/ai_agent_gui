@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-from PySide6.QtCore import QSize, Qt
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QSizePolicy, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from ui.theme import ACCENT_BLUE, AMBER_WARNING, ERROR_RED, SUCCESS_GREEN, TEXT_MUTED
 from .foundation import AutoTextBrowser, CodeBlockWidget, _collapsed_user_message_text, _fa_icon
@@ -222,6 +222,108 @@ class AssistantMessageWidget(QFrame):
 
     def markdown(self) -> str:
         return self._markdown
+
+
+class UserChoiceCardWidget(QFrame):
+    option_selected = Signal(str)
+    custom_option_requested = Signal()
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("UserChoiceCard")
+        self.setFrameShape(QFrame.NoFrame)
+        self._option_buttons: list[QPushButton] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(8)
+
+        self.title_label = QLabel("Нужен выбор пользователя")
+        self.title_label.setObjectName("UserChoiceCardTitle")
+        layout.addWidget(self.title_label)
+
+        self.question_label = QLabel("")
+        self.question_label.setObjectName("UserChoiceCardQuestion")
+        self.question_label.setWordWrap(True)
+        self.question_label.setTextInteractionFlags(Qt.TextSelectableByMouse | Qt.LinksAccessibleByKeyboard)
+        layout.addWidget(self.question_label)
+
+        self.hint_label = QLabel("")
+        self.hint_label.setObjectName("UserChoiceCardHint")
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setVisible(False)
+        layout.addWidget(self.hint_label)
+
+        self.options_host = QWidget()
+        self.options_layout = QVBoxLayout(self.options_host)
+        self.options_layout.setContentsMargins(0, 2, 0, 0)
+        self.options_layout.setSpacing(6)
+        layout.addWidget(self.options_host)
+
+        self.custom_button = QPushButton("Свой вариант")
+        self.custom_button.setObjectName("UserChoiceCustomButton")
+        self.custom_button.clicked.connect(self.custom_option_requested.emit)
+        layout.addWidget(self.custom_button)
+
+        self.setVisible(False)
+
+    def set_request(self, payload: dict[str, object]) -> None:
+        question = str(payload.get("question") or "").strip()
+        options = list(payload.get("options") or [])
+        recommended_key = str(payload.get("recommended_key") or payload.get("recommended") or "").strip()
+
+        self.question_label.setText(question or "Выберите, как продолжить.")
+        if recommended_key:
+            self.hint_label.setText(f"Рекомендуемый вариант: {recommended_key}")
+            self.hint_label.setVisible(True)
+        else:
+            self.hint_label.clear()
+            self.hint_label.setVisible(False)
+
+        while self.options_layout.count():
+            item = self.options_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._option_buttons.clear()
+
+        for option_payload in options:
+            if not isinstance(option_payload, dict):
+                continue
+            label = str(option_payload.get("label") or "").strip()
+            submit_text = str(option_payload.get("submit_text") or label).strip()
+            if not label or not submit_text:
+                continue
+
+            button = QPushButton(label)
+            button.setObjectName("UserChoiceOptionButton")
+            button.setCursor(Qt.PointingHandCursor)
+            button.setAutoDefault(False)
+            button.setDefault(False)
+            button.setProperty("recommended", bool(option_payload.get("recommended")))
+            button.clicked.connect(lambda _checked=False, value=submit_text: self.option_selected.emit(value))
+            self.options_layout.addWidget(button)
+            self._option_buttons.append(button)
+
+        self.options_layout.addStretch(1)
+        self.setVisible(bool(self._option_buttons) or bool(question))
+
+    def clear_request(self) -> None:
+        self.question_label.clear()
+        self.hint_label.clear()
+        self.hint_label.setVisible(False)
+        while self.options_layout.count():
+            item = self.options_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._option_buttons.clear()
+        self.setVisible(False)
+
+    def set_actions_enabled(self, enabled: bool) -> None:
+        for button in self._option_buttons:
+            button.setEnabled(enabled)
+        self.custom_button.setEnabled(enabled)
 
 
 

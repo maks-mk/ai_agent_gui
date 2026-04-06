@@ -274,6 +274,19 @@ class ToolRegistry:
                     )
                 },
             ),
+            ToolLoaderSpec(
+                name="user_input",
+                enabled=lambda config: True,
+                module_name="tools.user_input_tool",
+                tool_names=("request_user_input",),
+                metadata={
+                    "request_user_input": ToolMetadata(
+                        name="request_user_input",
+                        read_only=True,
+                        requires_approval=False,
+                    )
+                },
+            ),
         ]
 
     def _iter_spec_tool_names(self, spec: ToolLoaderSpec, module: Any) -> List[str]:

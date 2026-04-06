@@ -34,6 +34,7 @@ from ui.widgets import (
     ModelSettingsDialog,
     SessionSidebarWidget,
     TRANSCRIPT_MAX_WIDTH,
+    UserChoiceCardWidget,
     _fa_icon,
 )
 
@@ -54,9 +55,11 @@ class MainWindow(QMainWindow):
         self.current_snapshot: dict | None = None
         self.active_session_id = ""
         self.awaiting_approval = False
+        self.awaiting_user_choice = False
         self.is_busy = False
         self.sidebar_collapsed = False
         self._sidebar_width = 280
+        self._custom_choice_armed = False
         self._tools_hash: int = 0  # cache: skip set_tools rebuild when tools haven’t changed
         self._summarize_in_progress = False
         self.model_profiles_payload: dict = {"active_profile": None, "profiles": []}
@@ -264,7 +267,10 @@ class MainWindow(QMainWindow):
         self.composer_container.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         outer_layout = QVBoxLayout(self.composer_container)
         outer_layout.setContentsMargins(0, 0, 0, 0)
-        outer_layout.setSpacing(0)
+        outer_layout.setSpacing(8)
+
+        self.user_choice_card = UserChoiceCardWidget()
+        outer_layout.addWidget(self.user_choice_card)
 
         # Pill frame: [attach] [text] [send]
         self.composer_pill = QFrame()
@@ -388,11 +394,14 @@ class MainWindow(QMainWindow):
         self.composer.document().documentLayout().documentSizeChanged.connect(
             self._queue_composer_height_sync
         )
+        self.user_choice_card.option_selected.connect(self._handle_user_choice_selected)
+        self.user_choice_card.custom_option_requested.connect(self._handle_custom_choice_requested)
 
         self.controller.initialized.connect(self._handle_initialized)
         self.controller.initialization_failed.connect(self._handle_init_failed)
         self.controller.event_emitted.connect(self._handle_event)
         self.controller.approval_requested.connect(self._handle_approval_request)
+        self.controller.user_choice_requested.connect(self._handle_user_choice_request)
         self.controller.session_changed.connect(self._handle_session_changed)
         self.controller.busy_changed.connect(self._handle_busy_changed)
 
@@ -448,6 +457,7 @@ class MainWindow(QMainWindow):
     # --- Individual event handlers (called from dispatch table) ---
 
     def _on_run_started(self, payload: dict) -> None:
+        self._clear_user_choice_request()
         self.current_turn = self.transcript.start_turn(payload.get("text", ""))
         self._summarize_in_progress = False
         if self.current_turn is not None:
@@ -559,6 +569,7 @@ class MainWindow(QMainWindow):
         self.composer.reset_history_navigation()
         self.current_turn = None
         self.transcript.clear_transcript()
+        self._clear_user_choice_request()
         self._show_transient_status_message("Started a new session")
 
     # --------------------------------------------------------------------------
@@ -610,15 +621,24 @@ class MainWindow(QMainWindow):
         self.info_popup.move(global_pos)
 
     def _set_input_enabled(self, enabled: bool) -> None:
-        can_edit = enabled and not self.awaiting_approval and not self.is_busy
+        has_pending_interrupt = self.awaiting_approval or self.awaiting_user_choice
+        can_edit = (
+            enabled
+            and not self.awaiting_approval
+            and not self.is_busy
+            and (not self.awaiting_user_choice or self._custom_choice_armed)
+        )
         can_send = can_edit and self._has_active_model
         self.composer.setEnabled(can_edit)
         self.send_button.setEnabled(can_send)
-        self.attach_button.setEnabled(enabled and not self.awaiting_approval)
+        self.attach_button.setEnabled(enabled and not has_pending_interrupt and not self.is_busy)
         self.model_chip.setEnabled(can_edit and self._has_active_model)
-        self.open_settings_inline_button.setEnabled(enabled and not self.awaiting_approval and not self.is_busy)
-        self.settings_button.setEnabled(enabled and not self.awaiting_approval and not self.is_busy)
-        self.sidebar.setEnabled(enabled and not self.awaiting_approval and not self.is_busy)
+        self.open_settings_inline_button.setEnabled(enabled and not has_pending_interrupt and not self.is_busy)
+        self.settings_button.setEnabled(enabled and not has_pending_interrupt and not self.is_busy)
+        self.sidebar.setEnabled(enabled and not has_pending_interrupt and not self.is_busy)
+        self.user_choice_card.set_actions_enabled(
+            enabled and self.awaiting_user_choice and not self.awaiting_approval and not self.is_busy
+        )
 
     def _handle_initialized(self, payload: dict) -> None:
         self._apply_runtime_payload(payload, restore_transcript=True)
@@ -715,7 +735,7 @@ class MainWindow(QMainWindow):
         self.controller.set_active_profile(profile_id)
 
     def _open_settings_dialog(self) -> None:
-        if self.is_busy or self.awaiting_approval:
+        if self.is_busy or self.awaiting_approval or self.awaiting_user_choice:
             QMessageBox.information(self, "Busy", "Wait for the current run to finish before changing settings.")
             return
         dialog = ModelSettingsDialog(self.model_profiles_payload, self)
@@ -756,6 +776,7 @@ class MainWindow(QMainWindow):
         if restore_transcript:
             self.current_turn = None
             self.transcript.load_transcript(payload.get("transcript"))
+            self._clear_user_choice_request()
 
     def _handle_busy_changed(self, busy: bool) -> None:
         self.is_busy = busy
@@ -767,7 +788,7 @@ class MainWindow(QMainWindow):
         if busy:
             self._set_status_visual("Working…", busy=True)
         else:
-            if not self.awaiting_approval:
+            if not self.awaiting_approval and not self.awaiting_user_choice:
                 self._set_status_visual("Ready", success=True)
                 self.status_meta.setText("")
         self._set_input_enabled(True)
@@ -791,14 +812,60 @@ class MainWindow(QMainWindow):
         self.controller.resume_approval(approved, always)
         self._set_input_enabled(False)
 
+    def _handle_user_choice_request(self, payload: dict) -> None:
+        self.awaiting_user_choice = True
+        self._custom_choice_armed = False
+        self._set_user_choice_request(payload)
+        self._set_status_visual("Waiting for your choice", busy=False)
+        self._set_input_enabled(True)
+
     def _submit_request(self) -> None:
         text = self.composer.toPlainText().strip()
         if not text:
             return
+        if self.awaiting_user_choice:
+            if self.is_busy or self.awaiting_approval or not self._custom_choice_armed:
+                return
+            self._clear_user_choice_request()
+            self.composer.clear()
+            self.controller.resume_user_choice(text)
+            self._set_input_enabled(False)
+            return
+        self._clear_user_choice_request()
         self.composer.append_submitted_message(text)
         self.composer.clear()
         self.controller.start_run(text)
         self._set_input_enabled(False)
+
+    def _set_user_choice_request(self, payload: dict | None) -> None:
+        if not isinstance(payload, dict) or not payload:
+            self._clear_user_choice_request()
+            return
+        self.user_choice_card.set_request(payload)
+        self.user_choice_card.set_actions_enabled(
+            self.awaiting_user_choice and not self.awaiting_approval and not self.is_busy
+        )
+
+    def _clear_user_choice_request(self) -> None:
+        self.awaiting_user_choice = False
+        self._custom_choice_armed = False
+        self.user_choice_card.clear_request()
+
+    def _handle_user_choice_selected(self, submit_text: str) -> None:
+        text = str(submit_text or "").strip()
+        if not text or self.is_busy or self.awaiting_approval or not self.awaiting_user_choice:
+            return
+        self._clear_user_choice_request()
+        self.controller.resume_user_choice(text)
+        self._set_input_enabled(False)
+
+    def _handle_custom_choice_requested(self) -> None:
+        if self.is_busy or self.awaiting_approval or not self.awaiting_user_choice:
+            return
+        self._custom_choice_armed = True
+        self._set_input_enabled(True)
+        self.composer.setFocus()
+        self.composer.selectAll()
 
     def _attach_file(self) -> None:
         if self.is_busy:
@@ -843,16 +910,23 @@ class MainWindow(QMainWindow):
             self.sidebar_toggle_button.setToolTip(self.toggle_sidebar_action.toolTip())
 
     def _switch_session(self, session_id: str) -> None:
-        if self.is_busy or self.awaiting_approval or not session_id or session_id == self.active_session_id:
+        if (
+            self.is_busy
+            or self.awaiting_approval
+            or self.awaiting_user_choice
+            or not session_id
+            or session_id == self.active_session_id
+        ):
             return
         self.composer.set_history_session(session_id)
         self.current_turn = None
         self.transcript.clear_transcript()
+        self._clear_user_choice_request()
         self._show_transient_status_message("Switching chat…")
         self.controller.switch_session(session_id)
 
     def _request_delete_session(self, session_id: str) -> None:
-        if not session_id or self.is_busy or self.awaiting_approval:
+        if not session_id or self.is_busy or self.awaiting_approval or self.awaiting_user_choice:
             return
         title = self.sidebar.title_for_session(session_id) or "Этот чат"
         message = f"Удалить чат «{title}» из истории?"
@@ -869,7 +943,7 @@ class MainWindow(QMainWindow):
         self.controller.delete_session(session_id)
 
     def _new_session(self) -> None:
-        if self.is_busy:
+        if self.is_busy or self.awaiting_user_choice:
             QMessageBox.information(self, "Busy", "Wait for the current run to finish before starting a new session.")
             return
         pending_key = "__pending_new_session__"
@@ -878,11 +952,12 @@ class MainWindow(QMainWindow):
         self.composer.reset_history_navigation()
         self.current_turn = None
         self.transcript.clear_transcript()
+        self._clear_user_choice_request()
         self.controller.new_session()
         self._show_transient_status_message("Created a new session")
 
     def _open_new_project(self) -> None:
-        if self.is_busy:
+        if self.is_busy or self.awaiting_user_choice:
             QMessageBox.information(self, "Busy", "Wait for the current run to finish before changing the project directory.")
             return
 
@@ -906,6 +981,7 @@ class MainWindow(QMainWindow):
         self.composer.reset_history_navigation()
         self.current_turn = None
         self.transcript.clear_transcript()
+        self._clear_user_choice_request()
         self._set_status_visual("Creating a new chat for the selected folder…", busy=True)
         self.controller.reinitialize(force_new_session=True)
 

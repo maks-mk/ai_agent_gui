@@ -91,21 +91,24 @@ class ConversationTurnWidget(QWidget):
     def set_assistant_markdown(self, markdown: str) -> None:
         if markdown == self._assistant_markdown and self.assistant_segments:
             return
-
-        if not self._assistant_markdown:
-            segment_text = markdown
-        elif markdown.startswith(self._assistant_markdown):
-            segment_text = markdown[len(self._assistant_markdown):]
-        else:
-            prefix_len = self._common_prefix_length(self._assistant_markdown, markdown)
-            segment_text = markdown[prefix_len:]
+        if not markdown:
+            if self._timeline and self._timeline[-1][0] == "assistant":
+                _kind, widget = self._timeline.pop()
+                self._layout.removeWidget(widget)
+                if widget in self.assistant_segments:
+                    self.assistant_segments.remove(widget)  # type: ignore[arg-type]
+                widget.deleteLater()
+            self._assistant_markdown = ""
+            return
 
         segment = self._ensure_assistant_segment()
-        if markdown and not segment_text and not segment.markdown():
+        if not self._assistant_markdown:
             segment.set_markdown(markdown)
-        elif segment_text:
-            segment.set_markdown(segment.markdown() + segment_text)
-        elif not segment.markdown():
+        elif markdown.startswith(self._assistant_markdown):
+            segment_text = markdown[len(self._assistant_markdown):]
+            if segment_text:
+                segment.set_markdown(segment.markdown() + segment_text)
+        else:
             segment.set_markdown(markdown)
 
         self._assistant_markdown = markdown

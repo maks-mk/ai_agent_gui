@@ -51,7 +51,7 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         registry = ToolRegistry(self._make_config(ENABLE_FILESYSTEM_TOOLS=False))
         await registry.load_all()
         names = [tool.name for tool in registry.tools]
-        self.assertEqual(names, ["safe_delete_file", "safe_delete_directory"])
+        self.assertEqual(names, ["safe_delete_file", "safe_delete_directory", "request_user_input"])
 
     def test_mcp_metadata_keeps_safe_tools_read_only(self):
         metadata = ToolRegistry._infer_mcp_metadata("context7:resolve-library-id")
