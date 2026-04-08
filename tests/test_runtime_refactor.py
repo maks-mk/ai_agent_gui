@@ -280,6 +280,71 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(tool.calls, [{"step": 5}])
         self.assertEqual(tool_message.status, "success")
 
+    async def test_process_tool_call_parses_json_string_args_before_preflight_validation(self):
+        class SaveDocumentArgs(BaseModel):
+            path: str
+            content: str
+
+        tool = FakeSchemaTool("save_document", "ok", SaveDocumentArgs)
+        nodes = AgentNodes(
+            config=self._make_config(),
+            llm=FakeLLM([]),
+            tools=[tool],
+            llm_with_tools=FakeLLM([]),
+        )
+        state = self._initial_state(task="Сохрани отчёт")
+
+        tool_message, had_error, issue = await nodes._process_tool_call(
+            {
+                "id": "call_123",
+                "name": "save_document",
+                "args": json.dumps({"path": "report.md", "content": "# Отчёт\n\nГотово"}, ensure_ascii=False),
+            },
+            recent_calls=[],
+            state=state,
+            approval_state={},
+            current_turn_id=1,
+        )
+
+        self.assertFalse(had_error)
+        self.assertIsNone(issue)
+        self.assertEqual(tool.calls, [{"path": "report.md", "content": "# Отчёт\n\nГотово"}])
+        self.assertEqual(tool_message.status, "success")
+
+    async def test_process_tool_call_logs_json_string_args_canonicalization(self):
+        tool = FakeTool("save_document", "ok")
+        nodes = AgentNodes(
+            config=self._make_config(),
+            llm=FakeLLM([]),
+            tools=[tool],
+            llm_with_tools=FakeLLM([]),
+        )
+        state = self._initial_state(task="Сохрани отчёт")
+        events: list[tuple[str, dict[str, Any]]] = []
+        with mock.patch.object(
+            AgentNodes,
+            "_log_run_event",
+            autospec=True,
+            side_effect=lambda _self, _state, event_type, **payload: events.append((event_type, payload)),
+        ):
+            await nodes._process_tool_call(
+                {
+                    "id": "call_123",
+                    "name": "save_document",
+                    "args": json.dumps({"path": "report.md", "content": "body"}, ensure_ascii=False),
+                },
+                recent_calls=[],
+                state=state,
+                approval_state={},
+                current_turn_id=1,
+            )
+
+        canonicalized = [payload for event_type, payload in events if event_type == "tool_call_args_canonicalized"]
+        self.assertEqual(len(canonicalized), 1)
+        self.assertEqual(canonicalized[0]["tool_name"], "save_document")
+        self.assertEqual(canonicalized[0]["source_kind"], "json_string")
+        self.assertEqual(canonicalized[0]["arg_keys"], ["content", "path"])
+
     def test_prepare_llm_with_tools_disables_tool_calling_on_bind_failure(self):
         llm = FailingBindableLLM([], message="provider bind error")
         tool = FakeTool("read_file", "ok")
@@ -357,6 +422,38 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsInstance(message.content, list)
         self.assertEqual(len(message.content), 1)
         self.assertEqual(message.content[0]["type"], "image")
+
+    def test_build_transcript_payload_parses_json_string_tool_args(self):
+        payload = build_transcript_payload(
+            {
+                "messages": [
+                    HumanMessage(content="Сохрани файл"),
+                    AIMessage(content="").model_copy(
+                        update={
+                            "tool_calls": [
+                                {
+                                    "id": "call_1",
+                                    "name": "write_file",
+                                    "args": json.dumps(
+                                        {"path": "notes.md", "content": "line 1\nline 2"},
+                                        ensure_ascii=False,
+                                    ),
+                                }
+                            ]
+                        }
+                    ),
+                    ToolMessage(
+                        tool_call_id="call_1",
+                        name="write_file",
+                        content="Success: File 'notes.md' saved (13 chars).",
+                    ),
+                ]
+            }
+        )
+
+        tool_block = payload["turns"][0]["blocks"][0]["payload"]
+        self.assertEqual(tool_block["name"], "write_file")
+        self.assertEqual(tool_block["args"], {"path": "notes.md", "content": "line 1\nline 2"})
 
     def test_build_transcript_payload_restores_user_image_attachments(self):
         payload = build_transcript_payload(

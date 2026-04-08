@@ -8,6 +8,7 @@ except ImportError:
     psutil = None
 
 from core.errors import ErrorType, format_error
+from core.tool_args import canonicalize_tool_args
 
 _PID_RE = re.compile(r"PID[:\s]+(\d+)")
 _FILE_ARG_NAMES = ("path", "file_path", "dir_path")
@@ -38,7 +39,7 @@ def _resolve_workspace_path(path: str) -> Path:
 def validate(result: str, context: ValidationContext) -> Optional[str]:
     """Validates the side effects of tool execution."""
     tool_name = str(context.get("tool_name") or "").strip()
-    args = context.get("args") or {}
+    args = canonicalize_tool_args(context.get("args"))
     if result.startswith("ERROR"):
         return None
 

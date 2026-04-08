@@ -92,10 +92,15 @@ class ComposerTextEdit(QPlainTextEdit):
     def set_file_index_for_testing(self, rel_paths: list[str]) -> None:
         root = Path.cwd()
         self._file_index_root = str(root)
-        self._file_index = [
-            self._build_file_index_row(root, root / Path(value))
-            for value in rel_paths
-        ]
+        rows: dict[str, dict[str, Any]] = {}
+        for value in rel_paths:
+            relative_path = Path(value)
+            self._add_index_row(rows, self._build_file_index_row(root, root / relative_path))
+            for parent in relative_path.parents:
+                if str(parent) in {"", "."}:
+                    continue
+                self._add_index_row(rows, self._build_file_index_row(root, root / parent, is_dir=True))
+        self._file_index = list(rows.values())
         self._file_index.sort(key=lambda row: row["relative"])
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
@@ -274,17 +279,25 @@ class ComposerTextEdit(QPlainTextEdit):
         if self._file_index_root == root_str:
             return
 
-        rows: list[dict[str, Any]] = []
+        rows: dict[str, dict[str, Any]] = {}
         for current_root, dirnames, filenames in os.walk(root):
             dirnames[:] = [name for name in dirnames if name not in COMPOSER_MENTION_EXCLUDED_DIRS]
+            for dirname in dirnames:
+                full_path = Path(current_root) / dirname
+                self._add_index_row(rows, self._build_file_index_row(root, full_path, is_dir=True))
             for filename in filenames:
                 full_path = Path(current_root) / filename
-                rows.append(self._build_file_index_row(root, full_path))
-        rows.sort(key=lambda row: row["relative"])
-        self._file_index = rows
+                self._add_index_row(rows, self._build_file_index_row(root, full_path))
+        self._file_index = sorted(rows.values(), key=lambda row: row["relative"])
         self._file_index_root = root_str
 
-    def _build_file_index_row(self, root: Path, full_path: Path) -> dict[str, Any]:
+    @staticmethod
+    def _add_index_row(rows: dict[str, dict[str, Any]], row: dict[str, Any]) -> None:
+        relative = str(row.get("relative") or "")
+        if relative:
+            rows[relative] = row
+
+    def _build_file_index_row(self, root: Path, full_path: Path, *, is_dir: bool = False) -> dict[str, Any]:
         try:
             relative = full_path.relative_to(root).as_posix()
         except ValueError:
@@ -292,6 +305,7 @@ class ComposerTextEdit(QPlainTextEdit):
         folder = Path(relative).parent.as_posix()
         if folder == ".":
             folder = ""
+        display = f"{relative}/" if is_dir and not relative.endswith("/") else relative
         return {
             "name": full_path.name,
             "name_lower": full_path.name.lower(),
@@ -299,6 +313,8 @@ class ComposerTextEdit(QPlainTextEdit):
             "relative_lower": relative.lower(),
             "folder": folder,
             "depth": relative.count("/"),
+            "is_dir": is_dir,
+            "display": display,
         }
 
     def _filter_mention_candidates(self, query_lower: str) -> list[dict[str, Any]]:
@@ -309,7 +325,12 @@ class ComposerTextEdit(QPlainTextEdit):
         if not query_lower:
             return sorted(
                 self._file_index,
-                key=lambda row: (int(row.get("depth", 0)), len(str(row["relative"])), str(row["relative"])),
+                key=lambda row: (
+                    int(row.get("depth", 0)),
+                    1 if row.get("is_dir") else 0,
+                    len(str(row["relative"])),
+                    str(row["relative"]),
+                ),
             )[:COMPOSER_MENTION_MAX_ITEMS]
 
         ranked: list[tuple[int, int, int, dict[str, str]]] = []
@@ -327,10 +348,18 @@ class ComposerTextEdit(QPlainTextEdit):
                 rank = 2
             else:
                 rank = 3
-            ranked.append((rank, int(row.get("depth", 0)), len(row["relative"]), row))
+            ranked.append(
+                (
+                    rank,
+                    int(row.get("depth", 0)),
+                    1 if row.get("is_dir") else 0,
+                    len(row["relative"]),
+                    row,
+                )
+            )
 
-        ranked.sort(key=lambda item: (item[0], item[1], item[2], item[3]["relative"]))
-        return [item[3] for item in ranked[:COMPOSER_MENTION_MAX_ITEMS]]
+        ranked.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4]["relative"]))
+        return [item[4] for item in ranked[:COMPOSER_MENTION_MAX_ITEMS]]
 
     def _position_mention_popup(self) -> None:
         anchor = self.cursorRect().bottomLeft() + QPoint(0, 6)
@@ -407,7 +436,7 @@ class _ComposerMentionPopup(QFrame):
         metrics = self.list_widget.fontMetrics()
         for row in rows:
             relative = str(row["relative"])
-            text = relative
+            text = str(row.get("display") or relative)
             item = QListWidgetItem(text)
             item.setData(Qt.UserRole, relative)
             item.setToolTip(relative)

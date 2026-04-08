@@ -23,6 +23,7 @@ from core.multimodal import (
     human_message_has_image_content,
     materialize_user_message_content_for_model,
 )
+from core.tool_args import canonicalize_tool_args
 from core.runtime_prompt_policy import RuntimePromptContext, RuntimePromptPolicyBuilder
 from core.state import AgentState
 
@@ -236,7 +237,7 @@ class ContextBuilder:
             for tool_call in tool_calls:
                 tool_call_id = str(tool_call.get("id") or "").strip()
                 tool_name = str(tool_call.get("name") or "").strip()
-                tool_args = dict(tool_call.get("args") or {}) if isinstance(tool_call.get("args"), dict) else {}
+                tool_args = canonicalize_tool_args(tool_call.get("args"))
                 if not tool_call_id or not tool_name:
                     continue
                 if tool_call_id in pending_calls:

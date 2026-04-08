@@ -1,9 +1,10 @@
 from __future__ import annotations
 
-import json
 from typing import Any
 
 from langchain_core.messages import ToolMessage
+
+from core.tool_args import canonicalize_tool_args
 
 
 def extract_tool_args(message: ToolMessage) -> dict[str, Any]:
@@ -20,18 +21,9 @@ def extract_tool_args(message: ToolMessage) -> dict[str, Any]:
         candidates.append(tool_call_obj.get("args"))
 
     for candidate in candidates:
-        if isinstance(candidate, dict):
-            return dict(candidate)
-        if isinstance(candidate, str):
-            raw = candidate.strip()
-            if not raw:
-                continue
-            try:
-                parsed = json.loads(raw)
-            except Exception:
-                continue
-            if isinstance(parsed, dict):
-                return parsed
+        parsed = canonicalize_tool_args(candidate)
+        if parsed:
+            return parsed
     return {}
 
 

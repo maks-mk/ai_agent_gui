@@ -42,6 +42,7 @@ from core.session_store import (
 )
 from core.session_utils import repair_session_if_needed
 from core.text_utils import format_tool_display, format_tool_output, parse_thought, prepare_markdown_for_render
+from core.tool_args import canonicalize_tool_args
 from core.tool_policy import ToolMetadata
 from ui.streaming import StreamEvent, StreamProcessor
 from ui.tool_message_utils import extract_tool_args
@@ -347,7 +348,7 @@ def build_transcript_payload(state_values: dict[str, Any] | None) -> dict[str, A
                 if tool_call_id:
                     pending_tool_calls[tool_call_id] = {
                         "name": tool_call.get("name", "tool"),
-                        "args": tool_call.get("args", {}),
+                        "args": canonicalize_tool_args(tool_call.get("args")),
                     }
             if is_hidden_internal_message(message):
                 continue
@@ -362,7 +363,7 @@ def build_transcript_payload(state_values: dict[str, Any] | None) -> dict[str, A
         if isinstance(message, ToolMessage):
             tool_meta = pending_tool_calls.get(message.tool_call_id, {})
             tool_name = tool_meta.get("name") or message.name or "tool"
-            tool_args = tool_meta.get("args") or {}
+            tool_args = canonicalize_tool_args(tool_meta.get("args"))
             if not tool_args:
                 tool_args = extract_tool_args(message)
             content = stringify_content(message.content)

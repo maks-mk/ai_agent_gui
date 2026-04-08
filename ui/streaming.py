@@ -15,6 +15,7 @@ from core.text_utils import (
     parse_thought,
     prepare_markdown_for_render,
 )
+from core.tool_args import canonicalize_tool_args
 from ui.tool_message_utils import extract_tool_args, extract_tool_duration
 from ui.visibility import is_hidden_internal_message
 
@@ -336,8 +337,8 @@ class StreamProcessor:
             )
 
     def _merge_tool_args(self, current_args: Any, incoming_args: Any) -> Dict[str, Any]:
-        current = dict(current_args) if isinstance(current_args, dict) else {}
-        incoming = dict(incoming_args) if isinstance(incoming_args, dict) else {}
+        current = canonicalize_tool_args(current_args)
+        incoming = canonicalize_tool_args(incoming_args)
         if not incoming:
             return current
 

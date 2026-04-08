@@ -646,6 +646,23 @@ class GuiUxTests(unittest.TestCase):
         self.assertGreaterEqual(self.window.composer._mention_popup.width(), 560)
         self.assertIn("/", self.window.composer._mention_popup.list_widget.item(1).text())
 
+    def test_mention_popup_includes_directories_from_indexed_files(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.set_file_index_for_testing(
+            ["docs/readme.md", "docs/nested/info.txt", "main.py"]
+        )
+        self.window.composer.setPlainText("@do")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+        self.window.composer._refresh_mention_popup()
+
+        self.assertTrue(self.window.composer._mention_popup.isVisible())
+        items = [
+            self.window.composer._mention_popup.list_widget.item(index).text()
+            for index in range(self.window.composer._mention_popup.list_widget.count())
+        ]
+        self.assertIn("docs/", items)
+        self.assertIn("docs/readme.md", items)
+
     def test_mention_popup_closes_on_escape_no_matches_and_cursor_change(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window.composer.set_file_index_for_testing(["main.py"])

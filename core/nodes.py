@@ -29,6 +29,7 @@ from core import constants
 from core.run_logger import JsonlRunLogger
 from core.tool_policy import ToolMetadata, default_tool_metadata
 from core.tool_results import parse_tool_execution_result
+from core.tool_args import canonicalize_tool_args, inspect_tool_args_payload
 from core.utils import truncate_output
 from core.errors import format_error, ErrorType
 from core.message_context import MessageContextHelper
@@ -410,7 +411,7 @@ class AgentNodes:
         return any(
             self._tool_requires_approval(
                 (tool_call.get("name") or "unknown_tool"),
-                tool_call.get("args") or {},
+                canonicalize_tool_args(tool_call.get("args")),
             )
             for tool_call in tool_calls
             if tool_call.get("name") != "request_user_input"
@@ -1026,14 +1027,12 @@ class AgentNodes:
                     for tc in t_calls
                     if str(tc.get("name") or "").strip()
                 ]
-                first_args = next(
-                    (
-                        dict(tc.get("args") or {})
-                        for tc in t_calls
-                        if isinstance(tc.get("args"), dict)
-                    ),
-                    {},
-                )
+                first_args: Dict[str, Any] = {}
+                for tc in t_calls:
+                    parsed_args = canonicalize_tool_args(tc.get("args"))
+                    if parsed_args:
+                        first_args = parsed_args
+                        break
                 protocol_issue = self._build_protocol_open_tool_issue(
                     current_turn_id=turn_id,
                     summary=protocol_error,
@@ -1409,11 +1408,11 @@ class AgentNodes:
                         for item in (history_issue.get("pending_tool_calls") or [])
                         if str(item.get("name") or "").strip()
                     ],
-                    tool_args=(
-                        dict((history_issue.get("pending_tool_calls") or [{}])[0].get("args") or {})
-                        if history_issue.get("pending_tool_calls")
-                        else {}
-                    ),
+                tool_args=(
+                    canonicalize_tool_args((history_issue.get("pending_tool_calls") or [{}])[0].get("args"))
+                    if history_issue.get("pending_tool_calls")
+                    else {}
+                ),
                     details=history_issue,
                 )
                 self._log_run_event(
@@ -2015,7 +2014,7 @@ class AgentNodes:
         protected_calls = []
         for tool_call in pending_ai_with_tools.tool_calls:
             tool_name = tool_call.get("name") or "unknown_tool"
-            tool_args = tool_call.get("args") or {}
+            tool_args = canonicalize_tool_args(tool_call.get("args"))
             if not self._tool_requires_approval(tool_name, tool_args):
                 continue
             metadata = self._effective_tool_metadata(tool_name, tool_args)
@@ -2269,10 +2268,32 @@ class AgentNodes:
     ) -> Tuple[ToolMessage, bool, Dict[str, Any] | None]:
         # Безопасное извлечение с фоллбеками
         t_name = tool_call.get("name") or "unknown_tool"
-        t_args = tool_call.get("args") or {}
+        raw_t_args = tool_call.get("args")
+        t_args, args_payload_kind = inspect_tool_args_payload(raw_t_args)
+        if args_payload_kind == "json_string":
+            self._log_run_event(
+                state,
+                "tool_call_args_canonicalized",
+                run_id=state.get("run_id", ""),
+                tool_name=t_name,
+                tool_call_id=str(tool_call.get("id") or ""),
+                source_kind=args_payload_kind,
+                arg_keys=sorted(t_args.keys()),
+                raw_preview=compact_text(str(raw_t_args), 220),
+            )
+        elif args_payload_kind not in {"mapping", "missing", "empty_string"}:
+            self._log_run_event(
+                state,
+                "tool_call_args_unparsed",
+                run_id=state.get("run_id", ""),
+                tool_name=t_name,
+                tool_call_id=str(tool_call.get("id") or ""),
+                source_kind=args_payload_kind,
+                raw_preview=compact_text(str(raw_t_args), 220),
+            )
         normalized_args, normalized_changes = normalize_tool_args(
             t_name,
-            t_args if isinstance(t_args, dict) else {},
+            t_args,
             current_task=str(state.get("current_task") or ""),
         )
         if normalized_changes:
@@ -2349,7 +2370,9 @@ class AgentNodes:
 
         # Проверка на зацикливание
         loop_count = sum(
-            1 for tc in recent_calls if tc.get("name") == t_name and tc.get("args") == t_args
+            1
+            for tc in recent_calls
+            if tc.get("name") == t_name and canonicalize_tool_args(tc.get("args")) == t_args
         )
         loop_limit = (
             self.config.effective_tool_loop_limit_readonly

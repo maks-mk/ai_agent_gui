@@ -3,6 +3,8 @@ from typing import Any, Callable
 
 from langchain_core.messages import AIMessage, AIMessageChunk, ToolMessage
 
+from core.tool_args import canonicalize_tool_args
+
 logger = logging.getLogger("agent")
 HANDOFF_MARKERS_SKIP_REPAIR = frozenset({"loop_budget_handoff"})
 
@@ -55,7 +57,7 @@ async def repair_session_if_needed(
                     pending_tool_calls[tool_call_id] = {
                         "id": tool_call_id,
                         "name": tool_name,
-                        "args": dict(tool_call.get("args") or {}) if isinstance(tool_call.get("args"), dict) else {},
+                        "args": canonicalize_tool_args(tool_call.get("args")),
                     }
                     if tool_call_id not in pending_order:
                         pending_order.append(tool_call_id)
@@ -106,7 +108,7 @@ async def repair_session_if_needed(
                 content="Error: Execution interrupted (system limit reached or user stop). Please retry.",
                 name=tool_call["name"],
                 additional_kwargs={
-                    "tool_args": dict(tool_call.get("args") or {}),
+                    "tool_args": canonicalize_tool_args(tool_call.get("args")),
                     "agent_internal": {
                         "kind": "repaired_interrupted_tool_call",
                     },
@@ -122,7 +124,7 @@ async def repair_session_if_needed(
                     {
                         "tool_name": str(tool_call.get("name") or ""),
                         "tool_call_id": str(tool_call.get("id") or ""),
-                        "tool_args": dict(tool_call.get("args") or {}),
+                        "tool_args": canonicalize_tool_args(tool_call.get("args")),
                         "reason": "missing_tool_output_after_interrupt",
                     },
                 )

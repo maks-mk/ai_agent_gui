@@ -7,6 +7,7 @@ from typing import Any, Callable, Dict, List
 from langchain_core.messages import AIMessage, BaseMessage, HumanMessage, ToolMessage
 
 from core.message_context import IsInternalRetry
+from core.tool_args import canonicalize_tool_args
 from core.tool_policy import ToolMetadata
 
 
@@ -454,7 +455,7 @@ class PolicyEngine:
             return ToolCallPolicyDecision(allowed=False, reason="missing_tool_name")
 
         if tool_name == "cli_exec":
-            command = str((tool_call.get("args") or {}).get("command", "") or "")
+            command = str(canonicalize_tool_args(tool_call.get("args")).get("command", "") or "")
             profile = classify_shell_command(command)
             if profile.get("inspect_only") and not profile.get("long_running_service"):
                 return ToolCallPolicyDecision(allowed=True)
