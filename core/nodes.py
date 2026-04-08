@@ -119,6 +119,10 @@ class AgentNodes:
         "diff --git",
         "@@",
     )
+    PLAINTEXT_TOOL_CALL_TAG_RE = re.compile(
+        r"<\s*/?\s*(?:tool(?:[_-]?[a-z0-9]+)?|tool_call|function(?:_call)?)\b",
+        re.IGNORECASE,
+    )
     def __init__(
         self,
         config: AgentConfig,
@@ -317,6 +321,30 @@ class AgentNodes:
     def _tool_is_read_only(self, tool_name: str) -> bool:
         metadata = self._metadata_for_tool(tool_name)
         return metadata.read_only and not metadata.mutating and not metadata.destructive
+
+    def _select_llm_for_active_tools(
+        self,
+        active_tools: List[BaseTool],
+        active_tool_names: List[str],
+    ) -> BaseChatModel:
+        if not active_tool_names:
+            return self.llm
+
+        if active_tool_names == list(self._all_tool_names):
+            return self.llm_with_tools
+
+        binder = getattr(self.llm, "bind_tools", None)
+        if not callable(binder):
+            return self.llm_with_tools
+
+        try:
+            return binder(active_tools)
+        except Exception as exc:
+            logger.warning(
+                "Failed to bind active tool subset; falling back to pre-bound tool model: %s",
+                exc,
+            )
+            return self.llm_with_tools
 
     def _effective_tool_metadata(self, tool_name: str, tool_args: Dict[str, Any] | None = None) -> ToolMetadata:
         metadata = self._metadata_for_tool(tool_name)
@@ -812,6 +840,29 @@ class AgentNodes:
 
         return code_like_lines >= max(5, len(non_empty_lines) - 1) and narrative_lines <= 1
 
+    def _response_looks_like_plaintext_tool_invocation(self, content: Any) -> bool:
+        text = stringify_content(content).strip()
+        if not text:
+            return False
+        return bool(self.PLAINTEXT_TOOL_CALL_TAG_RE.search(text))
+
+    def _hide_message_from_ui(
+        self,
+        message: AIMessage,
+        *,
+        kind: str,
+        ui_notice: str = "",
+    ) -> AIMessage:
+        metadata = dict(getattr(message, "additional_kwargs", {}) or {})
+        internal = dict(metadata.get("agent_internal") or {})
+        internal["kind"] = str(kind or "agent_internal_notice").strip() or "agent_internal_notice"
+        internal["visible_in_ui"] = False
+        notice_text = str(ui_notice or "").strip()
+        if notice_text:
+            internal["ui_notice"] = notice_text
+        metadata["agent_internal"] = internal
+        return message.model_copy(update={"additional_kwargs": metadata})
+
     def _log_interrupted_tool_result_if_needed(
         self,
         state: AgentState,
@@ -1062,6 +1113,39 @@ class AgentNodes:
                 )
                 has_tool_calls = False
 
+            response_preview = stringify_content(response.content).strip()
+            if (
+                tools_available
+                and not has_tool_calls
+                and protocol_issue is None
+                and (
+                    should_force_tools
+                    or current_turn_has_tool_evidence
+                    or open_tool_issue is not None
+                )
+                and self._response_looks_like_plaintext_tool_invocation(response_preview)
+            ):
+                protocol_issue = self._build_protocol_open_tool_issue(
+                    current_turn_id=turn_id,
+                    summary=(
+                        "Модель вывела имитацию tool call обычным текстом вместо структурированного вызова инструмента."
+                    ),
+                    reason="tool_protocol_error",
+                    source="agent",
+                    tool_names=list(allowed_tool_names or []),
+                    tool_args={},
+                    details={
+                        "allowed_tool_names": list(allowed_tool_names or []),
+                        "response_kind": "plaintext_tool_invocation",
+                    },
+                    response_preview=response_preview,
+                )
+                protocol_error = self._merge_protocol_error_text(
+                    protocol_error,
+                    "INTERNAL TOOL PROTOCOL ERROR: do not emit pseudo-tool markup in plain text. "
+                    "Use a valid structured tool call payload instead.",
+                )
+
             if (
                 tools_available
                 and should_force_tools
@@ -1069,7 +1153,6 @@ class AgentNodes:
                 and not current_turn_has_tool_evidence
                 and protocol_issue is None
             ):
-                response_preview = stringify_content(response.content).strip()
                 if response_preview:
                     protocol_issue = self._build_protocol_open_tool_issue(
                         current_turn_id=turn_id,
@@ -1095,7 +1178,6 @@ class AgentNodes:
                 and not has_tool_calls
                 and protocol_issue is None
             ):
-                response_preview = stringify_content(response.content).strip()
                 if (
                     response_preview
                     and current_turn_has_tool_evidence
@@ -1123,6 +1205,13 @@ class AgentNodes:
                         protocol_error,
                         "ACTION REQUIRES TOOLS: do not print unapplied code after inspection. Use a valid edit/exec tool call or explain a real external blocker."
                     )
+
+            if protocol_issue is not None and not has_tool_calls:
+                response = self._hide_message_from_ui(
+                    response,
+                    kind="protocol_invalid_response",
+                    ui_notice=constants.TOOL_ISSUE_UI_NOTICE,
+                )
 
         outbound_messages.append(response)
 
@@ -1291,15 +1380,7 @@ class AgentNodes:
             recovery_state=recovery_state,
             turn_mode=turn_mode,
         )
-        if active_tool_names == list(self._all_tool_names):
-            llm_for_turn = self.llm_with_tools if active_tool_names else self.llm
-        elif active_tools:
-            if hasattr(self.llm, "bind_tools"):
-                llm_for_turn = self.llm.bind_tools(active_tools)
-            else:
-                llm_for_turn = self.llm_with_tools
-        else:
-            llm_for_turn = self.llm
+        llm_for_turn = self._select_llm_for_active_tools(active_tools, active_tool_names)
         tools_available = bool(active_tool_names)
         user_choice_locked = self._current_turn_has_completed_user_choice(messages)
         inspect_only_turn = turn_mode == "inspect"

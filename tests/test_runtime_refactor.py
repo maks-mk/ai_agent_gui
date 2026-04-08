@@ -2,6 +2,7 @@ import json
 import os
 import shutil
 import sqlite3
+import sys
 import unittest
 import base64
 from unittest import mock
@@ -13,7 +14,7 @@ from langgraph.checkpoint.memory import MemorySaver
 from langgraph.types import Command
 from pydantic import BaseModel, RootModel
 
-from agent import create_agent_workflow
+from agent import create_agent_workflow, create_llm, prepare_llm_with_tools
 from core.checkpointing import create_checkpoint_runtime
 from core.config import AgentConfig
 from core.multimodal import (
@@ -80,6 +81,17 @@ class FakeBindableLLM(FakeLLM):
     def bind_tools(self, tools):
         self.bound_tool_name_batches.append([tool.name for tool in tools])
         return self
+
+
+class FailingBindableLLM(FakeLLM):
+    def __init__(self, responses, message="bind failed"):
+        super().__init__(responses)
+        self.bound_tool_name_batches = []
+        self.message = message
+
+    def bind_tools(self, tools):
+        self.bound_tool_name_batches.append([tool.name for tool in tools])
+        raise RuntimeError(self.message)
 
 
 class FakeTool:
@@ -267,6 +279,36 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(issue)
         self.assertEqual(tool.calls, [{"step": 5}])
         self.assertEqual(tool_message.status, "success")
+
+    def test_prepare_llm_with_tools_disables_tool_calling_on_bind_failure(self):
+        llm = FailingBindableLLM([], message="provider bind error")
+        tool = FakeTool("read_file", "ok")
+
+        bound_llm, enabled, error = prepare_llm_with_tools(llm, [tool])
+
+        self.assertIs(bound_llm, llm)
+        self.assertFalse(enabled)
+        self.assertEqual(error, "provider bind error")
+
+    def test_create_llm_for_gemini_does_not_force_system_to_human_conversion(self):
+        captured = {}
+
+        class FakeChatGoogleGenerativeAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_google_genai": mock.Mock(ChatGoogleGenerativeAI=FakeChatGoogleGenerativeAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="gemini",
+                    GEMINI_API_KEY="gm-test",
+                    GEMINI_MODEL="gemini-2.5-flash",
+                )
+            )
+
+        self.assertEqual(captured["model"], "gemini-2.5-flash")
+        self.assertEqual(captured["google_api_key"], "gm-test")
+        self.assertNotIn("convert_system_message_to_human", captured)
 
     def test_build_initial_state_supports_text_and_image_attachments(self):
         state = build_initial_state(
@@ -1682,6 +1724,90 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["has_protocol_error"])
         self.assertEqual(result["open_tool_issue"]["kind"], "protocol_error")
         self.assertEqual(result["open_tool_issue"]["details"]["protocol_reason"], "tool_protocol_error")
+        response = result["messages"][-1]
+        self.assertIsInstance(response, AIMessage)
+        self.assertFalse(response.additional_kwargs["agent_internal"]["visible_in_ui"])
+
+    def test_select_llm_for_active_tools_falls_back_to_prebound_model_when_subset_bind_fails(self):
+        llm = FailingBindableLLM([], message="subset bind failed")
+        fallback_llm = FakeLLM([AIMessage(content="Готово без сбоя.")])
+        user_input_tool = FakeTool("request_user_input", "ignored")
+        read_tool = FakeTool("read_file", "ignored")
+        nodes = AgentNodes(
+            config=self._make_config(),
+            llm=llm,
+            tools=[user_input_tool, read_tool],
+            llm_with_tools=fallback_llm,
+            tool_metadata={"read_file": ToolMetadata(name="read_file", read_only=True)},
+        )
+        result = nodes._select_llm_for_active_tools([read_tool], ["read_file"])
+
+        self.assertIs(result, fallback_llm)
+        self.assertEqual(llm.bound_tool_name_batches, [["read_file"]])
+
+    async def test_agent_node_marks_plaintext_tool_markup_as_protocol_error(self):
+        agent_llm = FakeLLM(
+            [
+                AIMessage(
+                    content=(
+                        '<tool_code>{"name":"read_file","args":{"path":"README.md"}}</tool_code>'
+                    )
+                )
+            ]
+        )
+        read_tool = FakeTool("read_file", "ignored")
+        nodes = AgentNodes(
+            config=self._make_config(),
+            llm=agent_llm,
+            tools=[read_tool],
+            llm_with_tools=agent_llm,
+            tool_metadata={"read_file": ToolMetadata(name="read_file", read_only=True)},
+        )
+
+        result = await nodes.agent_node(self._initial_state("прочитай README.md"))
+
+        self.assertEqual(result["turn_outcome"], "recover_agent")
+        self.assertTrue(result["has_protocol_error"])
+        self.assertEqual(result["open_tool_issue"]["kind"], "protocol_error")
+        self.assertEqual(result["open_tool_issue"]["details"]["protocol_reason"], "tool_protocol_error")
+        self.assertEqual(result["open_tool_issue"]["details"]["response_kind"], "plaintext_tool_invocation")
+        response = result["messages"][-1]
+        self.assertIsInstance(response, AIMessage)
+        self.assertFalse(response.additional_kwargs["agent_internal"]["visible_in_ui"])
+
+    async def test_agent_node_allows_plaintext_tool_markup_in_regular_chat_explanation(self):
+        agent_llm = FakeLLM(
+            [
+                AIMessage(
+                    content=(
+                        'Пример синтаксиса: <tool_call name="read_file">{\"path\":\"README.md\"}</tool_call>'
+                    )
+                )
+            ]
+        )
+        read_tool = FakeTool("read_file", "ignored")
+        nodes = AgentNodes(
+            config=self._make_config(),
+            llm=agent_llm,
+            tools=[read_tool],
+            llm_with_tools=agent_llm,
+            tool_metadata={"read_file": ToolMetadata(name="read_file", read_only=True)},
+        )
+        state = self._initial_state("объясни синтаксис tool_call")
+        state["turn_mode"] = "chat"
+        state["requires_evidence"] = False
+
+        result = await nodes.agent_node(state)
+
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertFalse(result["has_protocol_error"])
+        self.assertIsNone(result["open_tool_issue"])
+        response = result["messages"][-1]
+        self.assertIsInstance(response, AIMessage)
+        self.assertEqual(
+            str(response.content),
+            'Пример синтаксиса: <tool_call name="read_file">{"path":"README.md"}</tool_call>',
+        )
 
     async def test_agent_node_detects_history_tool_mismatch_before_llm_invoke(self):
         agent_llm = FakeLLM([AIMessage(content="Это сообщение не должно быть вызвано.")])
