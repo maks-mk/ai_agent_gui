@@ -255,8 +255,18 @@ def build_help_markdown() -> str:
         "## Workflow\n"
         "- Type a request and press **Enter**.\n"
         "- Use **Shift+Enter** for a new line.\n"
+        "- Use **Up/Down** in an empty composer to browse earlier prompts from the current chat.\n"
+        "- Type **@** to mention files from the current workspace.\n"
+        "- Use the **+** button to attach images or insert file paths.\n"
+        "- You can also paste images or files directly into the composer.\n"
+        "- Use **Ctrl+N** for **New Session**.\n"
+        "- Use **Ctrl+B** to show or hide the chat history sidebar.\n"
+        "- Use **Ctrl+I** to open the runtime information popup.\n"
+        "- Use **Open project folder** to switch the working directory and start a fresh chat for that folder.\n"
+        "- Open **Settings** to add models, switch the active profile, or enable image support for a profile.\n"
         "- Open **Tools** to inspect read-only, protected, and MCP capabilities.\n"
         "- Open **Session** to review provider, backend, session, and MCP runtime state.\n"
+        "- Right-click a chat in the sidebar to delete it from history.\n"
         "- Use **New Session** to reset the active session and clear session-scoped approvals.\n"
         "- Approval dialogs support **Approve**, **Deny**, and **Always for this session**.\n"
     )
@@ -647,6 +657,7 @@ class AgentRunWorker(QObject):
             checkpoint_target=checkpoint_info.get("target", "unknown"),
             project_path=project_path,
             title=title,
+            persisted=False,
         )
 
     def _sync_tool_registry_workdir(self, target_project_path: str) -> None:
@@ -658,6 +669,13 @@ class AgentRunWorker(QObject):
         self.current_session = session
         self.current_session.approval_mode = normalize_approval_mode(self.current_session.approval_mode)
         self.store.save_active_session(self.current_session, touch=touch, set_active=True)
+
+    def _ensure_current_session_persisted(self) -> bool:
+        if not self.current_session or self.current_session.is_persisted:
+            return False
+        self.current_session.is_persisted = True
+        self.store.save_active_session(self.current_session, touch=False, set_active=True)
+        return True
 
     def _try_change_workdir(self, target_project_path: str) -> tuple[bool, str]:
         normalized_target = normalize_project_path(target_project_path)
@@ -1134,7 +1152,9 @@ class AgentRunWorker(QObject):
             return
         if not self._run(self._ensure_runtime_matches_selected_profile()):
             return
-        if self._maybe_set_session_title(request_user_text(request_payload)):
+        persisted_now = self._ensure_current_session_persisted()
+        title_changed = self._maybe_set_session_title(request_user_text(request_payload))
+        if persisted_now or title_changed:
             self._run(self._emit_session_payload(include_transcript=False))
         self._set_busy(True)
         try:
@@ -1311,6 +1331,7 @@ class AgentRunWorker(QObject):
             checkpoint_backend=checkpoint_info.get("resolved_backend", self.config.checkpoint_backend),
             checkpoint_target=checkpoint_info.get("target", "unknown"),
             project_path=self._current_project_path(),
+            persisted=False,
         )
         self.current_session.approval_mode = APPROVAL_MODE_PROMPT
         self.store.save_active_session(self.current_session, touch=False, set_active=True)

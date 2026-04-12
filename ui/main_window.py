@@ -934,11 +934,14 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Busy", "Wait for the current run to finish before changing settings.")
             return
         dialog = ModelSettingsDialog(self.model_profiles_payload, self)
-        if dialog.exec():
-            payload = normalize_profiles_payload(dialog.result_payload())
-            # Optimistic local refresh so reopening Settings immediately shows just-saved values.
-            self._apply_model_profiles_payload(payload)
-            self.controller.save_profiles(payload)
+        dialog.profiles_saved.connect(self._save_model_profiles_from_dialog)
+        dialog.exec()
+
+    def _save_model_profiles_from_dialog(self, payload: dict | None) -> None:
+        normalized = normalize_profiles_payload(payload or {})
+        # Optimistic local refresh so the rest of the UI reflects saved values immediately.
+        self._apply_model_profiles_payload(normalized)
+        self.controller.save_profiles(normalized)
 
     def _handle_init_failed(self, message: str) -> None:
         self._set_status_visual("Initialization failed", error=True)

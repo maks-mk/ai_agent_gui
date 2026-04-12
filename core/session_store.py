@@ -39,6 +39,7 @@ class SessionSnapshot:
     project_path: str
     approval_mode: str = "prompt"
     title: str = DEFAULT_CHAT_TITLE
+    is_persisted: bool = True
 
     def touch(self) -> None:
         self.updated_at = _utc_now()
@@ -78,6 +79,7 @@ class SessionStore:
         try:
             payload = dict(payload)
             payload.setdefault("approval_mode", "prompt")
+            payload["is_persisted"] = bool(payload.get("is_persisted", True))
             payload["project_path"] = normalize_project_path(payload.get("project_path"))
             payload["title"] = str(payload.get("title") or DEFAULT_CHAT_TITLE).strip() or DEFAULT_CHAT_TITLE
             return SessionSnapshot(**payload)
@@ -129,10 +131,14 @@ class SessionStore:
         }
         active_snapshot = self._load_active_session_file()
         changed = not self.index_path.exists()
-        if active_snapshot is not None and active_snapshot.session_id not in known_ids:
+        if (
+            active_snapshot is not None
+            and active_snapshot.is_persisted
+            and active_snapshot.session_id not in known_ids
+        ):
             sessions.append(asdict(active_snapshot))
             changed = True
-        if active_snapshot is not None:
+        if active_snapshot is not None and active_snapshot.is_persisted:
             active_map = dict(payload.get("active_session_by_project", {}))
             project_key = normalize_project_path(active_snapshot.project_path)
             if active_map.get(project_key) != active_snapshot.session_id:
@@ -192,7 +198,8 @@ class SessionStore:
         if touch:
             snapshot.touch()
         self._write_json(self.path, asdict(snapshot))
-        self._upsert_session(snapshot, set_active=set_active, touch=False)
+        if snapshot.is_persisted:
+            self._upsert_session(snapshot, set_active=set_active, touch=False)
 
     def list_sessions(self, project_path: str | Path | None = None) -> list[SessionListEntry]:
         self._ensure_index_initialized()
@@ -318,6 +325,7 @@ class SessionStore:
         *,
         project_path: str | Path | None = None,
         title: str = DEFAULT_CHAT_TITLE,
+        persisted: bool = True,
     ) -> SessionSnapshot:
         session_id = uuid.uuid4().hex
         now = _utc_now()
@@ -330,4 +338,5 @@ class SessionStore:
             updated_at=now,
             project_path=normalize_project_path(project_path),
             title=str(title or DEFAULT_CHAT_TITLE).strip() or DEFAULT_CHAT_TITLE,
+            is_persisted=bool(persisted),
         )

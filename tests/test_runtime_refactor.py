@@ -33,6 +33,7 @@ from tools.tool_registry import ToolRegistry
 import ui.runtime as gui_runtime
 from ui.runtime import (
     append_project_label,
+    build_help_markdown,
     build_initial_state,
     build_transcript_payload,
     build_user_choice_payload,
@@ -1356,6 +1357,32 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(entries), 1)
         self.assertEqual(entries[0].session_id, "legacy-session")
 
+    def test_session_store_draft_session_stays_out_of_history_until_persisted(self):
+        tmp = self._workspace_tempdir()
+        store = SessionStore(tmp / "session.json")
+        draft = store.new_session(
+            "sqlite",
+            "demo.sqlite",
+            project_path=tmp / "project-a",
+            title="New Chat [project-a]",
+            persisted=False,
+        )
+
+        store.save_active_session(draft, touch=False, set_active=True)
+
+        loaded = store.load_active_session()
+        self.assertIsNotNone(loaded)
+        self.assertEqual(loaded.session_id, draft.session_id)
+        self.assertEqual(store.list_sessions(), [])
+        self.assertIsNone(store.get_last_active_session())
+
+        draft.is_persisted = True
+        store.save_active_session(draft, touch=False, set_active=True)
+
+        entries = store.list_sessions()
+        self.assertEqual(len(entries), 1)
+        self.assertEqual(entries[0].session_id, draft.session_id)
+
     def test_generate_chat_title_strips_common_prefixes_and_limits_length(self):
         self.assertEqual(
             generate_chat_title("Помоги скачать и настроить Apache на Windows"),
@@ -1368,6 +1395,16 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         project_path = Path("D:/work/client/demo-app")
         self.assertEqual(short_project_label(project_path), "client/demo-app")
         self.assertEqual(append_project_label("New Chat", project_path), "New Chat [client/demo-app]")
+
+    def test_help_markdown_lists_shortcuts_and_history_commands(self):
+        help_markdown = build_help_markdown()
+
+        self.assertIn("**Ctrl+N**", help_markdown)
+        self.assertIn("**Ctrl+B**", help_markdown)
+        self.assertIn("**Ctrl+I**", help_markdown)
+        self.assertIn("**Up/Down**", help_markdown)
+        self.assertIn("Type **@**", help_markdown)
+        self.assertIn("Right-click a chat", help_markdown)
 
     def test_worker_preserves_project_label_when_first_title_is_generated(self):
         tmp = self._workspace_tempdir()

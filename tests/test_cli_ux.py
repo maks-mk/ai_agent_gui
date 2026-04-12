@@ -1530,16 +1530,19 @@ class GuiUxTests(unittest.TestCase):
         self.window._handle_initialized(self._snapshot_payload())
         self.window._handle_event(StreamEvent("run_started", {"text": "hello"}))
         self.assertIsNotNone(self.window.current_turn)
+        initial_sessions = self.window.sidebar.model.session_row_count()
 
         self.window._new_session()
 
         self.assertEqual(self.controller.new_session_calls, 1)
         self.assertIsNone(self.window.current_turn)
+        self.assertEqual(self.window.sidebar.model.session_row_count(), initial_sessions)
 
     def test_open_new_project_creates_fresh_session_without_hiding_history(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window._handle_event(StreamEvent("run_started", {"text": "history"}))
         self.assertIsNotNone(self.window.current_turn)
+        initial_sessions = self.window.sidebar.model.session_row_count()
 
         with (
             mock.patch.object(agent_cli.QFileDialog, "getExistingDirectory", return_value="D:/demo/workspace"),
@@ -1550,6 +1553,7 @@ class GuiUxTests(unittest.TestCase):
         chdir_mock.assert_called_once_with("D:/demo/workspace")
         self.assertEqual(self.controller.reinitialize_calls, [True])
         self.assertIsNone(self.window.current_turn)
+        self.assertEqual(self.window.sidebar.model.session_row_count(), initial_sessions)
 
     def test_user_message_uses_chat_style_bubble(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1764,9 +1768,7 @@ class GuiUxTests(unittest.TestCase):
 
     def test_open_settings_dialog_saves_profiles_via_controller(self):
         self.window._handle_initialized(self._snapshot_payload())
-        dialog_instance = mock.Mock()
-        dialog_instance.exec.return_value = 1
-        dialog_instance.result_payload.return_value = {
+        payload = {
             "active_profile": "gemini-1-5-flash",
             "profiles": [
                 {
@@ -1779,12 +1781,34 @@ class GuiUxTests(unittest.TestCase):
             ],
         }
 
+        class _FakeSignal:
+            def __init__(self):
+                self._callbacks = []
+
+            def connect(self, callback):
+                self._callbacks.append(callback)
+
+            def emit(self, value):
+                for callback in list(self._callbacks):
+                    callback(value)
+
+        class _FakeDialog:
+            def __init__(self, emitted_payload):
+                self.profiles_saved = _FakeSignal()
+                self._payload = emitted_payload
+
+            def exec(self):
+                self.profiles_saved.emit(self._payload)
+                return 0
+
+        dialog_instance = _FakeDialog(payload)
+
         with mock.patch.object(agent_cli, "ModelSettingsDialog", return_value=dialog_instance):
             self.window._open_settings_dialog()
 
         self.assertEqual(
             self.controller.save_profiles_calls,
-            [normalize_profiles_payload(dialog_instance.result_payload.return_value)],
+            [normalize_profiles_payload(payload)],
         )
         self.assertEqual(self.window.model_profiles_payload["active_profile"], "gemini-1-5-flash")
 
@@ -1811,6 +1835,28 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(dialog._profiles[0]["id"], "gpt-4o")
         self.assertEqual(dialog.model_edit.text(), "openai/gpt-4o")
         self.assertTrue(dialog.supports_images_checkbox.isChecked())
+
+    def test_model_settings_dialog_save_keeps_window_open_and_emits_payload(self):
+        dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
+        self.addCleanup(dialog.close)
+        saved_payloads = []
+        dialog.profiles_saved.connect(saved_payloads.append)
+        dialog.show()
+        self._process_events()
+
+        dialog._add_profile()
+        self._process_events()
+        dialog.model_edit.setText("openai/gpt-oss-120b")
+        dialog.api_key_edit.setText("sk-demo")
+        self._process_events()
+
+        dialog._save_and_accept()
+        self._process_events()
+
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(len(saved_payloads), 1)
+        self.assertEqual(saved_payloads[0]["profiles"][0]["id"], "gpt-oss-120b")
+        self.assertIn("keep this window open", dialog.save_state_label.text())
 
     def test_model_settings_dialog_opens_with_active_profile_selected(self):
         payload = {

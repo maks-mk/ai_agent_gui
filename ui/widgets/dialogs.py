@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from typing import Any
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -31,6 +31,8 @@ from .foundation import CollapsibleSection, _fa_icon, _make_mono_font
 
 
 class ModelSettingsDialog(QDialog):
+    profiles_saved = Signal(object)
+
     def __init__(self, payload: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("ModelSettingsDialog")
@@ -116,6 +118,12 @@ class ModelSettingsDialog(QDialog):
         self.form_hint.setWordWrap(True)
         right.addWidget(self.form_hint)
 
+        self.save_state_label = QLabel("")
+        self.save_state_label.setObjectName("ModelSettingsMeta")
+        self.save_state_label.setWordWrap(True)
+        self.save_state_label.setVisible(False)
+        right.addWidget(self.save_state_label)
+
         form_frame = QFrame()
         form_frame.setObjectName("ModelSettingsFormCard")
         form_layout = QFormLayout(form_frame)
@@ -164,22 +172,24 @@ class ModelSettingsDialog(QDialog):
         body.addWidget(right_container, 9)
         root.addLayout(body, 1)
 
-        actions = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        actions = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
         actions.setObjectName("ModelSettingsActions")
         self.save_button = actions.button(QDialogButtonBox.StandardButton.Save)
         if self.save_button is not None:
             self.save_button.setObjectName("PrimaryButton")
             self.save_button.setIcon(_fa_icon("fa5s.save", color="#FFFFFF", size=11))
             self.save_button.setMinimumHeight(30)
-        self.cancel_button = actions.button(QDialogButtonBox.StandardButton.Cancel)
-        if self.cancel_button is not None:
-            self.cancel_button.setMinimumHeight(30)
+        self.close_button = actions.button(QDialogButtonBox.StandardButton.Close)
+        if self.close_button is not None:
+            self.close_button.setMinimumHeight(30)
         root.addWidget(actions)
 
         self.add_button.clicked.connect(self._add_profile)
         self.delete_button.clicked.connect(self._delete_selected_profile)
-        actions.accepted.connect(self._save_and_accept)
-        actions.rejected.connect(self.reject)
+        if self.save_button is not None:
+            self.save_button.clicked.connect(self._save_and_accept)
+        if self.close_button is not None:
+            self.close_button.clicked.connect(self.reject)
 
         self.name_edit.textEdited.connect(self._on_name_edited)
         self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
@@ -213,6 +223,11 @@ class ModelSettingsDialog(QDialog):
         self.delete_button.setEnabled(enabled)
         if enabled:
             self._update_base_url_field_state(self.provider_combo.currentText())
+
+    def _set_save_state(self, message: str) -> None:
+        text = str(message or "").strip()
+        self.save_state_label.setText(text)
+        self.save_state_label.setVisible(bool(text))
 
     def _update_base_url_field_state(self, provider: str) -> None:
         provider_normalized = str(provider or "").strip().lower()
@@ -415,6 +430,7 @@ class ModelSettingsDialog(QDialog):
             is_enabled = bool(state)
         self._profiles[row]["enabled"] = is_enabled
         self._reconcile_active_profile()
+        self._set_save_state("")
         self._refresh_profile_list(preferred_row=row)
 
     def _suggest_unique_id(self, model_text: str, *, row: int) -> str:
@@ -462,6 +478,7 @@ class ModelSettingsDialog(QDialog):
         self._on_form_changed()
 
     def _on_form_changed(self) -> None:
+        self._set_save_state("")
         self._sync_current_profile_from_form()
 
     def _on_provider_changed(self, provider: str) -> None:
@@ -488,6 +505,7 @@ class ModelSettingsDialog(QDialog):
             }
         )
         self._name_manual_flags.append(False)
+        self._set_save_state("")
         self._refresh_profile_list(preferred_row=len(self._profiles) - 1)
 
     def _delete_selected_profile(self) -> None:
@@ -503,6 +521,7 @@ class ModelSettingsDialog(QDialog):
             self._active_profile = ""
         self._reconcile_active_profile()
 
+        self._set_save_state("")
         self._refresh_profile_list(preferred_row=row)
 
     def _validated_payload(self) -> dict[str, Any] | None:
@@ -549,7 +568,14 @@ class ModelSettingsDialog(QDialog):
         if validated is None:
             return
         self._result_payload = normalize_profiles_payload(validated)
-        self.accept()
+        self._profiles = [dict(item) for item in self._result_payload.get("profiles", [])]
+        self._active_profile = str(self._result_payload.get("active_profile") or "").strip()
+        self._name_manual_flags = self._compute_initial_name_manual_flags()
+        current_row = self._current_row()
+        preferred_row = current_row if current_row >= 0 else self._preferred_row_for_open()
+        self._refresh_profile_list(preferred_row=preferred_row)
+        self._set_save_state("Saved. You can keep this window open and continue editing.")
+        self.profiles_saved.emit(dict(self._result_payload))
 
 
 class ApprovalDialog(QDialog):

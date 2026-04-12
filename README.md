@@ -1,132 +1,66 @@
-🚀 Portable Autonomous AI Agent (GUI)
+# Portable Autonomous AI Agent (GUI)
 
-Portable desktop AI agent с графовым runtime ("LangGraph") и GUI на "PySide6".
-Запускается как ".exe" без установки — можно перенести на флешке и работать на любом ПК.
+Desktop AI-agent с графовым runtime (`LangGraph`) и интерфейсом на `PySide6`.
+Проект можно запускать из исходников (`python main.py`) или собрать в portable-режиме через `build.bat`.
 
 ![Portable Autonomous AI Agent](./img/01.jpg)
 
----
+## Что умеет агент
 
-✨ Ключевая идея
+- Анализировать кодовую базу и структуру проекта.
+- Читать, искать, редактировать и создавать файлы через инструменты файловой системы.
+- Выполнять shell-команды (если включено `ENABLE_SHELL_TOOL`).
+- Работать с системными и процессными инструментами (по флагам).
+- Выполнять web-поиск и извлекать контент:
+- `web_search`
+- `fetch_content`
+- `batch_web_search`
+- Подключать внешние MCP-инструменты из `mcp.json`.
+- Показывать действия в transcript (tool cards, diff, статус выполнения).
+- Запрашивать у пользователя явный выбор через `request_user_input` при неоднозначных сценариях.
+- Поддерживать approval-паузы для потенциально опасных операций.
+- Принимать мультимодальный ввод (изображения), если активный профиль это поддерживает.
 
-«Собрал один раз → перенёс → запустил → работаешь»
+## Интерфейс (GUI)
 
-- ❌ Без установки Python / Node / IDE
-- ❌ Без привязки к конкретной машине
-- ✔ Работает в ограниченных средах
-- ✔ Полный контроль над поведением
-- ✔ Локальная работа с файлами и системой
+- Левая панель: история чатов, сгруппированная по проектам.
+- Центр: transcript с ответами, инструментами и результатами.
+- Composer: ввод текста, `@`-упоминание файлов, вставка путей, вложения изображений.
+- Info popup (`Ctrl+I`): вкладки `Info`, `Tools`, `Help`.
+- Settings: управление профилями моделей.
 
----
+### Горячие клавиши
 
-⚙️ Что умеет агент
+- `Enter`: отправка запроса
+- `Shift+Enter`: новая строка
+- `Ctrl+N`: новый чат
+- `Ctrl+B`: показать/скрыть боковую панель
+- `Ctrl+I`: открыть инфо-панель
+- `Up/Down` в пустом composer: история отправленных запросов
 
-- 📂 Анализ проектов и структуры кода
-- ✏️ Редактирование файлов с показом diff
-- 🖥️ Выполнение CLI-команд
-- 🔍 Поиск по файлам и директориям
-- 🌐 Web-поиск и загрузка контента
-- 🌐 Пакетный web-поиск (batch_web_search)
-- 🔌 Подключение внешних инструментов через MCP
-- 🔄 Автоматическое восстановление после ошибок
-- ⚠️ Approval для потенциально опасных действий
-- 🧠 Мультимодальный ввод (включая изображения)
-- 💾 Сохранение сессий и чекпоинтов
+## Быстрый старт
 
----
+```powershell
+python -m venv venv
+venv\Scripts\pip.exe install -r requirements.txt
+Copy-Item env_example.txt .env
+python main.py
+```
 
-🧠 Как он работает
-
-Граф выполнения:
-
-summarize → classify_turn → agent → {approval | tools | recovery | END}
-
----
-
-Основные принципы:
-
-- System-driven execution — поведение задаётся системой
-- Bounded recovery — нет бесконечных циклов
-- Tool-first подход — агент действует, а не просто отвечает
-- Прозрачность — все действия видны
-
----
-
-👤 Кому это может быть полезно
-
-- DevOps / SRE
-- Системные администраторы
-- Разработчики (вне IDE)
-- Диагностика и отладка
-- Ограниченные среды
-
----
-
-⚠️ Чем это не является
-
-Не замена:
-
-- IDE с AI (Cursor, Windsurf)
-- Облачных ассистентов (Claude, ChatGPT)
-- CLI-инструментов вендоров
-
----
-
-Это:
-
-«дополнительный инструмент с фокусом на портативность и контроль»
-
----
-
-🔌 MCP (Model Context Protocol)
-
-Агент поддерживает подключение внешних инструментов через "mcp.json".
-
-Позволяет:
-
-- подключать сторонние MCP-серверы
-- расширять функциональность без изменения кода
-- использовать внешние API и сервисы
-
-Если файл "mcp.json" присутствует — инструменты подключаются автоматически.
-
----
-
-🖥️ Интерфейс (GUI)
-
-- Transcript с шагами выполнения
-- Tool-cards
-- Diff изменений
-- Время выполнения
-- Sidebar сессий
-- Lazy visibility
-
----
-
-📦 Portable режим
+## Portable сборка
 
 ```powershell
 .\build.bat
 ```
 
-→ скопировать `.exe` и соседние runtime-файлы из папки сборки → запустить на другом ПК
+После сборки можно переносить `.exe` и сопутствующие runtime-файлы в другую директорию/на другой ПК.
 
----
-
-💡 Почему portable важно
-
-- Работа на чужих машинах
-- Нет зависимостей
-- Подходит для ограниченных сред
-- Полная автономность
-
----
-
-📁 Структура проекта
+## Структура проекта
 
 ```text
 .
 ├─ agent.py
+├─ main.py
 ├─ core/
 ├─ tools/
 ├─ ui/
@@ -139,131 +73,100 @@ summarize → classify_turn → agent → {approval | tools | recovery | END}
 └─ build.bat
 ```
 
----
+## Компоненты
 
-🧩 Основные компоненты
+- `core/` — конфигурация, runtime-логика, policy, recovery, состояние сессий.
+- `tools/` — встроенные инструменты (filesystem/shell/search/system/process/user_input) и MCP-интеграция.
+- `ui/` — окно приложения, панели, transcript, настройки моделей.
+- `tests/` — unit и интеграционные тесты поведения runtime и GUI.
 
-- "core/" — runtime, policy, recovery
-- "tools/" — локальные и MCP инструменты
-- "ui/" — GUI
-- "agent.py" — сборка агента
+## Конфигурация `.env`
 
----
+Ниже перечислены актуальные параметры из `core/config.py` и `env_example.txt`.
 
-🛠️ Инструменты
-
-Filesystem
-
-- read/write/edit file
-- search / list directory
-
-Shell
-
-- "cli_exec"
-
-Search
-
-- "web_search"
-- "fetch_content"
-- "batch_web_search"
-
-System / Process
-
-- system info
-- background processes
-
-MCP
-
-- внешние инструменты через "mcp.json"
-
-User
-
-- "request_user_input"
-
----
-
-🧪 Пример
-
-User: Найди информацию по теме X
-
-Агент:
-
-- выполняет batch_web_search
-- агрегирует результаты
-- возвращает сводку
-
----
-
-🚀 Быстрый старт
-
-```bash
-python -m venv venv
-pip install -r requirements.txt
-```
-
-```powershell
-Copy-Item env_example.txt .env
-```
-
-```bash
-python main.py
-```
-
----
-
-⚙️ Конфигурация
-
-Provider
+### 1) Провайдер и модели
 
 - `PROVIDER=gemini|openai`
-- `GEMINI_API_KEY`, `GEMINI_MODEL`
-- `OPENAI_API_KEY`, `OPENAI_MODEL`, `OPENAI_BASE_URL`
+- `GEMINI_API_KEY`
+- `GEMINI_MODEL` (по умолчанию `gemini-1.5-flash`)
+- `OPENAI_API_KEY`
+- `OPENAI_MODEL` (по умолчанию `gpt-4o`)
+- `OPENAI_BASE_URL` (опционально, для совместимых backend)
 
-Пути
+### 2) Основные runtime-параметры
 
-- `PROMPT_PATH`
-- `MCP_CONFIG_PATH`
-- `SESSION_STATE_PATH`
-- `RUN_LOG_DIR`
+- `TEMPERATURE` (по умолчанию `0.2`)
+- `MAX_LOOPS` (по умолчанию `50`)
+- `TOOL_LOOP_WINDOW` (опционально)
+- `TOOL_LOOP_LIMIT_MUTATING` (опционально)
+- `TOOL_LOOP_LIMIT_READONLY` (опционально)
 
-Features
+### 3) Пути и файлы состояния
 
-- `ENABLE_*_TOOLS`
-- `ENABLE_APPROVALS`
+- `PROMPT_PATH` (по умолчанию `prompt.txt`)
+- `MCP_CONFIG_PATH` (по умолчанию `mcp.json`)
+- `CHECKPOINT_BACKEND=sqlite|memory|postgres`
+- `CHECKPOINT_SQLITE_PATH` (по умолчанию `.agent_state/checkpoints.sqlite`)
+- `CHECKPOINT_POSTGRES_URL` (опционально)
+- `SESSION_STATE_PATH` (по умолчанию `.agent_state/session.json`)
+- `RUN_LOG_DIR` (по умолчанию `logs/runs`)
+- `LOG_FILE` (по умолчанию `logs/agent.log`)
+
+### 4) Включение подсистем и инструментов
+
 - `MODEL_SUPPORTS_TOOLS`
+- `ENABLE_SEARCH_TOOLS`
+- `ENABLE_FILESYSTEM_TOOLS`
+- `ENABLE_SYSTEM_TOOLS`
+- `ENABLE_PROCESS_TOOLS`
+- `ENABLE_SHELL_TOOL`
+- `ENABLE_APPROVALS`
+- `ALLOW_EXTERNAL_PROCESS_CONTROL`
 
----
+### 5) Лимиты и защита
 
-🧪 Тесты
+- `MAX_TOOL_OUTPUT`
+- `MAX_SEARCH_CHARS`
+- `MAX_FILE_SIZE` (поддерживает форматы вроде `300MiB`, `4MB`)
+- `MAX_READ_LINES`
+- `MAX_BACKGROUND_PROCESSES`
+- `STREAM_TEXT_MAX_CHARS`
+- `STREAM_EVENTS_MAX`
+- `STREAM_TOOL_BUFFER_MAX`
+- `SELF_CORRECTION_RETRY_LIMIT`
 
-```bash
-python -m unittest discover -s tests -v
+### 6) Суммаризация и retry
+
+- `SESSION_SIZE`
+- `SUMMARY_KEEP_LAST`
+- `MAX_RETRIES`
+- `RETRY_DELAY`
+
+### 7) Диагностика
+
+- `DEBUG`
+- `LOG_LEVEL`
+- `STRICT_MODE`
+
+## Legacy / bootstrap параметры
+
+`env_example.txt` также содержит универсальные ключи `MODEL`, `API_KEY`, `BASE_URL`.
+Они полезны для bootstrap-профилей при первом запуске, но основной runtime-конфиг читает provider-специфичные переменные (`OPENAI_*`, `GEMINI_*`).
+
+## MCP
+
+Файл `mcp.json` задает подключаемые MCP-серверы и флаг `enabled` для каждого.
+Если сервер доступен и включен, его инструменты попадут в runtime автоматически.
+
+## Тесты
+
+```powershell
+venv\Scripts\python.exe -m pytest
 ```
 
----
+## Требования и ограничения
 
-🧠 Архитектура
-
-- Graph execution
-- Provider-aware routing
-- Multimodal support
-- MCP extensibility
-- Self-correction
-- Approval system
-
----
-
-⚠️ Требования
-
-- Интернет нужен только для web-search/MCP/внешних API.
-- API-ключ нужен для выбранного провайдера (`Gemini` или `OpenAI-compatible`).
-- Для локальных file/system/process задач агент может работать без веб-доступа.
-
----
-
-🚀 Итог
-
-«Минимум зависимости → максимум контроля»
-
-Агент — это инструмент выполнения задач,
-а не просто интерфейс к LLM.
+- Для `gemini` нужен `GEMINI_API_KEY`.
+- Для `openai` нужен `OPENAI_API_KEY` или `OPENAI_BASE_URL` (для локальных/совместимых endpoint).
+- Для web-поиска нужен `TAVILY_API_KEY` и `ENABLE_SEARCH_TOOLS=true`.
+- Локальные файловые/системные операции могут работать без интернет-доступа.
