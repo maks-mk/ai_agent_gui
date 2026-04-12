@@ -262,7 +262,6 @@ class RecoveryManager:
         step_count: int,
         max_loops: int,
         hard_loop_ceiling: int,
-        auto_repair_enabled: bool,
         max_auto_repairs: int,
         successful_tool_stagnation_limit: int,
     ) -> Dict[str, Any]:
@@ -288,7 +287,7 @@ class RecoveryManager:
                 current_task=current_task,
                 max_auto_repairs=max_auto_repairs,
             )
-            if open_tool_issue and auto_repair_enabled
+            if open_tool_issue and int(max_auto_repairs or 0) > 0
             else None
         )
         issue_fingerprint = str(
@@ -326,6 +325,23 @@ class RecoveryManager:
                     self.build_tool_issue_handoff_text(open_tool_issue, repair_plan=repair_plan)
                     if open_tool_issue
                     else ""
+                ),
+            }
+        elif open_tool_issue and int(hard_loop_ceiling or 0) <= 0:
+            next_recovery_state["active_issue"] = open_tool_issue
+            next_recovery_state["active_strategy"] = None
+            next_recovery_state["strategy_queue"] = []
+            next_recovery_state["external_blocker"] = {
+                "reason": "self_correction_disabled",
+                "issue_summary": str(open_tool_issue.get("summary", "")),
+            }
+            branch = {
+                "completion_reason": "self_correction_disabled",
+                "turn_outcome": "finish_turn",
+                "next_open_tool_issue": None,
+                "handoff_message": self.build_tool_issue_handoff_text(
+                    open_tool_issue,
+                    repair_plan=repair_plan,
                 ),
             }
         elif open_tool_issue and int(next_retry_count or 0) >= max(1, int(hard_loop_ceiling or 1)):

@@ -33,9 +33,7 @@ class StabilityPolicyTests(unittest.IsolatedAsyncioTestCase):
             "OPENAI_API_KEY": "test-key",
             "PROMPT_PATH": Path(__file__).resolve().parents[1] / "prompt.txt",
             "MODEL_SUPPORTS_TOOLS": True,
-            "SELF_CORRECTION_ENABLE_AUTO_REPAIR": True,
-            "SELF_CORRECTION_MAX_AUTO_REPAIRS": 2,
-            "SELF_CORRECTION_HARD_CEILING": 5,
+            "SELF_CORRECTION_RETRY_LIMIT": 5,
         }
         defaults.update(overrides)
         return AgentConfig(**defaults)
@@ -57,8 +55,46 @@ class StabilityPolicyTests(unittest.IsolatedAsyncioTestCase):
         )
 
     def test_hard_loop_ceiling_matches_max_loops(self):
-        nodes = self._build_nodes(MAX_LOOPS=7, SELF_CORRECTION_HARD_CEILING=5)
+        nodes = self._build_nodes(MAX_LOOPS=7, SELF_CORRECTION_RETRY_LIMIT=5)
         self.assertEqual(nodes._hard_loop_ceiling(), 5)
+
+    def test_legacy_self_correction_settings_map_to_retry_limit(self):
+        config = self._make_config(
+            SELF_CORRECTION_RETRY_LIMIT="",
+            SELF_CORRECTION_ENABLE_AUTO_REPAIR=True,
+            SELF_CORRECTION_MAX_AUTO_REPAIRS=2,
+            SELF_CORRECTION_HARD_CEILING=4,
+        )
+        self.assertEqual(config.self_correction_retry_limit, 4)
+
+        disabled = self._make_config(
+            SELF_CORRECTION_RETRY_LIMIT="",
+            SELF_CORRECTION_ENABLE_AUTO_REPAIR=False,
+            SELF_CORRECTION_HARD_CEILING=9,
+        )
+        self.assertEqual(disabled.self_correction_retry_limit, 0)
+
+    async def test_stability_guard_finishes_immediately_when_self_correction_disabled(self):
+        nodes = self._build_nodes(SELF_CORRECTION_RETRY_LIMIT=0)
+        state = self._base_state("проверь порт")
+        state["open_tool_issue"] = {
+            "turn_id": 1,
+            "kind": "tool_error",
+            "summary": "Port must be integer",
+            "tool_names": ["find_process_by_port"],
+            "tool_args": {"port": "8080"},
+            "source": "tools",
+            "error_type": "VALIDATION",
+            "fingerprint": "fp-disabled",
+            "progress_fingerprint": "fp-disabled",
+            "details": {},
+        }
+
+        result = await nodes.stability_guard_node(state)
+
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertEqual(result["completion_reason"], "self_correction_disabled")
+        self.assertIsNone(result["open_tool_issue"])
 
     def test_mutating_tools_require_approval(self):
         nodes = self._build_nodes(
@@ -236,7 +272,7 @@ class StabilityPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("стагнац", str(result["messages"][-1].content).lower())
 
     async def test_stability_guard_finishes_when_self_correction_hard_ceiling_is_reached(self):
-        nodes = self._build_nodes(MAX_LOOPS=20, SELF_CORRECTION_HARD_CEILING=2)
+        nodes = self._build_nodes(MAX_LOOPS=20, SELF_CORRECTION_RETRY_LIMIT=2)
         state = self._base_state("исправь файл")
         state["self_correction_retry_count"] = 2
         state["open_tool_issue"] = {

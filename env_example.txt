@@ -91,10 +91,9 @@ ENABLE_SHELL_TOOL=false
 # STREAM_TEXT_MAX_CHARS=120000
 # STREAM_EVENTS_MAX=400
 # STREAM_TOOL_BUFFER_MAX=128
-# Self-correction auto-repair (до N автоматических repair-ретраев)
-# SELF_CORRECTION_ENABLE_AUTO_REPAIR=true
-# SELF_CORRECTION_MAX_AUTO_REPAIRS=2
-# SELF_CORRECTION_HARD_CEILING=8
+# Self-correction retries after tool/protocol failures.
+# 0 disables automatic self-correction, positive values set the retry ceiling.
+# SELF_CORRECTION_RETRY_LIMIT=8
 # Require interactive approval before mutating/destructive tools execute
 ENABLE_APPROVALS=true
 # Allow stopping external PIDs not started by this agent

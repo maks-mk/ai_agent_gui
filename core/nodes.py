@@ -1559,10 +1559,10 @@ class AgentNodes:
             raise
 
     def _hard_loop_ceiling(self) -> int:
-        configured_ceiling = int(self.config.self_correction_hard_ceiling or 0)
+        configured_ceiling = int(self.config.self_correction_retry_limit or 0)
         max_loops = max(1, int(self.config.max_loops or 1))
         if configured_ceiling <= 0:
-            return max_loops
+            return 0
         return max(1, min(max_loops, configured_ceiling))
 
     def _handle_pending_tool_budget_exhaustion(
@@ -1780,8 +1780,7 @@ class AgentNodes:
                 step_count=step_count,
                 max_loops=int(self.config.max_loops or 0),
                 hard_loop_ceiling=hard_loop_ceiling,
-                auto_repair_enabled=bool(self.config.self_correction_enable_auto_repair),
-                max_auto_repairs=int(self.config.self_correction_max_auto_repairs or 2),
+                max_auto_repairs=hard_loop_ceiling,
                 successful_tool_stagnation_limit=self._successful_tool_stagnation_limit(
                     str(getattr(last_message, "name", "") or "")
                 ),
@@ -1873,8 +1872,9 @@ class AgentNodes:
         last_message = messages[-1] if messages else None
         step_count = int(state.get("steps", 0) or 0)
         recovery_state = self._get_recovery_state(state, current_turn_id=current_turn_id)
-        hard_loop_ceiling = min(2, self._hard_loop_ceiling())
-        max_auto_repairs = min(1, max(1, int(self.config.self_correction_max_auto_repairs or 1)))
+        self_correction_limit = self._hard_loop_ceiling()
+        hard_loop_ceiling = min(2, self_correction_limit) if self_correction_limit > 0 else 0
+        max_auto_repairs = min(1, self_correction_limit) if self_correction_limit > 0 else 0
 
         result = self.recovery_manager.plan_recovery(
             state=state,
@@ -1888,7 +1888,6 @@ class AgentNodes:
             step_count=step_count,
             max_loops=int(self.config.max_loops or 0),
             hard_loop_ceiling=hard_loop_ceiling,
-            auto_repair_enabled=bool(self.config.self_correction_enable_auto_repair),
             max_auto_repairs=max_auto_repairs,
             successful_tool_stagnation_limit=self._successful_tool_stagnation_limit(
                 str(getattr(last_message, "name", "") or "")

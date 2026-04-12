@@ -26,6 +26,21 @@ _SIZE_MULTIPLIERS = {
 }
 
 
+def _coerce_env_bool(value: Any) -> Optional[bool]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        return value
+    normalized = str(value).strip().lower()
+    if not normalized:
+        return None
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    return None
+
+
 def _candidate_runtime_dirs() -> list[Path]:
     if getattr(sys, "frozen", False):
         return [BASE_DIR]
@@ -130,9 +145,7 @@ class AgentConfig(BaseSettings):
     stream_text_max_chars: int = Field(default=120000, alias="STREAM_TEXT_MAX_CHARS")
     stream_events_max: int = Field(default=400, alias="STREAM_EVENTS_MAX")
     stream_tool_buffer_max: int = Field(default=128, alias="STREAM_TOOL_BUFFER_MAX")
-    self_correction_max_auto_repairs: int = Field(default=2, alias="SELF_CORRECTION_MAX_AUTO_REPAIRS")
-    self_correction_hard_ceiling: int = Field(default=8, alias="SELF_CORRECTION_HARD_CEILING")
-    self_correction_enable_auto_repair: bool = Field(default=True, alias="SELF_CORRECTION_ENABLE_AUTO_REPAIR")
+    self_correction_retry_limit: int = Field(default=8, alias="SELF_CORRECTION_RETRY_LIMIT")
     max_file_size: int = Field(
         default=DEFAULT_MAX_FILE_SIZE,
         alias="MAX_FILE_SIZE",
@@ -228,6 +241,31 @@ class AgentConfig(BaseSettings):
             return 10000
         return value
 
+    @model_validator(mode="before")
+    @classmethod
+    def migrate_legacy_self_correction_settings(cls, data: Any) -> Any:
+        if not isinstance(data, dict):
+            return data
+
+        raw = dict(data)
+        if raw.get("SELF_CORRECTION_RETRY_LIMIT") not in (None, "") or raw.get("self_correction_retry_limit") not in (None, ""):
+            return raw
+
+        legacy_enabled = raw.get("SELF_CORRECTION_ENABLE_AUTO_REPAIR", raw.get("self_correction_enable_auto_repair"))
+        if _coerce_env_bool(legacy_enabled) is False:
+            raw["SELF_CORRECTION_RETRY_LIMIT"] = 0
+            return raw
+
+        legacy_ceiling = raw.get("SELF_CORRECTION_HARD_CEILING", raw.get("self_correction_hard_ceiling"))
+        if legacy_ceiling not in (None, ""):
+            raw["SELF_CORRECTION_RETRY_LIMIT"] = legacy_ceiling
+            return raw
+
+        legacy_repairs = raw.get("SELF_CORRECTION_MAX_AUTO_REPAIRS", raw.get("self_correction_max_auto_repairs"))
+        if legacy_repairs not in (None, ""):
+            raw["SELF_CORRECTION_RETRY_LIMIT"] = legacy_repairs
+        return raw
+
     @field_validator("checkpoint_backend", mode="before")
     @classmethod
     def normalize_checkpoint_backend(cls, v: str) -> str:
@@ -263,8 +301,6 @@ class AgentConfig(BaseSettings):
         "stream_text_max_chars",
         "stream_events_max",
         "stream_tool_buffer_max",
-        "self_correction_max_auto_repairs",
-        "self_correction_hard_ceiling",
         mode="before",
     )
     @classmethod
@@ -275,6 +311,19 @@ class AgentConfig(BaseSettings):
             return 1
         if value < 1:
             return 1
+        if value > 1_000_000:
+            return 1_000_000
+        return value
+
+    @field_validator("self_correction_retry_limit", mode="before")
+    @classmethod
+    def validate_self_correction_retry_limit(cls, v: Union[int, float, str]) -> int:
+        try:
+            value = int(float(v))
+        except (TypeError, ValueError):
+            return 0
+        if value < 0:
+            return 0
         if value > 1_000_000:
             return 1_000_000
         return value
