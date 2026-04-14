@@ -20,8 +20,44 @@ def estimate_tokens(messages: List[BaseMessage]) -> int:
     return total_chars // 2
 
 
-def should_summarize(messages: List[BaseMessage], *, threshold: int) -> bool:
-    return estimate_tokens(messages) > int(threshold or 0)
+def _soft_summary_margin(threshold: int, *, has_summary: bool) -> int:
+    base = max(800, int(threshold * 0.15))
+    if has_summary:
+        return max(base, int(threshold * 0.35))
+    return base
+
+
+def should_summarize(
+    messages: List[BaseMessage],
+    *,
+    threshold: int,
+    keep_last: int,
+    has_summary: bool = False,
+) -> bool:
+    threshold = int(threshold or 0)
+    if threshold <= 0:
+        return False
+
+    estimated = estimate_tokens(messages)
+    if estimated <= threshold:
+        return False
+
+    boundary = choose_summary_boundary(messages, keep_last=keep_last)
+    summarizable = messages[:boundary]
+    if not summarizable:
+        return False
+
+    summarizable_human_turns = sum(1 for message in summarizable if isinstance(message, HumanMessage))
+    soft_threshold = threshold + _soft_summary_margin(threshold, has_summary=has_summary)
+    min_summarizable_messages = max(6, int(keep_last or 0) + 2)
+
+    if estimated < soft_threshold:
+        if len(summarizable) < min_summarizable_messages:
+            return False
+        if summarizable_human_turns < 2:
+            return False
+
+    return True
 
 
 def choose_summary_boundary(messages: List[BaseMessage], *, keep_last: int) -> int:

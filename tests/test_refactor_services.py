@@ -54,7 +54,7 @@ class RefactorServicesTests(unittest.TestCase):
         system_text = "\n".join(
             str(message.content) for message in context if isinstance(message, SystemMessage)
         )
-        self.assertIn("Tools are available in this runtime.", system_text)
+        self.assertIn("Tools are available in this runtime for file, shell, web, or system access.", system_text)
         self.assertNotIn("tool_0, tool_1", system_text)
 
     def test_context_builder_injects_runtime_contract_from_code(self):
@@ -82,14 +82,15 @@ class RefactorServicesTests(unittest.TestCase):
         joined = "\n".join(system_texts)
         self.assertIn("RUNTIME CONTRACT:", joined)
         self.assertNotIn("Always respond in Russian.", joined)
-        self.assertIn("Before using any tool or tool batch", joined)
-        self.assertIn("After any system change", joined)
+        self.assertNotIn("Before using any tool or tool batch", joined)
+        self.assertNotIn("After any system change", joined)
         self.assertIn("TOOLS:", joined)
         self.assertIn("Execution environment: os=windows;", joined)
         self.assertIn("paths=windows.", joined)
         self.assertIn("Workspace root:", joined)
         self.assertIn("Current working directory:", joined)
         self.assertIn("Local timezone:", joined)
+        self.assertIn("Current date:", joined)
 
     def test_prompt_file_controls_default_response_language(self):
         prompt_text = (Path(__file__).resolve().parents[1] / "prompt.txt").read_text(encoding="utf-8")
@@ -438,9 +439,11 @@ class RefactorServicesTests(unittest.TestCase):
 
         self.assertIsNotNone(message)
         text = str(message.content)
+        self.assertIn("RECOVERY MODE:", text)
         self.assertIn("Recovery strategy: fix_args", text)
         self.assertIn("Prepared arguments:", text)
         self.assertNotIn("Structured issue details:", text)
+        self.assertNotIn("Do not repeat the exact same failing call unchanged.", text)
 
     def test_recovery_manager_handoff_text_hides_internal_recovery_hints(self):
         manager = RecoveryManager()

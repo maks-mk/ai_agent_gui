@@ -7,7 +7,7 @@ import asyncio
 import logging
 import re
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, Optional, Protocol, cast
 
 import aiofiles
 import httpx
@@ -17,11 +17,47 @@ from pydantic import AliasChoices, BaseModel, ConfigDict, Field, model_validator
 from core.config import DEFAULT_MAX_FILE_SIZE
 from core.errors import ErrorType, format_error
 from core.safety_policy import SafetyPolicy
-from tools.filesystem_impl import FilesystemManager
+from tools.filesystem_impl.manager import FilesystemManager as _FilesystemManager
 
 logger = logging.getLogger(__name__)
 
-fs_manager = FilesystemManager(virtual_mode=True)
+
+class FilesystemBackend(Protocol):
+    cwd: Path
+    safety_policy: SafetyPolicy | None
+
+    def set_policy(self, policy: SafetyPolicy) -> None: ...
+    def file_info(self, path: str) -> str: ...
+    def read_file(self, path: str, offset: int = 0, limit: int = 2000, show_line_numbers: bool = True) -> str: ...
+    def write_file(self, path: str, content: str) -> str: ...
+    def edit_file(self, path: str, old_string: str, new_string: str) -> str: ...
+    def list_files(self, path: str = ".", include_hidden: bool = False) -> str: ...
+    def search_in_file(self, path: str, pattern: str, use_regex: bool = False, ignore_case: bool = False) -> str: ...
+    def search_in_directory(
+        self,
+        path: str,
+        pattern: str,
+        use_regex: bool = False,
+        ignore_case: bool = False,
+        extensions: Optional[str] = None,
+        max_matches: int = 500,
+        max_files: int = 200,
+        max_depth: Optional[int] = None,
+    ) -> str: ...
+    def tail_file(self, path: str, lines: int = 50, show_line_numbers: bool = True) -> str: ...
+    def delete_file(self, path: str) -> str: ...
+    def delete_directory(self, path: str, recursive: bool = False) -> str: ...
+    def find_files(self, path: str, name_pattern: str, max_results: int = 200, max_depth: Optional[int] = None) -> str: ...
+
+
+FilesystemManager = _FilesystemManager
+
+
+def create_filesystem_backend(*, virtual_mode: bool = True) -> FilesystemBackend:
+    return FilesystemManager(virtual_mode=virtual_mode)
+
+
+fs_manager: FilesystemBackend = create_filesystem_backend(virtual_mode=True)
 
 
 def set_safety_policy(policy: SafetyPolicy):
@@ -30,6 +66,16 @@ def set_safety_policy(policy: SafetyPolicy):
 
 def set_working_directory(cwd: str):
     fs_manager.cwd = Path(cwd).resolve()
+
+
+def resolve_workspace_path(path: str) -> Path:
+    manager = cast(Any, fs_manager)
+    return manager._resolve_path(path)
+
+
+def max_filesystem_file_size() -> int:
+    policy = getattr(fs_manager, "safety_policy", None)
+    return policy.max_file_size if policy else DEFAULT_MAX_FILE_SIZE
 
 
 _EDIT_FILE_ALIAS_MAP = {
@@ -237,7 +283,7 @@ async def download_file(url: str, filename: Optional[str] = None) -> str:
             filename = url.split("/")[-1] or "downloaded_file"
 
         try:
-            destination = fs_manager._resolve_path(filename)
+            destination = resolve_workspace_path(filename)
         except ValueError as exc:
             return format_error(ErrorType.VALIDATION, str(exc))
 
@@ -258,7 +304,7 @@ async def download_file(url: str, filename: Optional[str] = None) -> str:
             ) as response:
                 response.raise_for_status()
                 content_length = response.headers.get("content-length")
-                max_size = fs_manager.safety_policy.max_file_size if fs_manager.safety_policy else DEFAULT_MAX_FILE_SIZE
+                max_size = max_filesystem_file_size()
                 if content_length:
                     try:
                         if int(content_length) > max_size:
@@ -297,9 +343,13 @@ def find_file_tool(name_pattern: str, path: str = ".", max_results: int = 200, m
 
 __all__ = [
     "FilesystemManager",
+    "FilesystemBackend",
+    "create_filesystem_backend",
     "fs_manager",
     "set_safety_policy",
     "set_working_directory",
+    "resolve_workspace_path",
+    "max_filesystem_file_size",
     "file_info_tool",
     "read_file_tool",
     "write_file_tool",

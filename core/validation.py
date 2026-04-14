@@ -29,9 +29,9 @@ def _extract_path(args: Dict[str, Any]) -> Optional[str]:
 
 def _resolve_workspace_path(path: str) -> Path:
     try:
-        from tools.filesystem import fs_manager
+        from tools.filesystem import resolve_workspace_path
 
-        return fs_manager._resolve_path(path)
+        return resolve_workspace_path(path)
     except Exception:
         return Path(path).resolve()
 

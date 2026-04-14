@@ -27,6 +27,7 @@ from core.model_profiles import ModelProfileStore
 from core.nodes import AgentNodes
 from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, SessionStore
+from core.summarize_policy import should_summarize
 from core.tool_policy import ToolMetadata
 from tools import process_tools
 from tools.tool_registry import ToolRegistry
@@ -311,6 +312,60 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(issue)
         self.assertEqual(tool.calls, [{"path": "report.md", "content": "# Отчёт\n\nГотово"}])
         self.assertEqual(tool_message.status, "success")
+
+    async def test_agent_node_skips_llm_when_recovery_strategy_repeats_exhausted_tool_call(self):
+        config = self._make_config(TOOL_LOOP_LIMIT_READONLY=2)
+        llm = FakeLLM([AIMessage(content="Этого ответа не должно быть.")])
+        tool = FakeTool("read_file", "Success: file contents")
+        nodes = AgentNodes(
+            config=config,
+            llm=llm,
+            tools=[tool],
+            llm_with_tools=llm,
+        )
+        state = self._initial_state("Проверь файл")
+        state["messages"] = [
+            HumanMessage(content="Проверь файл"),
+            AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"path": "demo.txt"}, "id": "tc-1"}]),
+            ToolMessage(tool_call_id="tc-1", name="read_file", content="ERROR[LOOP_DETECTED]: loop"),
+            AIMessage(content="", tool_calls=[{"name": "read_file", "args": {"path": "demo.txt"}, "id": "tc-2"}]),
+            ToolMessage(tool_call_id="tc-2", name="read_file", content="ERROR[LOOP_DETECTED]: loop"),
+        ]
+        state["open_tool_issue"] = {
+            "turn_id": 1,
+            "kind": "tool_error",
+            "summary": "Loop detected for read_file.",
+            "tool_names": ["read_file"],
+            "tool_args": {"path": "demo.txt"},
+            "source": "tools",
+            "error_type": "LOOP_DETECTED",
+            "fingerprint": "fp-loop-read",
+            "progress_fingerprint": "fp-loop-read",
+            "details": {"loop_detected": True},
+        }
+        state["recovery_state"] = {
+            "turn_id": 1,
+            "active_issue": dict(state["open_tool_issue"]),
+            "active_strategy": {
+                "id": "strategy-read-file",
+                "strategy": "retry_same_call",
+                "tool_name": "read_file",
+                "suggested_tool_name": "read_file",
+                "patched_args": {"path": "demo.txt"},
+            },
+            "strategy_queue": [],
+            "attempts_by_strategy": {"strategy-read-file": 1},
+            "progress_markers": ["fp-loop-read"],
+            "last_successful_evidence": "",
+            "external_blocker": None,
+            "llm_replan_attempted_for": [],
+        }
+
+        result = await nodes.agent_node(state)
+
+        self.assertEqual(result["turn_outcome"], "recover_agent")
+        self.assertTrue(result["open_tool_issue"]["details"]["preflight_blocked"])
+        self.assertEqual(llm.invocations, [])
 
     async def test_process_tool_call_logs_json_string_args_canonicalization(self):
         tool = FakeTool("save_document", "ok")
@@ -769,6 +824,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
     async def test_mcp_execution_tool_interrupts_before_execution(self):
         config = self._make_config(ENABLE_APPROVALS=True)
         tool = FakeTool("terminal:run_command", "Success: command completed.")
+        tool.metadata = {"executionHint": True}
         mcp_metadata = ToolRegistry._infer_mcp_metadata(tool)
         nodes = AgentNodes(
             config=config,
@@ -1252,6 +1308,27 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(end_records)
         self.assertEqual(end_records[-1]["result"]["ok"], False)
         self.assertEqual(end_records[-1]["result"]["error_type"], "EXECUTION")
+        self.assertIn("summary", end_records[-1]["result"])
+        self.assertNotIn("raw", end_records[-1]["result"])
+
+    def test_should_summarize_skips_small_overflow_when_summary_already_exists(self):
+        messages = [
+            HumanMessage(content="A" * 8000),
+            AIMessage(content="B" * 8200),
+            HumanMessage(content="коротко"),
+            AIMessage(content="ok"),
+            HumanMessage(content="ещё"),
+            AIMessage(content="ok"),
+        ]
+
+        self.assertFalse(
+            should_summarize(
+                messages,
+                threshold=8000,
+                keep_last=4,
+                has_summary=True,
+            )
+        )
 
     def test_session_store_round_trip(self):
         tmp = self._workspace_tempdir()

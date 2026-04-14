@@ -265,12 +265,12 @@ class StreamAndFilesystemTests(unittest.TestCase):
         assert result.stats is not None
         self.assertIn("89.7s", result.stats)
 
-    def test_stream_processor_renders_stability_guard_handoff_messages(self):
+    def test_stream_processor_renders_recovery_handoff_messages(self):
         events = []
         processor = StreamProcessor(events.append)
         processor._handle_updates(
             {
-                "stability_guard": {
+                "recovery": {
                     "messages": [AIMessage(content="Автовыполнение остановлено. Уточните следующий шаг.")],
                 }
             }
@@ -301,15 +301,15 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual(processor.full_text, "")
         self.assertEqual(processor.clean_full, "")
 
-    def test_stream_processor_marks_stability_guard_as_self_correcting(self):
+    def test_stream_processor_marks_recovery_as_reviewing(self):
         events = []
         processor = StreamProcessor(events.append)
 
-        processor._handle_messages((AIMessage(content=""), {"langgraph_node": "stability_guard"}))
+        processor._handle_messages((AIMessage(content=""), {"langgraph_node": "recovery"}))
 
         statuses = [event.payload for event in events if event.type == "status_changed"]
         self.assertTrue(statuses)
-        self.assertEqual(statuses[-1]["node"], "stability_guard")
+        self.assertEqual(statuses[-1]["node"], "recovery")
         self.assertEqual(statuses[-1]["label"], "Reviewing results")
 
     def test_stream_processor_does_not_parse_choice_requests_from_plain_text(self):

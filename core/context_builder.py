@@ -298,16 +298,17 @@ class ContextBuilder:
 
         last_visible = self.get_last_model_visible_message(context)
         valid = isinstance(last_visible, (AIMessage, HumanMessage, ToolMessage)) and not system_after_non_system
+        if valid:
+            return
+
         self._log_run_event(
             state,
-            "provider_context_valid",
+            "provider_context_invalid",
             run_id=None if state is None else state.get("run_id", ""),
-            valid=valid,
+            valid=False,
             last_visible_type=type(last_visible).__name__ if last_visible else "",
             system_after_non_system=system_after_non_system,
         )
-        if valid:
-            return
 
         raise RuntimeError(
             "Provider-unsafe agent context: system messages must form a prefix and the last model-visible message must be AIMessage, HumanMessage, or ToolMessage."

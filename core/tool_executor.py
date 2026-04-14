@@ -46,6 +46,21 @@ class ToolExecutor:
         self._log_run_event = log_run_event
         self._workspace_boundary_violated = workspace_boundary_violated
 
+    @staticmethod
+    def _result_log_payload(parsed_result: ToolExecutionResult) -> Dict[str, Any]:
+        payload: Dict[str, Any] = {"ok": bool(parsed_result.ok)}
+        if parsed_result.error_type:
+            payload["error_type"] = parsed_result.error_type
+        summary = compact_text(
+            str(parsed_result.message or parsed_result.raw or "").strip(),
+            240,
+        )
+        if summary:
+            payload["summary"] = summary
+        if parsed_result.retryable:
+            payload["retryable"] = True
+        return payload
+
     def merge_issues(self, issues: list[Dict[str, Any]], *, current_turn_id: int) -> Dict[str, Any] | None:
         return merge_tool_issues(issues, current_turn_id=current_turn_id)
 
@@ -94,7 +109,7 @@ class ToolExecutor:
             run_id="" if state is None else state.get("run_id", ""),
             tool_name=tool_name,
             tool_args=tool_args,
-            result=parsed_result.to_event_payload(),
+            result=self._result_log_payload(parsed_result),
         )
 
         issue = None

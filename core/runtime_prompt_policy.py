@@ -76,20 +76,6 @@ class RuntimePromptPolicyBuilder:
             f"Workspace root: {environment.workspace_root}",
             f"Current working directory: {environment.current_working_directory}",
             f"Local timezone: {environment.timezone_name} ({environment.utc_offset})",
-            (
-                "Execute user requests exactly as stated. Do not add, assume, or infer extra work beyond the explicit "
-                "request."
-            ),
-            (
-                "Ask for clarification only when the request cannot be executed correctly and safely with the available "
-                "context and tools."
-            ),
-            (
-                "Before using any tool or tool batch, write one brief sentence about your immediate intention, then call "
-                "the tool."
-            ),
-            "After any system change (installation, configuration, file edits), verify the result before reporting success.",
-            "Be concise. No preamble, no summaries after actions, no unsolicited explanations.",
             f"Current date: {datetime.now().strftime('%Y-%m-%d')}",
         ]
         return "\n".join(lines)
@@ -126,11 +112,11 @@ class RuntimePromptPolicyBuilder:
                 "TOOLS:\n"
                 "Available tools: "
                 + ", ".join(names)
-                + ". Use them when helpful. Do not invent unavailable tools."
+                + ". Do not invent unavailable tools."
             )
         return (
             "TOOLS:\n"
-            "Tools are available in this runtime. Use tool calls when the task needs files, shell, web, or system access. Do not invent unavailable tools."
+            "Tools are available in this runtime for file, shell, web, or system access. Do not invent unavailable tools."
         )
 
     def _build_request_user_input_policy(self, context: RuntimePromptContext) -> str:

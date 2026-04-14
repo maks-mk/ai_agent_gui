@@ -35,7 +35,7 @@ from core.errors import format_error, ErrorType
 from core.message_context import MessageContextHelper
 from core.policy_engine import PolicyEngine, classify_shell_command, shell_command_requires_approval, tool_requires_approval
 from core.message_utils import compact_text, is_error_text, stringify_content
-from core.self_correction_engine import RepairPlan, build_repair_plan, normalize_tool_args, repair_fingerprint
+from core.self_correction_engine import normalize_tool_args, repair_fingerprint
 from core.text_utils import format_exception_friendly
 from core.context_builder import ContextBuilder
 from core.recovery_manager import RecoveryManager
@@ -378,35 +378,6 @@ class AgentNodes:
             approvals_enabled=self.config.enable_approvals,
         )
 
-    def _tool_error_requires_recovery_gate(
-        self,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-        parsed_result,
-    ) -> bool:
-        return self.tool_executor._tool_error_requires_recovery_gate(tool_name, tool_args, parsed_result)
-
-    def _maybe_build_open_tool_issue(
-        self,
-        *,
-        state: AgentState,
-        current_turn_id: int,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-        parsed_result,
-        content: str,
-        issue_details: Dict[str, Any] | None = None,
-    ) -> Dict[str, Any] | None:
-        return self.tool_executor._build_open_tool_issue(
-            state=state,
-            current_turn_id=current_turn_id,
-            tool_name=tool_name,
-            tool_args=tool_args,
-            parsed_result=parsed_result,
-            content=content,
-            issue_details=issue_details,
-        )
-
     def tool_calls_require_approval(self, tool_calls: List[Dict[str, Any]]) -> bool:
         return any(
             self._tool_requires_approval(
@@ -437,7 +408,12 @@ class AgentNodes:
             has_summary=bool(summary),
         )
 
-        if not should_summarize(messages, threshold=self.config.summary_threshold):
+        if not should_summarize(
+            messages,
+            threshold=self.config.summary_threshold,
+            keep_last=self.config.summary_keep_last,
+            has_summary=bool(summary),
+        ):
             self._log_node_end(
                 state,
                 "summarize",
@@ -606,35 +582,11 @@ class AgentNodes:
             "details": dict(issue.get("details") or {}),
         }
 
-    def _empty_recovery_state(self, *, turn_id: int) -> Dict[str, Any]:
-        return self.recovery_manager.empty_state(turn_id=turn_id)
-
     def _get_recovery_state(self, state: AgentState, *, current_turn_id: int) -> Dict[str, Any]:
         return self.recovery_manager.get_recovery_state(
             state.get("recovery_state"),
             current_turn_id=current_turn_id,
         )
-
-    def _repair_plan_strategy_id(self, repair_plan: RepairPlan) -> str:
-        return self.recovery_manager.repair_plan_strategy_id(repair_plan)
-
-    def _build_recovery_strategy(
-        self,
-        *,
-        repair_plan: RepairPlan,
-        open_tool_issue: Dict[str, Any] | None,
-        current_task: str,
-        strategy_id: str,
-    ) -> Dict[str, Any]:
-        return self.recovery_manager.build_recovery_strategy(
-            repair_plan=repair_plan,
-            open_tool_issue=open_tool_issue,
-            current_task=current_task,
-            strategy_id=strategy_id,
-        )
-
-    def _build_recovery_system_message(self, recovery_state: Dict[str, Any] | None) -> SystemMessage | None:
-        return self.recovery_manager.build_recovery_system_message(recovery_state)
 
     def _collect_internal_retry_removals(self, messages: List[BaseMessage]) -> List[RemoveMessage]:
         removals: List[RemoveMessage] = []
@@ -645,57 +597,6 @@ class AgentNodes:
                 removals.append(RemoveMessage(id=message.id))
         removals.reverse()
         return removals
-
-    def _build_tool_issue_system_message(self, open_tool_issue: Dict[str, Any] | None) -> SystemMessage | None:
-        if not open_tool_issue:
-            return None
-
-        issue_summary = open_tool_issue.get("summary", "")
-        if open_tool_issue.get("kind") == "approval_denied":
-            return SystemMessage(
-                content=(
-                    "TOOL EXECUTION DENIED BY USER:\n"
-                    f"{issue_summary}\n\n"
-                    "The user explicitly rejected this tool call. "
-                    "Do not simulate the denied tool or describe imaginary results. "
-                    "Do not make any more tool calls in this turn. "
-                    "Reply briefly and simply: say that you did not do it because the user chose No, "
-                    "then wait for the next instruction."
-                )
-            )
-
-        return SystemMessage(
-            content=constants.UNRESOLVED_TOOL_ERROR_PROMPT_TEMPLATE.format(
-                error_summary=issue_summary
-            )
-        )
-
-    def _build_open_tool_issue(
-        self,
-        *,
-        current_turn_id: int,
-        kind: str,
-        summary: str,
-        tool_names: List[str],
-        tool_args: Dict[str, Any] | None,
-        source: str,
-        error_type: str = "",
-        fingerprint: str = "",
-        details: Dict[str, Any] | None = None,
-        progress_fingerprint: str = "",
-    ) -> Dict[str, Any]:
-        return {
-            "turn_id": current_turn_id,
-            "kind": kind,
-            "summary": compact_text(summary.strip(), 320),
-            "tool_names": [name for name in tool_names if name],
-            "tool_args": deepcopy(tool_args) if isinstance(tool_args, dict) else {},
-            "source": source,
-            "error_type": error_type.strip().upper(),
-            "fingerprint": str(fingerprint or "").strip(),
-            "progress_fingerprint": str(progress_fingerprint or fingerprint or "").strip(),
-            "details": deepcopy(details) if isinstance(details, dict) else {},
-        }
 
     def _iter_path_like_targets(self, tool_args: Dict[str, Any]) -> List[Tuple[str, str]]:
         if not isinstance(tool_args, dict):
@@ -729,38 +630,16 @@ class AgentNodes:
             return False
 
         try:
-            from tools.filesystem import fs_manager
+            from tools.filesystem import resolve_workspace_path
         except Exception:
             return False
 
         for _, raw_value in path_targets:
             try:
-                fs_manager._resolve_path(raw_value)
+                resolve_workspace_path(raw_value)
             except Exception:
                 return True
         return False
-
-    def _build_open_tool_issue_details(
-        self,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-        parsed_result,
-        issue_details: Dict[str, Any] | None = None,
-    ) -> Dict[str, Any]:
-        details = deepcopy(issue_details) if isinstance(issue_details, dict) else {}
-        missing_fields = [
-            str(field).strip()
-            for field in (details.get("missing_required_fields") or [])
-            if str(field).strip()
-        ]
-        if missing_fields:
-            details["missing_required_fields"] = missing_fields
-        if str(parsed_result.error_type or "").strip().upper() == "LOOP_DETECTED":
-            details["loop_detected"] = True
-        details["safety_violation"] = bool(
-            details.get("safety_violation") or self._workspace_boundary_violated(tool_name, tool_args)
-        )
-        return details
 
     def _merge_open_tool_issues(
         self,
@@ -768,6 +647,95 @@ class AgentNodes:
         current_turn_id: int,
     ) -> Dict[str, Any] | None:
         return self.tool_executor.merge_issues(issues, current_turn_id=current_turn_id)
+
+    def _recent_tool_calls(self, messages: List[BaseMessage]) -> List[Dict[str, Any]]:
+        recent_calls: List[Dict[str, Any]] = []
+        history_window = self.config.effective_tool_loop_window
+        history_slice = messages[-history_window:] if history_window > 0 else messages
+        for message in reversed(history_slice):
+            if isinstance(message, AIMessage) and message.tool_calls:
+                recent_calls.extend(message.tool_calls)
+        return recent_calls
+
+    def _recent_identical_tool_call_count(
+        self,
+        messages: List[BaseMessage],
+        *,
+        tool_name: str,
+        tool_args: Dict[str, Any],
+    ) -> int:
+        normalized_name = str(tool_name or "").strip()
+        normalized_args = canonicalize_tool_args(tool_args)
+        return sum(
+            1
+            for tool_call in self._recent_tool_calls(messages)
+            if str(tool_call.get("name") or "").strip() == normalized_name
+            and canonicalize_tool_args(tool_call.get("args")) == normalized_args
+        )
+
+    def _preflight_recovery_loop_issue(
+        self,
+        messages: List[BaseMessage],
+        *,
+        current_turn_id: int,
+        open_tool_issue: Dict[str, Any] | None,
+        recovery_state: Dict[str, Any] | None,
+    ) -> Dict[str, Any] | None:
+        if not isinstance(open_tool_issue, dict):
+            return None
+        if not isinstance(recovery_state, dict):
+            return None
+
+        active_strategy = recovery_state.get("active_strategy")
+        if not isinstance(active_strategy, dict):
+            return None
+
+        tool_name = str(
+            active_strategy.get("suggested_tool_name")
+            or active_strategy.get("tool_name")
+            or ""
+        ).strip()
+        if not tool_name:
+            return None
+
+        patched_args = active_strategy.get("patched_args")
+        if not isinstance(patched_args, dict):
+            return None
+
+        loop_count = self._recent_identical_tool_call_count(
+            messages,
+            tool_name=tool_name,
+            tool_args=patched_args,
+        )
+        loop_limit = (
+            self.config.effective_tool_loop_limit_readonly
+            if tool_name in self.READ_ONLY_LOOP_TOLERANT_TOOL_NAMES
+            else self.config.effective_tool_loop_limit_mutating
+        )
+        if loop_count < loop_limit:
+            return None
+
+        return build_tool_issue(
+            current_turn_id=current_turn_id,
+            kind=str(open_tool_issue.get("kind") or "tool_error"),
+            summary=(
+                f"Recovery strategy for '{tool_name}' would repeat the same tool call that already hit the loop budget. "
+                "Replanning without another LLM round."
+            ),
+            tool_names=[tool_name],
+            tool_args=patched_args,
+            source="recovery",
+            error_type="LOOP_DETECTED",
+            fingerprint=repair_fingerprint(tool_name, patched_args, "LOOP_DETECTED"),
+            progress_fingerprint=repair_fingerprint(tool_name, patched_args, "LOOP_DETECTED"),
+            details={
+                "loop_detected": True,
+                "preflight_blocked": True,
+                "loop_count": loop_count,
+                "loop_limit": loop_limit,
+                "strategy_id": str(active_strategy.get("id") or "").strip(),
+            },
+        )
 
     def _current_turn_has_tool_evidence(self, messages: List[BaseMessage]) -> bool:
         return self.message_context.current_turn_has_tool_evidence(
@@ -1350,13 +1318,6 @@ class AgentNodes:
         current_turn_id = self._current_turn_id(state, messages)
         open_tool_issue = self._get_active_open_tool_issue(state, messages, current_turn_id)
         recovery_state = self._get_recovery_state(state, current_turn_id=current_turn_id)
-        self._log_run_event(
-            state,
-            "agent_node_start",
-            run_id=state.get("run_id", ""),
-            step=state.get("steps", 0),
-            current_task=current_task,
-        )
 
         turn_mode = str(state.get("turn_mode") or "").strip().lower()
         requires_evidence = state.get("requires_evidence")
@@ -1395,6 +1356,41 @@ class AgentNodes:
         )
         try:
             validation_handoff_reason = ""
+            preflight_loop_issue = self._preflight_recovery_loop_issue(
+                messages,
+                current_turn_id=current_turn_id,
+                open_tool_issue=open_tool_issue,
+                recovery_state=recovery_state,
+            )
+            if preflight_loop_issue:
+                validation_handoff_reason = "recovery_strategy_loop_blocked"
+                self._log_run_event(
+                    state,
+                    "recovery_strategy_loop_blocked",
+                    run_id=state.get("run_id", ""),
+                    issue=preflight_loop_issue,
+                )
+                self._log_node_end(
+                    state,
+                    "agent",
+                    node_timer,
+                    tool_calls=0,
+                    tools_available=tools_available,
+                    active_tool_count=len(active_tool_names),
+                    validation_handoff_reason=validation_handoff_reason,
+                    has_open_tool_issue=True,
+                )
+                return {
+                    "current_task": current_task,
+                    "turn_id": current_turn_id,
+                    "turn_outcome": "recover_agent",
+                    "recovery_state": recovery_state,
+                    "pending_approval": None,
+                    "open_tool_issue": preflight_loop_issue,
+                    "has_protocol_error": False,
+                    "last_tool_error": str(preflight_loop_issue.get("summary") or ""),
+                    "last_tool_result": "",
+                }
             history_issue = self.context_builder.detect_tool_history_mismatch(messages)
             if history_issue:
                 validation_handoff_reason = "history_tool_mismatch"
@@ -1527,15 +1523,6 @@ class AgentNodes:
                     issue=result.get("open_tool_issue"),
                 )
             tool_calls_count = len(getattr(response, "tool_calls", []) or [])
-            self._log_run_event(
-                state,
-                "agent_node_end",
-                run_id=state.get("run_id", ""),
-                tool_calls=tool_calls_count,
-                active_tool_names=active_tool_names,
-                validation_handoff_reason=validation_handoff_reason,
-                content_preview=compact_text(stringify_content(response.content), 240),
-            )
             self._log_node_end(
                 state,
                 "agent",
@@ -1564,298 +1551,6 @@ class AgentNodes:
         if configured_ceiling <= 0:
             return 0
         return max(1, min(max_loops, configured_ceiling))
-
-    def _handle_pending_tool_budget_exhaustion(
-        self,
-        *,
-        current_task: str,
-        last_ai: AIMessage | None,
-    ) -> Dict[str, Any]:
-        return {
-            "completion_reason": "loop_budget_exhausted_pending_tool_call",
-            "turn_outcome": "finish_turn",
-            "handoff_message": self._build_loop_budget_handoff_text(
-                current_task=current_task,
-                tool_names=[
-                    str(tool_call.get("name") or "").strip()
-                    for tool_call in (getattr(last_ai, "tool_calls", []) or [])
-                    if str(tool_call.get("name") or "").strip()
-                ],
-            ),
-            "drop_trailing_tool_call": True,
-            "next_open_tool_issue": None,
-        }
-
-    def _handle_clean_turn(
-        self,
-        *,
-        state: AgentState,
-        last_message: BaseMessage | None,
-        next_recovery_state: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        next_recovery_state["active_issue"] = None
-        next_recovery_state["active_strategy"] = None
-        next_recovery_state["strategy_queue"] = []
-        next_recovery_state["external_blocker"] = None
-        if isinstance(last_message, ToolMessage):
-            next_recovery_state["last_successful_evidence"] = str(
-                state.get("last_tool_result") or stringify_content(last_message.content)
-            ).strip()
-            return {
-                "completion_reason": "tool_result_ready_for_agent",
-                "turn_outcome": "continue_agent",
-                "next_open_tool_issue": None,
-            }
-        return {
-            "completion_reason": "no_open_tool_issue",
-            "turn_outcome": "finish_turn",
-            "next_open_tool_issue": None,
-        }
-
-    def _handle_terminal_tool_issue(
-        self,
-        *,
-        open_tool_issue: Dict[str, Any],
-        repair_plan: RepairPlan,
-        next_recovery_state: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        next_recovery_state["active_issue"] = open_tool_issue
-        next_recovery_state["active_strategy"] = None
-        next_recovery_state["strategy_queue"] = []
-        next_recovery_state["external_blocker"] = {
-            "reason": repair_plan.terminal_reason or repair_plan.reason,
-            "issue_summary": str(open_tool_issue.get("summary", "")),
-        }
-        return {
-            "completion_reason": repair_plan.terminal_reason or "needs_external_input",
-            "turn_outcome": "finish_turn",
-            "next_open_tool_issue": None,
-            "handoff_message": self._build_tool_issue_handoff_text(open_tool_issue, repair_plan=repair_plan),
-        }
-
-    def _handle_recoverable_tool_issue(
-        self,
-        *,
-        current_task: str,
-        open_tool_issue: Dict[str, Any],
-        repair_plan: RepairPlan | None,
-        issue_fingerprint: str,
-        next_recovery_state: Dict[str, Any],
-    ) -> Dict[str, Any]:
-        progress_markers = [
-            str(item).strip()
-            for item in (next_recovery_state.get("progress_markers") or [])
-            if str(item).strip()
-        ]
-        if issue_fingerprint and issue_fingerprint not in progress_markers:
-            progress_markers.append(issue_fingerprint)
-        next_recovery_state["progress_markers"] = progress_markers
-
-        if not repair_plan:
-            repair_plan = RepairPlan(
-                strategy="llm_replan",
-                reason="missing_repair_plan",
-                fingerprint=issue_fingerprint or "missing-plan",
-                tool_name=str((open_tool_issue.get("tool_names") or ["unknown_tool"])[0]),
-                suggested_tool_name=str((open_tool_issue.get("tool_names") or ["unknown_tool"])[0]),
-                original_args=dict(open_tool_issue.get("tool_args") or {}),
-                patched_args=dict(open_tool_issue.get("tool_args") or {}),
-                notes="Recovery fallback: inspect recent tool output and choose the best next step.",
-                llm_guidance="Inspect the failure, gather more context, and continue with a different valid approach.",
-            )
-
-        strategy_id = self._repair_plan_strategy_id(repair_plan)
-        attempts_by_strategy = dict(next_recovery_state.get("attempts_by_strategy") or {})
-        attempt_count = int(attempts_by_strategy.get(strategy_id, 0) or 0) + 1
-        attempts_by_strategy[strategy_id] = attempt_count
-        next_recovery_state["attempts_by_strategy"] = attempts_by_strategy
-
-        llm_replans = [
-            str(item).strip()
-            for item in (next_recovery_state.get("llm_replan_attempted_for") or [])
-            if str(item).strip()
-        ]
-        strategy_payload = self._build_recovery_strategy(
-            repair_plan=repair_plan,
-            open_tool_issue=open_tool_issue,
-            current_task=current_task,
-            strategy_id=strategy_id,
-        )
-
-        if attempt_count == 1:
-            next_recovery_state["active_issue"] = open_tool_issue
-            next_recovery_state["active_strategy"] = None
-            next_recovery_state["strategy_queue"] = [strategy_payload]
-            next_recovery_state["external_blocker"] = None
-            return {
-                "completion_reason": f"recover_{repair_plan.strategy}",
-                "turn_outcome": "recover_agent",
-                "next_open_tool_issue": open_tool_issue,
-                "next_retry_count": attempt_count,
-                "next_fingerprint_history": list(progress_markers),
-            }
-
-        if repair_plan.strategy != "llm_replan" and issue_fingerprint and issue_fingerprint not in llm_replans:
-            llm_replans.append(issue_fingerprint)
-            next_recovery_state["llm_replan_attempted_for"] = llm_replans
-            llm_replan = RepairPlan(
-                strategy="llm_replan",
-                reason=f"{repair_plan.reason}_llm_replan",
-                fingerprint=repair_plan.fingerprint,
-                tool_name=repair_plan.tool_name,
-                suggested_tool_name=repair_plan.suggested_tool_name,
-                original_args=repair_plan.original_args,
-                patched_args=repair_plan.patched_args,
-                notes="Deterministic recovery did not clear the issue. Replan from repository state and recent tool output.",
-                llm_guidance="Do not stop. Replan using repository state, recent tool failures, and alternative verification or edit paths until you either succeed or hit a real external blocker.",
-                progress_fingerprint=repair_plan.progress_fingerprint,
-            )
-            llm_strategy_id = self._repair_plan_strategy_id(llm_replan)
-            attempts_by_strategy[llm_strategy_id] = int(attempts_by_strategy.get(llm_strategy_id, 0) or 0) + 1
-            next_recovery_state["attempts_by_strategy"] = attempts_by_strategy
-            next_recovery_state["active_issue"] = open_tool_issue
-            next_recovery_state["active_strategy"] = None
-            next_recovery_state["strategy_queue"] = [
-                self._build_recovery_strategy(
-                    repair_plan=llm_replan,
-                    open_tool_issue=open_tool_issue,
-                    current_task=current_task,
-                    strategy_id=llm_strategy_id,
-                )
-            ]
-            next_recovery_state["external_blocker"] = None
-            return {
-                "completion_reason": "recover_llm_replan",
-                "turn_outcome": "recover_agent",
-                "next_open_tool_issue": open_tool_issue,
-                "next_retry_count": max(int(value or 0) for value in attempts_by_strategy.values()),
-                "next_fingerprint_history": list(progress_markers),
-            }
-
-        next_recovery_state["active_issue"] = open_tool_issue
-        next_recovery_state["active_strategy"] = None
-        next_recovery_state["strategy_queue"] = []
-        next_recovery_state["external_blocker"] = {
-            "reason": "recovery_stagnated",
-            "issue_summary": str(open_tool_issue.get("summary", "")),
-        }
-        return {
-            "completion_reason": "recovery_stagnated",
-            "turn_outcome": "finish_turn",
-            "next_open_tool_issue": None,
-            "handoff_message": self._build_tool_issue_handoff_text(open_tool_issue, repair_plan=repair_plan),
-            "next_retry_count": max(int(value or 0) for value in attempts_by_strategy.values()),
-            "next_fingerprint_history": list(progress_markers),
-        }
-
-    # --- NODE: STABILITY GUARD ---
-
-    async def stability_guard_node(self, state: AgentState):
-        node_timer = self._log_node_start(
-            state,
-            "stability_guard",
-            message_count=len(state.get("messages") or []),
-            has_open_tool_issue=bool(state.get("open_tool_issue")),
-        )
-        messages = state.get("messages", [])
-        current_turn_id = self._current_turn_id(state, messages)
-        current_task = self._resolve_current_task(state, messages).strip()
-        open_tool_issue = self._get_active_open_tool_issue(state, messages, current_turn_id)
-        last_ai = self._get_last_ai_message(messages)
-        last_message = messages[-1] if messages else None
-        step_count = int(state.get("steps", 0) or 0)
-        recovery_state = self._get_recovery_state(state, current_turn_id=current_turn_id)
-        hard_loop_ceiling = self._hard_loop_ceiling()
-
-        try:
-            result = self.recovery_manager.plan_recovery(
-                state=state,
-                messages=messages,
-                current_task=current_task,
-                current_turn_id=current_turn_id,
-                open_tool_issue=open_tool_issue,
-                recovery_state=recovery_state,
-                last_ai=last_ai,
-                last_message=last_message,
-                step_count=step_count,
-                max_loops=int(self.config.max_loops or 0),
-                hard_loop_ceiling=hard_loop_ceiling,
-                max_auto_repairs=hard_loop_ceiling,
-                successful_tool_stagnation_limit=self._successful_tool_stagnation_limit(
-                    str(getattr(last_message, "name", "") or "")
-                ),
-            )
-            outbound_messages: List[BaseMessage] = []
-            if (
-                result["drop_trailing_tool_call"]
-                and last_ai
-                and getattr(last_ai, "tool_calls", None)
-                and getattr(last_ai, "id", None)
-            ):
-                outbound_messages.append(RemoveMessage(id=last_ai.id))
-            if result["turn_outcome"] == "finish_turn" and result["handoff_message"]:
-                handoff_kind = (
-                    "loop_budget_handoff"
-                    if str(result["completion_reason"]).startswith("loop_budget_exhausted")
-                    else "tool_issue_handoff"
-                )
-                handoff_metadata: Dict[str, Any] = {
-                    "agent_internal": {
-                        "kind": handoff_kind,
-                        "turn_id": current_turn_id,
-                        "visible_in_ui": False,
-                        "ui_notice": self.recovery_manager.build_internal_ui_notice(
-                            str(result["completion_reason"])
-                        ),
-                    }
-                }
-                outbound_messages.append(
-                    AIMessage(
-                        content=result["handoff_message"],
-                        additional_kwargs=handoff_metadata,
-                    )
-                )
-
-            self._log_run_event(
-                state,
-                "stability_guard_verdict",
-                run_id=state.get("run_id", ""),
-                outcome=result["turn_outcome"],
-                reason=result["completion_reason"],
-                retry_count_before=int(state.get("self_correction_retry_count", 0) or 0),
-                retry_count_after=result["self_correction_retry_count"],
-                has_open_tool_issue=bool(open_tool_issue),
-                loop_budget_reached=result["loop_budget_reached"],
-                had_pending_tool_calls=result["had_pending_tool_calls"],
-                successful_tool_repeat_count=result.get("successful_tool_repeat_count", 0),
-                successful_tool_name=result.get("successful_tool_name", ""),
-            )
-            self._log_node_end(
-                state,
-                "stability_guard",
-                node_timer,
-                turn_outcome=result["turn_outcome"],
-                reason=result["completion_reason"],
-                retry_count=result["self_correction_retry_count"],
-                has_open_tool_issue=bool(open_tool_issue),
-                loop_budget_reached=result["loop_budget_reached"],
-                had_pending_tool_calls=result["had_pending_tool_calls"],
-                successful_tool_repeat_count=result.get("successful_tool_repeat_count", 0),
-                successful_tool_name=result.get("successful_tool_name", ""),
-            )
-            if outbound_messages:
-                result["messages"] = outbound_messages
-            return result
-        except Exception as e:
-            self._log_node_error(
-                state,
-                "stability_guard",
-                node_timer,
-                e,
-                has_open_tool_issue=bool(open_tool_issue),
-                retry_count=int(state.get("self_correction_retry_count", 0) or 0),
-            )
-            raise
 
     async def recovery_node(self, state: AgentState):
         node_timer = self._log_node_start(
@@ -2446,29 +2141,6 @@ class AgentNodes:
             outcome.issue,
         )
 
-    def _build_tool_message(
-        self,
-        *,
-        content: str,
-        tool_call_id: str,
-        tool_name: str,
-        tool_args: Dict[str, Any],
-        tool_duration_seconds: float | None = None,
-    ) -> ToolMessage:
-        parsed_result = parse_tool_execution_result(content)
-        additional_kwargs: Dict[str, Any] = {
-            "tool_args": deepcopy(tool_args) if isinstance(tool_args, dict) else {}
-        }
-        if tool_duration_seconds is not None:
-            additional_kwargs["tool_duration_seconds"] = float(tool_duration_seconds)
-        return ToolMessage(
-            content=content,
-            tool_call_id=tool_call_id,
-            name=tool_name,
-            additional_kwargs=additional_kwargs,
-            status="error" if not parsed_result.ok else "success",
-        )
-
     def _tool_call_is_approved(self, tool_call_id: str, approval_state: Dict[str, Any]) -> bool:
         if not self.config.enable_approvals:
             return True
@@ -2646,20 +2318,6 @@ class AgentNodes:
                     if self._normalize_tool_name(tool_call.get("name") or "") == "request_user_input":
                         return True
         return False
-
-    def _build_tool_issue_handoff_text(
-        self,
-        open_tool_issue: Dict[str, Any] | None,
-        *,
-        repair_plan: RepairPlan | None = None,
-    ) -> str:
-        return self.recovery_manager.build_tool_issue_handoff_text(
-            open_tool_issue,
-            repair_plan=repair_plan,
-        )
-
-    def _build_loop_budget_handoff_text(self, current_task: str, tool_names: List[str]) -> str:
-        return self.recovery_manager.build_loop_budget_handoff_text(current_task, tool_names)
 
     def _successful_tool_stagnation_limit(self, tool_name: str) -> int:
         return 3 if self._tool_is_read_only(tool_name) else 2

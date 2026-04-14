@@ -8,6 +8,64 @@ from core.errors import ErrorType, format_error
 logger = logging.getLogger(__name__)
 
 
+def _realign_indentation(
+    file_lines: list[str],
+    match_idx: int,
+    search_len: int,
+    new_lines: list[str],
+) -> list[str]:
+    """Re-align new_lines indentation to match the indentation of the block being replaced.
+
+    When the model reads a file with show_line_numbers=True (or otherwise loses leading
+    whitespace) and passes old_string / new_string without proper indentation, the
+    trim/aggressive fallback can find the right block but would write new_lines verbatim,
+    corrupting indentation.  This function detects the delta between the base indentation
+    of new_lines and the base indentation of the matched file block, then shifts every
+    line of new_lines by that delta so the replacement preserves the original indent level.
+    """
+    # Base indentation = indentation of the first non-empty line in the matched file block.
+    file_base = ""
+    for line in file_lines[match_idx : match_idx + search_len]:
+        if line.strip():
+            file_base = line[: len(line) - len(line.lstrip())]
+            break
+
+    # Base indentation = indentation of the first non-empty line in new_lines.
+    new_base = ""
+    for line in new_lines:
+        if line.strip():
+            new_base = line[: len(line) - len(line.lstrip())]
+            break
+
+    # Nothing to adjust.
+    if file_base == new_base:
+        return new_lines
+
+    result: list[str] = []
+    for line in new_lines:
+        if not line.strip():
+            # Preserve blank / whitespace-only lines as-is.
+            result.append(line)
+            continue
+
+        current_indent = line[: len(line) - len(line.lstrip())]
+        content = line.lstrip()
+
+        if current_indent.startswith(new_base):
+            # Strip the model's base indent and prepend the file's base indent,
+            # keeping any extra indentation (e.g. nested blocks) intact.
+            extra = current_indent[len(new_base):]
+            result.append(file_base + extra + content)
+        else:
+            # The line is *less* indented than new_base (e.g. a dedented except/else).
+            # Compute how much less, and apply the same relative reduction to file_base.
+            under = len(new_base) - len(current_indent)
+            adjusted_base = file_base[: max(0, len(file_base) - under)]
+            result.append(adjusted_base + content)
+
+    return result
+
+
 def edit_text_file(target: Path, path_label: str, old_string: str, new_string: str) -> str:
     try:
         if not target.exists():
@@ -18,6 +76,8 @@ def edit_text_file(target: Path, path_label: str, old_string: str, new_string: s
         content_norm = content.replace("\r\n", "\n")
         old_string_norm = old_string.replace("\r\n", "\n")
         new_string_norm = new_string.replace("\r\n", "\n")
+
+        fallback_warning: str = ""
 
         count = content_norm.count(old_string_norm)
         if count == 1:
@@ -48,7 +108,7 @@ def edit_text_file(target: Path, path_label: str, old_string: str, new_string: s
                 return [
                     index
                     for index in range(len(file_lines) - search_len + 1)
-                    if file_norm[index:index + search_len] == search_norm
+                    if file_norm[index : index + search_len] == search_norm
                 ]
 
             match_mode = "trim"
@@ -80,12 +140,31 @@ def edit_text_file(target: Path, path_label: str, old_string: str, new_string: s
                 )
 
             match_idx = matches[0]
+
             if match_mode == "aggressive":
                 logger.warning("edit_file: aggressive whitespace-insensitive match used for '%s'.", path_label)
+                fallback_warning = (
+                    "\n\n⚠ Warning: exact match failed — aggressive (whitespace-insensitive) fallback was used. "
+                    "Indentation of new_string was realigned to match the replaced block. "
+                    "Verify the diff carefully."
+                )
+            else:
+                logger.info("edit_file: trim (indentation-insensitive) fallback used for '%s'.", path_label)
+                fallback_warning = (
+                    "\n\n⚠ Warning: exact match failed — trim (indentation-insensitive) fallback was used. "
+                    "Indentation of new_string was realigned to match the replaced block. "
+                    "Verify the diff carefully."
+                )
+
+            # FIX: realign new_string indentation to the file block before substitution.
+            new_string_lines = _realign_indentation(
+                file_lines, match_idx, search_len, new_string_norm.split("\n")
+            )
+
             new_file_lines = (
                 file_lines[:match_idx]
-                + new_string_norm.split("\n")
-                + file_lines[match_idx + len(search_lines):]
+                + new_string_lines
+                + file_lines[match_idx + search_len :]
             )
             new_content = "\n".join(new_file_lines)
 
@@ -110,6 +189,6 @@ def edit_text_file(target: Path, path_label: str, old_string: str, new_string: s
             lineterm="",
         )
         diff_text = "\n".join(diff)
-        return f"Success: File edited.\n\nDiff:\n```diff\n{diff_text}\n```"
+        return f"Success: File edited.{fallback_warning}\n\nDiff:\n```diff\n{diff_text}\n```"
     except Exception as exc:
         return format_error(ErrorType.EXECUTION, f"Error editing file: {exc}")

@@ -4,7 +4,6 @@ import inspect
 import json
 import logging
 import os
-import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Sequence, Union
@@ -16,54 +15,13 @@ from core.multimodal import DEFAULT_MODEL_CAPABILITIES
 from core.tool_policy import ToolMetadata, default_tool_metadata
 
 logger = logging.getLogger(__name__)
-_MCP_MUTATING_KEYWORDS = {
-    "append",
-    "create",
-    "download",
-    "edit",
-    "insert",
-    "mkdir",
-    "modify",
-    "move",
-    "patch",
-    "rename",
-    "replace",
-    "save",
-    "update",
-    "upload",
-    "write",
-}
-_MCP_DESTRUCTIVE_KEYWORDS = {
-    "delete",
-    "destroy",
-    "erase",
-    "kill",
-    "purge",
-    "remove",
-    "rm",
-    "rmdir",
-    "terminate",
-    "trash",
-    "unlink",
-    "wipe",
-}
-_MCP_EXECUTION_KEYWORDS = {
-    "bash",
-    "cmd",
-    "command",
-    "exec",
-    "execute",
-    "powershell",
-    "process",
-    "python",
-    "run",
-    "script",
-    "shell",
-    "spawn",
-    "start",
-    "terminal",
-}
-_MCP_TOKEN_RE = re.compile(r"[a-z0-9]+")
+_MCP_POLICY_FIELDS = (
+    "read_only",
+    "mutating",
+    "destructive",
+    "requires_approval",
+    "networked",
+)
 
 
 @dataclass(frozen=True)
@@ -358,72 +316,151 @@ class ToolRegistry:
         ToolRegistry._configure_safety(module, config)
 
     @staticmethod
-    def _infer_mcp_metadata(tool: BaseTool | str) -> ToolMetadata:
+    def _metadata_flag(raw_metadata: Dict[str, Any], *keys: str) -> bool | None:
+        for key in keys:
+            if key in raw_metadata:
+                return bool(raw_metadata.get(key))
+        return None
+
+    @classmethod
+    def _extract_mcp_metadata_hints(cls, raw_metadata: Dict[str, Any]) -> Dict[str, bool]:
+        if not isinstance(raw_metadata, dict):
+            return {}
+
+        flags: Dict[str, bool] = {}
+        read_only_hint = cls._metadata_flag(raw_metadata, "readOnlyHint", "read_only", "readOnly")
+        destructive_hint = cls._metadata_flag(raw_metadata, "destructiveHint", "destructive", "is_destructive")
+        mutating_hint = cls._metadata_flag(raw_metadata, "mutatingHint", "mutating", "writes")
+        execution_hint = cls._metadata_flag(raw_metadata, "executionHint", "executes", "runsCommands")
+        requires_approval_hint = cls._metadata_flag(raw_metadata, "requiresApproval", "approvalRequired")
+        networked_hint = cls._metadata_flag(raw_metadata, "networkHint", "networked", "usesNetwork")
+
+        if read_only_hint is not None:
+            flags["read_only"] = bool(read_only_hint)
+        if destructive_hint is not None:
+            flags["destructive"] = bool(destructive_hint)
+        if mutating_hint is not None:
+            flags["mutating"] = bool(mutating_hint)
+        if execution_hint:
+            flags["mutating"] = True
+        if requires_approval_hint is not None:
+            flags["requires_approval"] = bool(requires_approval_hint)
+        if networked_hint is not None:
+            flags["networked"] = bool(networked_hint)
+        return flags
+
+    @staticmethod
+    def _sanitize_mcp_policy_flags(policy: Dict[str, Any] | None) -> Dict[str, bool]:
+        if not isinstance(policy, dict):
+            return {}
+        return {
+            field: bool(policy[field])
+            for field in _MCP_POLICY_FIELDS
+            if field in policy
+        }
+
+    @classmethod
+    def _split_mcp_policy_config(cls, cfg: Dict[str, Any] | None) -> tuple[Dict[str, bool], Dict[str, Dict[str, bool]]]:
+        if not isinstance(cfg, dict):
+            return {}, {}
+
+        raw_policy = cfg.get("policy")
+        if not isinstance(raw_policy, dict):
+            return {}, {}
+
+        server_policy = cls._sanitize_mcp_policy_flags(raw_policy)
+        tool_policies: Dict[str, Dict[str, bool]] = {}
+        raw_tools = raw_policy.get("tools")
+        if isinstance(raw_tools, dict):
+            for tool_name, tool_policy in raw_tools.items():
+                normalized_name = str(tool_name or "").strip()
+                if not normalized_name:
+                    continue
+                normalized_policy = cls._sanitize_mcp_policy_flags(tool_policy)
+                if normalized_policy:
+                    tool_policies[normalized_name] = normalized_policy
+        return server_policy, tool_policies
+
+    @staticmethod
+    def _apply_mcp_policy_flags(
+        state: Dict[str, bool],
+        flags: Dict[str, bool],
+        *,
+        approval_explicit: bool,
+    ) -> bool:
+        if not flags:
+            return approval_explicit
+
+        if "read_only" in flags:
+            state["read_only"] = bool(flags["read_only"])
+            if state["read_only"]:
+                state["mutating"] = False
+                state["destructive"] = False
+        if "mutating" in flags:
+            state["mutating"] = bool(flags["mutating"])
+            if state["mutating"]:
+                state["read_only"] = False
+            elif not state["destructive"]:
+                state["read_only"] = True
+        if "destructive" in flags:
+            state["destructive"] = bool(flags["destructive"])
+            if state["destructive"]:
+                state["mutating"] = True
+                state["read_only"] = False
+            elif not state["mutating"]:
+                state["read_only"] = True
+        if "requires_approval" in flags:
+            state["requires_approval"] = bool(flags["requires_approval"])
+            approval_explicit = True
+        if "networked" in flags:
+            state["networked"] = bool(flags["networked"])
+        return approval_explicit
+
+    @classmethod
+    def _infer_mcp_metadata(
+        cls,
+        tool: BaseTool | str,
+        *,
+        server_policy: Dict[str, Any] | None = None,
+        tool_policy: Dict[str, Any] | None = None,
+    ) -> ToolMetadata:
         if isinstance(tool, str):
             tool_name = tool
-            description = ""
             raw_metadata = {}
         else:
             tool_name = str(getattr(tool, "name", "") or "")
-            description = str(getattr(tool, "description", "") or "")
             candidate_metadata = getattr(tool, "metadata", None)
             raw_metadata = candidate_metadata if isinstance(candidate_metadata, dict) else {}
+        base_metadata = default_tool_metadata(tool_name, source="mcp")
+        state = {
+            "read_only": bool(base_metadata.read_only),
+            "mutating": bool(base_metadata.mutating),
+            "destructive": bool(base_metadata.destructive),
+            "requires_approval": bool(base_metadata.requires_approval),
+            "networked": bool(base_metadata.networked),
+        }
+        approval_explicit = False
+        for flags in (
+            cls._sanitize_mcp_policy_flags(server_policy),
+            cls._extract_mcp_metadata_hints(raw_metadata),
+            cls._sanitize_mcp_policy_flags(tool_policy),
+        ):
+            approval_explicit = cls._apply_mcp_policy_flags(
+                state,
+                flags,
+                approval_explicit=approval_explicit,
+            )
 
-        normalized_name = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", tool_name).lower()
-        normalized_description = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", description).lower()
-        title = str(raw_metadata.get("title") or "")
-        normalized_title = re.sub(r"([a-z0-9])([A-Z])", r"\1_\2", title).lower()
-        token_source = " ".join(part for part in (normalized_name, normalized_title, normalized_description) if part)
-        tokens = set(_MCP_TOKEN_RE.findall(token_source))
-
-        def _first_metadata_flag(*keys: str) -> bool | None:
-            for key in keys:
-                if key in raw_metadata:
-                    return bool(raw_metadata.get(key))
-            return None
-
-        read_only_hint = _first_metadata_flag("readOnlyHint", "read_only", "readOnly")
-        destructive_hint = _first_metadata_flag("destructiveHint", "destructive", "is_destructive")
-        mutating_hint = _first_metadata_flag("mutatingHint", "mutating", "writes")
-        execution_hint = _first_metadata_flag("executionHint", "executes", "runsCommands")
-        requires_approval_hint = _first_metadata_flag("requiresApproval", "approvalRequired")
-        networked_hint = _first_metadata_flag("networkHint", "networked", "usesNetwork")
-
-        destructive = (
-            destructive_hint
-            if destructive_hint is not None
-            else bool(tokens & _MCP_DESTRUCTIVE_KEYWORDS)
-        )
-        execution = (
-            execution_hint
-            if execution_hint is not None
-            else bool(tokens & _MCP_EXECUTION_KEYWORDS)
-        )
-        mutating_signal = (
-            mutating_hint
-            if mutating_hint is not None
-            else bool(tokens & _MCP_MUTATING_KEYWORDS)
-        )
-        mutating = destructive or execution or mutating_signal
-        read_only = (
-            bool(read_only_hint)
-            if read_only_hint is not None
-            else not destructive and not execution and not mutating_signal
-        )
-        requires_approval = (
-            bool(requires_approval_hint)
-            if requires_approval_hint is not None
-            else destructive or execution or mutating
-        )
-        networked = True if networked_hint is None else bool(networked_hint)
+        if not approval_explicit and (state["mutating"] or state["destructive"]):
+            state["requires_approval"] = True
 
         return ToolMetadata(
             name=tool_name,
-            read_only=read_only or (not mutating and not destructive),
-            mutating=mutating,
-            destructive=destructive,
-            requires_approval=requires_approval,
-            networked=networked,
+            read_only=bool(state["read_only"]),
+            mutating=bool(state["mutating"]),
+            destructive=bool(state["destructive"]),
+            requires_approval=bool(state["requires_approval"]),
+            networked=bool(state["networked"]),
             source="mcp",
         )
 
@@ -495,18 +532,20 @@ class ToolRegistry:
                     logger.error("❌ MCP Server '%s' Error: %s", name, err)
                     continue
 
+                server_cfg = raw_cfg.get(name) if isinstance(raw_cfg.get(name), dict) else {}
+                server_policy, tool_policies = self._split_mcp_policy_config(server_cfg)
+
                 if client is not None:
                     self.mcp_clients.append(client)
                 if mcp_tools:
                     self.tools.extend(mcp_tools)
                     for tool in mcp_tools:
-                        metadata = self._infer_mcp_metadata(tool)
+                        metadata = self._infer_mcp_metadata(
+                            tool,
+                            server_policy=server_policy,
+                            tool_policy=tool_policies.get(tool.name),
+                        )
                         self.tool_metadata[tool.name] = metadata
-                        if metadata.requires_approval:
-                            logger.warning(
-                                "MCP tool '%s' was marked as approval-required by heuristic policy detection.",
-                                tool.name,
-                            )
                     self.mcp_server_status.append(
                         {
                             "server": name,

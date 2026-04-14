@@ -150,13 +150,12 @@ class RecoveryManager:
         actionable_text = ("\n" + "\n".join(actionable_parts)) if actionable_parts else ""
         return SystemMessage(
             content=(
-                "RECOVERY MODE: continue the current request until you either complete it or hit a real external blocker.\n"
+                "RECOVERY MODE:\n"
                 f"Active issue: {str(issue.get('summary') or '').strip()}\n"
                 f"Recovery strategy: {str(strategy.get('strategy_kind') or strategy.get('strategy') or '').strip()}\n"
                 f"Guidance: {guidance}"
                 f"{actionable_text}\n"
-                "Do not ask the user for hints while repository state, tools, or verification steps can still move the task forward.\n"
-                "Do not repeat the exact same failing call unchanged."
+                "Continue from repository state and available tools. Ask the user only if truly blocked."
             )
         )
 

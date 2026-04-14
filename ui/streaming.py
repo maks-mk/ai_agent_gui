@@ -484,7 +484,7 @@ class StreamProcessor:
     def _status_label(self) -> str:
         node_labels = {
             "agent": "Analyzing request",
-            "stability_guard": "Reviewing results",
+            "recovery": "Reviewing results",
             "tools": "Running tools",
             "summarize": "Compressing context",
             "approval": "Waiting for approval",
@@ -494,7 +494,7 @@ class StreamProcessor:
     def _status_phase(self) -> str:
         phase_map = {
             "agent": "working",
-            "stability_guard": "reviewing",
+            "recovery": "reviewing",
             "tools": "active",
             "summarize": "system",
             "approval": "waiting",

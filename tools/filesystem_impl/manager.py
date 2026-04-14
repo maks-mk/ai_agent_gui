@@ -82,7 +82,20 @@ class FilesystemManager:
         except Exception as exc:
             return format_error(ErrorType.EXECUTION, str(exc))
 
-    def read_file(self, path: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT, show_line_numbers: bool = True) -> str:
+    # FIX: show_line_numbers default changed from True to False.
+    #
+    # Root cause of indentation corruption:
+    #   With show_line_numbers=True the model receives lines prefixed as "     1  code",
+    #   copies them into old_string/new_string, exact-match fails (prefix not in file),
+    #   trim/aggressive fallback finds the block anyway, and new_string (without proper
+    #   indentation) is written verbatim — corrupting indentation.
+    #
+    #   Changing the default to False eliminates the prefix entirely, making exact-match
+    #   succeed in the normal case.  The secondary defence (indentation realignment in
+    #   editing.py) handles any residual cases where indentation still drifts.
+    #
+    # Callers that explicitly need line numbers can still pass show_line_numbers=True.
+    def read_file(self, path: str, offset: int = 0, limit: int = DEFAULT_READ_LIMIT, show_line_numbers: bool = False) -> str:
         try:
             target = self._resolve_path(path)
             if not target.exists():

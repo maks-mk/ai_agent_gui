@@ -1,4 +1,5 @@
 import importlib
+import json
 import re
 import shutil
 import sys
@@ -93,17 +94,23 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(metadata.requires_approval)
         self.assertTrue(metadata.networked)
 
-    def test_mcp_metadata_flags_write_like_tools_without_default_approval(self):
+    def test_mcp_metadata_falls_back_to_read_only_without_explicit_policy(self):
         metadata = ToolRegistry._infer_mcp_metadata("filesystem:write_file")
 
-        self.assertFalse(metadata.read_only)
-        self.assertTrue(metadata.mutating)
+        self.assertTrue(metadata.read_only)
+        self.assertFalse(metadata.mutating)
         self.assertFalse(metadata.destructive)
-        self.assertTrue(metadata.requires_approval)
+        self.assertFalse(metadata.requires_approval)
         self.assertTrue(metadata.networked)
 
-    def test_mcp_metadata_flags_execution_like_tools_without_default_approval(self):
-        metadata = ToolRegistry._infer_mcp_metadata("terminal:run_command")
+    def test_mcp_metadata_uses_explicit_execution_hint_for_approval(self):
+        tool = SimpleNamespace(
+            name="terminal:run_command",
+            description="Run a command",
+            metadata={"executionHint": True},
+        )
+
+        metadata = ToolRegistry._infer_mcp_metadata(tool)
 
         self.assertFalse(metadata.read_only)
         self.assertTrue(metadata.mutating)
@@ -125,6 +132,36 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(metadata.destructive)
         self.assertFalse(metadata.requires_approval)
 
+    def test_mcp_metadata_applies_server_policy_defaults(self):
+        metadata = ToolRegistry._infer_mcp_metadata(
+            "acme:write_file",
+            server_policy={"mutating": True, "requires_approval": True, "networked": False},
+        )
+
+        self.assertFalse(metadata.read_only)
+        self.assertTrue(metadata.mutating)
+        self.assertFalse(metadata.destructive)
+        self.assertTrue(metadata.requires_approval)
+        self.assertFalse(metadata.networked)
+
+    def test_mcp_metadata_tool_override_can_restore_read_only(self):
+        tool = SimpleNamespace(
+            name="acme:docs_search",
+            description="Search docs",
+            metadata={"executionHint": True},
+        )
+
+        metadata = ToolRegistry._infer_mcp_metadata(
+            tool,
+            server_policy={"mutating": True, "requires_approval": True},
+            tool_policy={"read_only": True, "requires_approval": False},
+        )
+
+        self.assertTrue(metadata.read_only)
+        self.assertFalse(metadata.mutating)
+        self.assertFalse(metadata.destructive)
+        self.assertFalse(metadata.requires_approval)
+
     def test_mcp_metadata_uses_destructive_hint_for_approval(self):
         tool = SimpleNamespace(
             name="acme_workspace",
@@ -138,6 +175,50 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(metadata.mutating)
         self.assertTrue(metadata.destructive)
         self.assertTrue(metadata.requires_approval)
+
+    async def test_mcp_loader_applies_policy_overrides_from_config(self):
+        tmp = self._workspace_tempdir()
+        mcp_config_path = tmp / "mcp.json"
+        mcp_config_path.write_text(
+            json.dumps(
+                {
+                    "acme": {
+                        "enabled": True,
+                        "policy": {
+                            "read_only": True,
+                            "networked": False,
+                            "tools": {
+                                "terminal:run_command": {
+                                    "mutating": True,
+                                    "requires_approval": True,
+                                }
+                            },
+                        },
+                    }
+                }
+            ),
+            encoding="utf-8",
+        )
+        registry = ToolRegistry(self._make_config(MCP_CONFIG_PATH=mcp_config_path))
+        fake_client = mock.AsyncMock()
+        fake_tool = SimpleNamespace(
+            name="terminal:run_command",
+            description="Run a command",
+            metadata={},
+        )
+
+        with mock.patch.object(
+            ToolRegistry,
+            "_load_single_mcp_server",
+            new=mock.AsyncMock(return_value=("acme", fake_client, [fake_tool], None)),
+        ):
+            await registry.load_all()
+
+        metadata = registry.tool_metadata["terminal:run_command"]
+        self.assertFalse(metadata.read_only)
+        self.assertTrue(metadata.mutating)
+        self.assertTrue(metadata.requires_approval)
+        self.assertFalse(metadata.networked)
 
     def test_validation_supports_delete_argument_aliases(self):
         tmp = self._workspace_tempdir()

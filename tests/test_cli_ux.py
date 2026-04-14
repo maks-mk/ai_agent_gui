@@ -707,7 +707,7 @@ class GuiUxTests(unittest.TestCase):
         self.window._handle_initialized(self._snapshot_payload())
 
         self.window._handle_event(StreamEvent("run_started", {"text": "Сводка"}))
-        self.window._handle_event(StreamEvent("status_changed", {"label": "Self-correcting", "node": "stability_guard"}))
+        self.window._handle_event(StreamEvent("status_changed", {"label": "Self-correcting", "node": "recovery"}))
 
         self.assertIsNotNone(self.window.current_turn.status_widget)
         self.assertEqual(self.window.current_turn.status_widget.label.text(), "Self-correcting")
@@ -741,7 +741,7 @@ class GuiUxTests(unittest.TestCase):
                 },
             )
         )
-        self.window._handle_event(StreamEvent("status_changed", {"label": "Self-correcting", "node": "stability_guard"}))
+        self.window._handle_event(StreamEvent("status_changed", {"label": "Self-correcting", "node": "recovery"}))
 
         self.assertIsNotNone(self.window.current_turn.status_widget)
         self.assertEqual(self.window.current_turn.status_widget.label.text(), "Self-correcting")
@@ -1486,7 +1486,7 @@ class GuiUxTests(unittest.TestCase):
     def test_run_finished_renders_plain_stats_chip(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window._handle_event(StreamEvent("run_started", {"text": "Сводка"}))
-        self.window._handle_event(StreamEvent("status_changed", {"label": "Self-correcting", "node": "stability_guard"}))
+        self.window._handle_event(StreamEvent("status_changed", {"label": "Self-correcting", "node": "recovery"}))
         self.window._handle_event(StreamEvent("run_finished", {"stats": "3.1s   In: 5328   Out: 106"}))
 
         self.assertEqual(self.window.current_turn.block_kinds(), ["user", "stats"])
