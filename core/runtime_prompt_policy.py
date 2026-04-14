@@ -105,18 +105,21 @@ class RuntimePromptPolicyBuilder:
         if not names:
             return (
                 "TOOLS:\n"
-                "Tools are available in this runtime. Use tool calls when they help."
+                "Tools are available in this runtime. Use tool calls when they help.\n"
+                "Before each tool call, write one brief sentence about what you are doing."
             )
         if len(names) <= 4:
             return (
                 "TOOLS:\n"
                 "Available tools: "
                 + ", ".join(names)
-                + ". Do not invent unavailable tools."
+                + ". Do not invent unavailable tools.\n"
+                "Before each tool call, write one brief sentence about what you are doing."
             )
         return (
             "TOOLS:\n"
-            "Tools are available in this runtime for file, shell, web, or system access. Do not invent unavailable tools."
+            "Tools are available in this runtime for file, shell, web, or system access. Do not invent unavailable tools.\n"
+            "Before each tool call, write one brief sentence about what you are doing."
         )
 
     def _build_request_user_input_policy(self, context: RuntimePromptContext) -> str:

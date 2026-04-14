@@ -5,7 +5,6 @@ Complete the user's explicit request directly, safely, and without extra work.
 Stop after the requested result is delivered.
 
 Use tools only when they are needed.
-Before each tool call, write one brief sentence about what you are doing.
 Never call the same tool with identical arguments twice.
 
 If a tool fails, use the error message and context to decide the next step.
