@@ -86,7 +86,10 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         fake_client.aclose.assert_awaited_once()
 
     def test_mcp_metadata_keeps_safe_tools_read_only(self):
-        metadata = ToolRegistry._infer_mcp_metadata("context7:resolve-library-id")
+        metadata = ToolRegistry._infer_mcp_metadata(
+            "context7:resolve-library-id",
+            server_policy={"read_only": True},
+        )
 
         self.assertTrue(metadata.read_only)
         self.assertFalse(metadata.mutating)
@@ -94,16 +97,16 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(metadata.requires_approval)
         self.assertTrue(metadata.networked)
 
-    def test_mcp_metadata_falls_back_to_read_only_without_explicit_policy(self):
+    def test_mcp_metadata_requires_approval_without_explicit_policy(self):
         metadata = ToolRegistry._infer_mcp_metadata("filesystem:write_file")
 
         self.assertTrue(metadata.read_only)
         self.assertFalse(metadata.mutating)
         self.assertFalse(metadata.destructive)
-        self.assertFalse(metadata.requires_approval)
+        self.assertTrue(metadata.requires_approval)
         self.assertTrue(metadata.networked)
 
-    def test_mcp_metadata_uses_explicit_execution_hint_for_approval(self):
+    def test_mcp_metadata_without_policy_uses_approval_even_for_execution_hint(self):
         tool = SimpleNamespace(
             name="terminal:run_command",
             description="Run a command",
@@ -118,7 +121,7 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(metadata.requires_approval)
         self.assertTrue(metadata.networked)
 
-    def test_mcp_metadata_respects_safe_readonly_hint(self):
+    def test_mcp_metadata_without_policy_keeps_readonly_hint_but_still_requires_approval(self):
         tool = SimpleNamespace(
             name="acme_search_docs",
             description="Search documentation pages",
@@ -130,39 +133,39 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(metadata.read_only)
         self.assertFalse(metadata.mutating)
         self.assertFalse(metadata.destructive)
-        self.assertFalse(metadata.requires_approval)
+        self.assertTrue(metadata.requires_approval)
 
-    def test_mcp_metadata_applies_server_policy_defaults(self):
+    def test_mcp_metadata_applies_server_read_only_policy(self):
         metadata = ToolRegistry._infer_mcp_metadata(
             "acme:write_file",
-            server_policy={"mutating": True, "requires_approval": True, "networked": False},
-        )
-
-        self.assertFalse(metadata.read_only)
-        self.assertTrue(metadata.mutating)
-        self.assertFalse(metadata.destructive)
-        self.assertTrue(metadata.requires_approval)
-        self.assertFalse(metadata.networked)
-
-    def test_mcp_metadata_tool_override_can_restore_read_only(self):
-        tool = SimpleNamespace(
-            name="acme:docs_search",
-            description="Search docs",
-            metadata={"executionHint": True},
-        )
-
-        metadata = ToolRegistry._infer_mcp_metadata(
-            tool,
-            server_policy={"mutating": True, "requires_approval": True},
-            tool_policy={"read_only": True, "requires_approval": False},
+            server_policy={"read_only": True},
         )
 
         self.assertTrue(metadata.read_only)
         self.assertFalse(metadata.mutating)
         self.assertFalse(metadata.destructive)
         self.assertFalse(metadata.requires_approval)
+        self.assertTrue(metadata.networked)
 
-    def test_mcp_metadata_uses_destructive_hint_for_approval(self):
+    def test_mcp_metadata_tool_override_can_disable_read_only(self):
+        tool = SimpleNamespace(
+            name="acme:docs_search",
+            description="Search docs",
+            metadata={"readOnlyHint": True},
+        )
+
+        metadata = ToolRegistry._infer_mcp_metadata(
+            tool,
+            server_policy={"read_only": True},
+            tool_policy={"read_only": False},
+        )
+
+        self.assertFalse(metadata.read_only)
+        self.assertTrue(metadata.mutating)
+        self.assertFalse(metadata.destructive)
+        self.assertTrue(metadata.requires_approval)
+
+    def test_mcp_metadata_without_policy_uses_destructive_hint_for_shape(self):
         tool = SimpleNamespace(
             name="acme_workspace",
             description="Manage workspace entries",
@@ -186,11 +189,9 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
                         "enabled": True,
                         "policy": {
                             "read_only": True,
-                            "networked": False,
                             "tools": {
                                 "terminal:run_command": {
-                                    "mutating": True,
-                                    "requires_approval": True,
+                                    "read_only": False,
                                 }
                             },
                         },
@@ -218,7 +219,7 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(metadata.read_only)
         self.assertTrue(metadata.mutating)
         self.assertTrue(metadata.requires_approval)
-        self.assertFalse(metadata.networked)
+        self.assertTrue(metadata.networked)
 
     def test_validation_supports_delete_argument_aliases(self):
         tmp = self._workspace_tempdir()

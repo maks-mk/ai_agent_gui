@@ -17,10 +17,6 @@ from core.tool_policy import ToolMetadata, default_tool_metadata
 logger = logging.getLogger(__name__)
 _MCP_POLICY_FIELDS = (
     "read_only",
-    "mutating",
-    "destructive",
-    "requires_approval",
-    "networked",
 )
 
 
@@ -396,24 +392,10 @@ class ToolRegistry:
             if state["read_only"]:
                 state["mutating"] = False
                 state["destructive"] = False
-        if "mutating" in flags:
-            state["mutating"] = bool(flags["mutating"])
-            if state["mutating"]:
-                state["read_only"] = False
-            elif not state["destructive"]:
-                state["read_only"] = True
-        if "destructive" in flags:
-            state["destructive"] = bool(flags["destructive"])
-            if state["destructive"]:
+            else:
                 state["mutating"] = True
-                state["read_only"] = False
-            elif not state["mutating"]:
-                state["read_only"] = True
-        if "requires_approval" in flags:
-            state["requires_approval"] = bool(flags["requires_approval"])
-            approval_explicit = True
-        if "networked" in flags:
-            state["networked"] = bool(flags["networked"])
+        state["requires_approval"] = not bool(state["read_only"])
+        approval_explicit = True
         return approval_explicit
 
     @classmethod
@@ -440,18 +422,33 @@ class ToolRegistry:
             "networked": bool(base_metadata.networked),
         }
         approval_explicit = False
-        for flags in (
-            cls._sanitize_mcp_policy_flags(server_policy),
-            cls._extract_mcp_metadata_hints(raw_metadata),
-            cls._sanitize_mcp_policy_flags(tool_policy),
-        ):
+        server_flags = cls._sanitize_mcp_policy_flags(server_policy)
+        hint_flags = cls._extract_mcp_metadata_hints(raw_metadata)
+        tool_flags = cls._sanitize_mcp_policy_flags(tool_policy)
+
+        for flags in (server_flags, tool_flags):
             approval_explicit = cls._apply_mcp_policy_flags(
                 state,
                 flags,
                 approval_explicit=approval_explicit,
             )
 
-        if not approval_explicit and (state["mutating"] or state["destructive"]):
+        if "networked" in hint_flags:
+            state["networked"] = bool(hint_flags["networked"])
+
+        if not approval_explicit:
+            if hint_flags.get("destructive"):
+                state["destructive"] = True
+                state["mutating"] = True
+                state["read_only"] = False
+            elif hint_flags.get("mutating"):
+                state["mutating"] = True
+                state["read_only"] = False
+            elif "read_only" in hint_flags:
+                state["read_only"] = bool(hint_flags["read_only"])
+                if state["read_only"]:
+                    state["mutating"] = False
+                    state["destructive"] = False
             state["requires_approval"] = True
 
         return ToolMetadata(

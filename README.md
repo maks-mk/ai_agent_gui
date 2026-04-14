@@ -15,11 +15,31 @@ Desktop AI-agent с графовым runtime (`LangGraph`) и интерфейс
 - `web_search`
 - `fetch_content`
 - `batch_web_search`
-- Подключать внешние MCP-инструменты из `mcp.json`.
+- Подключать внешние MCP-инструменты из `mcp.json` с явной policy-конфигурацией.
 - Показывать действия в transcript (tool cards, diff, статус выполнения).
 - Запрашивать у пользователя явный выбор через `request_user_input` при неоднозначных сценариях.
 - Поддерживать approval-паузы для потенциально опасных операций.
 - Принимать мультимодальный ввод (изображения), если активный профиль это поддерживает.
+
+## Runtime flow
+
+Текущий граф хода запроса:
+
+```text
+START
+  -> summarize
+  -> classify_turn
+  -> update_step
+  -> agent
+     -> approval? -> tools
+     -> recovery
+     -> END
+
+tools -> recovery | update_step
+recovery -> update_step | END
+```
+
+`stability_guard` больше не используется: в runtime остался один recovery-контур через `recovery_node()`.
 
 ## Интерфейс (GUI)
 
@@ -70,13 +90,16 @@ python main.py
 ├─ requirements.txt
 ├─ mcp.json
 ├─ prompt.txt
+├─ prompt_code.txt
+├─ pytest.ini
 └─ build.bat
 ```
 
 ## Компоненты
 
-- `core/` — конфигурация, runtime-логика, policy, recovery, состояние сессий.
+- `core/` — конфигурация, графовый runtime, policy, recovery, prompt overlays, состояние сессий.
 - `tools/` — встроенные инструменты (filesystem/shell/search/system/process/user_input) и MCP-интеграция.
+- `tools/filesystem.py` — публичный facade для filesystem tools; детали реализации живут в `tools/filesystem_impl/`.
 - `ui/` — окно приложения, панели, transcript, настройки моделей.
 - `tests/` — unit и интеграционные тесты поведения runtime и GUI.
 
@@ -103,7 +126,7 @@ python main.py
 
 ### 3) Пути и файлы состояния
 
-- `PROMPT_PATH` (по умолчанию `prompt.txt`)
+- `PROMPT_PATH` (по умолчанию `prompt.txt`; в coding-сценариях проект также использует `prompt_code.txt`)
 - `MCP_CONFIG_PATH` (по умолчанию `mcp.json`)
 - `CHECKPOINT_BACKEND=sqlite|memory|postgres`
 - `CHECKPOINT_SQLITE_PATH` (по умолчанию `.agent_state/checkpoints.sqlite`)
@@ -155,14 +178,78 @@ python main.py
 
 ## MCP
 
-Файл `mcp.json` задает подключаемые MCP-серверы и флаг `enabled` для каждого.
-Если сервер доступен и включен, его инструменты попадут в runtime автоматически.
+Файл `mcp.json` задаёт подключаемые MCP-серверы.
+Для каждого сервера поддерживаются:
+
+- `enabled` — включение/выключение сервера
+- transport-поля (`command`, `args`, `url`, `transport` и т.д.)
+- `policy` — явная security-настройка для MCP tools
+
+Поддерживаемые поля `policy`:
+
+- `read_only`
+- `tools` — словарь per-tool overrides, где для каждого tool тоже поддерживается только `read_only`
+
+`policy` не обязательна, но без неё все MCP tools по умолчанию требуют approval.
+Это значит:
+
+- если указать `"read_only": true`, tool считается read-only и может выполняться без approval;
+- если указать `"read_only": false`, tool считается non-read-only и требует approval;
+- если блок `policy` отсутствует совсем, tool metadata может использоваться только как подсказка для формы tool, но approval всё равно обязателен;
+- для стабильного и предсказуемого поведения рекомендуется задавать `policy` явно хотя бы на уровне сервера.
+
+Порядок resolution для MCP metadata:
+
+1. server-level policy из `mcp.json`
+2. per-tool overrides из `mcp.json`
+3. metadata hints самого MCP tool (`readOnlyHint`, `executionHint`, `destructiveHint` и т.п.) используются только как shape hints, если явной policy нет
+4. conservative fallback `default_tool_metadata(..., source="mcp")`
+
+Пример:
+
+```json
+{
+  "context7": {
+    "type": "remote",
+    "url": "https://mcp.context7.com/mcp",
+    "transport": "http",
+    "enabled": true,
+    "policy": {
+      "read_only": true
+    }
+  },
+  "my-server": {
+    "command": "npx",
+    "args": ["-y", "@acme/server"],
+    "transport": "stdio",
+    "enabled": true,
+    "policy": {
+      "read_only": true,
+      "tools": {
+        "terminal:run_command": {
+          "read_only": false
+        }
+      }
+    }
+  }
+}
+```
 
 ## Тесты
 
 ```powershell
 venv\Scripts\python.exe -m pytest
 ```
+
+`pytest.ini` ограничивает discovery директорией `tests/` и исключает временные каталоги вроде `pytest-cache-files-*`, чтобы случайные build/cache артефакты не ломали collection.
+
+## Prompt layers
+
+- `prompt.txt` / `prompt_code.txt` — базовые системные инструкции.
+- `core/runtime_prompt_policy.py` — короткий runtime overlay c данными окружения, доступными tools и user-input policy.
+- `core/recovery_manager.py` — recovery overlay только для активной стратегии и текущей blocking issue.
+
+Общие правила теперь держатся в базовом prompt, а overlays добавляют только контекст текущего запуска, без повторения одной и той же инструкции на каждом ходу.
 
 ## Требования и ограничения
 
