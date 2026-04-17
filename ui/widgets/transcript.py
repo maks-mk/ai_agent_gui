@@ -40,9 +40,11 @@ class ConversationTurnWidget(QWidget):
     def _append_block(self, kind: str, widget: QWidget) -> QWidget:
         if kind in {"assistant", "tool", "notice", "stats"}:
             self.clear_summary_notice()
-            self.clear_status()
         self._layout.addWidget(widget)
         self._timeline.append((kind, widget))
+        if self.status_widget is not None and kind != "stats":
+            self._layout.removeWidget(self.status_widget)
+            self._layout.addWidget(self.status_widget)
         return widget
 
     def has_rendered_output(self) -> bool:

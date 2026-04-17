@@ -746,6 +746,28 @@ class GuiUxTests(unittest.TestCase):
         self.assertIsNotNone(self.window.current_turn.status_widget)
         self.assertEqual(self.window.current_turn.status_widget.label.text(), "Self-correcting")
 
+    def test_streaming_response_keeps_inline_status_visible_at_bottom_until_finish(self):
+        self.window._handle_initialized(self._snapshot_payload())
+
+        self.window._handle_event(StreamEvent("run_started", {"text": "Ответь подробно"}))
+        self.window._handle_event(
+            StreamEvent(
+                "assistant_delta",
+                {
+                    "text": "Первый кусок",
+                    "full_text": "Первый кусок ответа",
+                    "has_thought": False,
+                },
+            )
+        )
+
+        self.assertIsNotNone(self.window.current_turn.status_widget)
+        self.assertEqual(self.window.current_turn.block_kinds(), ["user", "assistant"])
+        self.assertIs(
+            self.window.current_turn.layout().itemAt(self.window.current_turn.layout().count() - 1).widget(),
+            self.window.current_turn.status_widget,
+        )
+
     def test_auto_summary_notice_shows_progress_then_done_and_hides_after_output(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window._handle_event(StreamEvent("run_started", {"text": "Большой контекст"}))

@@ -154,27 +154,20 @@ def create_agent_workflow(
 
     return workflow
 
-async def build_agent_app(config: Optional[AgentConfig] = None) -> Tuple[Any, ToolRegistry]:
-    """
-    Builds the LangGraph application and returns it along with the tool registry.
-    """
-    # Pydantic AgentConfig автоматически загружает .env.
-    config = config or AgentConfig()
-    setup_logging(level=config.log_level, log_file=config.log_file)
-
-    logger.info(f"Initializing agent: [bold cyan]{config.provider}[/]", extra={"markup": True})
-
-    # 1. Initialize Resources
+def build_compiled_agent(
+    config: AgentConfig,
+    tool_registry: ToolRegistry,
+    checkpoint_runtime: Any,
+    *,
+    run_logger: Optional[JsonlRunLogger] = None,
+) -> Tuple[Any, ToolRegistry]:
+    """Compile an agent app using already-loaded tools and an existing checkpointer."""
     llm = create_llm(config)
-    tool_registry = ToolRegistry(config)
+    tool_registry.config = config
     tool_registry.model_capabilities = extract_model_capabilities(llm)
-    await tool_registry.load_all()
-    checkpoint_runtime = await create_checkpoint_runtime(config)
-    run_logger = JsonlRunLogger(config.run_log_dir)
     tool_registry.checkpoint_info = checkpoint_runtime.to_dict()
-    tool_registry.register_cleanup_callback(checkpoint_runtime.aclose)
+    tool_registry.checkpoint_runtime = checkpoint_runtime
 
-    # 2. Bind Tools
     tools = tool_registry.tools
     tool_calling_enabled = bool(tools) and config.model_supports_tools
     llm_with_tools = llm
@@ -195,11 +188,8 @@ async def build_agent_app(config: Optional[AgentConfig] = None) -> Tuple[Any, To
     elif not config.model_supports_tools:
         logger.debug("⚠️ Tools disabled: Model does not support tool calling.")
 
-    # 3. Create Nodes
     active_tools = tools if tool_calling_enabled else []
-    active_tool_metadata = (
-        tool_registry.tool_metadata if tool_calling_enabled else {}
-    )
+    active_tool_metadata = tool_registry.tool_metadata if tool_calling_enabled else {}
     nodes = AgentNodes(
         config=config,
         llm=llm,
@@ -210,6 +200,31 @@ async def build_agent_app(config: Optional[AgentConfig] = None) -> Tuple[Any, To
     )
     workflow = create_agent_workflow(nodes, config, tools_enabled=tool_calling_enabled)
     return workflow.compile(checkpointer=checkpoint_runtime.checkpointer), tool_registry
+
+async def build_agent_app(config: Optional[AgentConfig] = None) -> Tuple[Any, ToolRegistry]:
+    """
+    Builds the LangGraph application and returns it along with the tool registry.
+    """
+    # Pydantic AgentConfig автоматически загружает .env.
+    config = config or AgentConfig()
+    setup_logging(level=config.log_level, log_file=config.log_file)
+
+    logger.info(f"Initializing agent: [bold cyan]{config.provider}[/]", extra={"markup": True})
+
+    # 1. Initialize Resources
+    tool_registry = ToolRegistry(config)
+    await tool_registry.load_all()
+    checkpoint_runtime = await create_checkpoint_runtime(config)
+    run_logger = JsonlRunLogger(config.run_log_dir)
+    tool_registry.checkpoint_info = checkpoint_runtime.to_dict()
+    tool_registry.checkpoint_runtime = checkpoint_runtime
+    tool_registry.register_cleanup_callback(checkpoint_runtime.aclose)
+    return build_compiled_agent(
+        config,
+        tool_registry,
+        checkpoint_runtime,
+        run_logger=run_logger,
+    )
 
 
 if __name__ == "__main__":

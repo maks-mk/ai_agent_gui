@@ -2452,6 +2452,68 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         rebuild_mock.assert_awaited_once()
         self.assertEqual(worker._runtime_profile_id, "gemini-1-5-flash")
 
+    async def test_rebuild_runtime_for_active_profile_reuses_existing_registry_and_checkpoint_runtime(self):
+        worker = gui_runtime.AgentRunWorker()
+        worker.base_config = self._make_config()
+        worker.config = worker.base_config
+        worker.model_profiles = {
+            "active_profile": "gemini-1-5-flash",
+            "profiles": [
+                {
+                    "id": "gemini-1-5-flash",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "api_key": "gm-key",
+                    "base_url": "",
+                }
+            ],
+        }
+        worker.current_session = SessionSnapshot(
+            session_id="session-1",
+            thread_id="thread-1",
+            checkpoint_backend="sqlite",
+            checkpoint_target="demo.sqlite",
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+            project_path=str(Path.cwd()),
+        )
+        worker.store = mock.Mock()
+        tool_registry = ToolRegistry(worker.config)
+        tool_registry.checkpoint_runtime = type(
+            "CheckpointRuntimeStub",
+            (),
+            {
+                "checkpointer": MemorySaver(),
+                "to_dict": lambda self: {
+                    "backend": "sqlite",
+                    "resolved_backend": "sqlite",
+                    "target": "demo.sqlite",
+                    "warnings": [],
+                },
+            },
+        )()
+        tool_registry.checkpoint_info = tool_registry.checkpoint_runtime.to_dict()
+        worker.tool_registry = tool_registry
+
+        fake_app = object()
+        with (
+            mock.patch.object(ToolRegistry, "reconfigure", autospec=True) as reconfigure_mock,
+            mock.patch.object(gui_runtime, "build_agent_app", new=mock.AsyncMock(side_effect=AssertionError("full rebuild not expected"))),
+            mock.patch.object(gui_runtime, "build_compiled_agent", return_value=(fake_app, tool_registry)) as compile_mock,
+            mock.patch.object(worker, "_configure_cli_output_bridge"),
+            mock.patch.object(worker, "_clear_cli_output_bridge"),
+            mock.patch.object(worker, "_set_effective_model_capabilities"),
+            mock.patch.object(gui_runtime, "close_runtime_resources", new=mock.AsyncMock()) as close_mock,
+        ):
+            await worker._rebuild_runtime_for_active_profile(worker.model_profiles)
+
+        compile_mock.assert_called_once()
+        reconfigure_mock.assert_called_once_with(tool_registry, mock.ANY)
+        close_mock.assert_not_awaited()
+        self.assertIs(worker.agent_app, fake_app)
+        self.assertIs(worker.tool_registry, tool_registry)
+        self.assertIs(worker.checkpoint_runtime, tool_registry.checkpoint_runtime)
+
     async def test_model_profiles_apply_success_updates_state(self):
         tmp = self._workspace_tempdir()
         profile_path = tmp / "config.json"

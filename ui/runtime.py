@@ -15,7 +15,7 @@ from langchain_core.messages import AIMessage, AIMessageChunk, HumanMessage, Too
 from langgraph.types import Command
 from pydantic import SecretStr
 
-from agent import build_agent_app
+from agent import build_agent_app, build_compiled_agent
 from core.config import AgentConfig
 from core.constants import AGENT_VERSION, BASE_DIR
 from core.logging_config import setup_logging
@@ -597,6 +597,7 @@ class AgentRunWorker(QObject):
         self._runtime_profile_id: str = ""
         self.agent_app = None
         self.tool_registry = None
+        self.checkpoint_runtime = None
         self.current_session: SessionSnapshot | None = None
         self.ui_run_logger: JsonlRunLogger | None = None
         self._is_busy = False
@@ -937,13 +938,27 @@ class AgentRunWorker(QObject):
             return
 
         new_config = self._build_config_for_active_profile(model_profiles)
-        new_agent_app, new_tool_registry = await build_agent_app(new_config)
-
         old_tool_registry = self.tool_registry
+        checkpoint_runtime = getattr(old_tool_registry, "checkpoint_runtime", None)
+        if old_tool_registry is not None and checkpoint_runtime is not None:
+            reconfigure = getattr(old_tool_registry, "reconfigure", None)
+            if callable(reconfigure):
+                reconfigure(new_config)
+            new_agent_app, new_tool_registry = build_compiled_agent(
+                new_config,
+                old_tool_registry,
+                checkpoint_runtime,
+                run_logger=JsonlRunLogger(new_config.run_log_dir),
+            )
+        else:
+            new_agent_app, new_tool_registry = await build_agent_app(new_config)
+            checkpoint_runtime = getattr(new_tool_registry, "checkpoint_runtime", None)
+
         self._clear_cli_output_bridge()
         self.config = new_config
         self.agent_app = new_agent_app
         self.tool_registry = new_tool_registry
+        self.checkpoint_runtime = checkpoint_runtime
         self._set_effective_model_capabilities(
             getattr(new_tool_registry, "model_capabilities", None)
         )
@@ -962,7 +977,7 @@ class AgentRunWorker(QObject):
             self.store.save_active_session(self.current_session, touch=False, set_active=True)
             self._sync_tool_registry_workdir(self.current_session.project_path)
 
-        if old_tool_registry is not None:
+        if old_tool_registry is not None and old_tool_registry is not new_tool_registry:
             await close_runtime_resources(old_tool_registry)
 
     async def _apply_model_profiles(
@@ -1088,6 +1103,7 @@ class AgentRunWorker(QObject):
         self.ui_run_logger = JsonlRunLogger(self.config.run_log_dir)
         self.store = SessionStore(self.config.session_state_path)
         self.agent_app, self.tool_registry = await build_agent_app(self.config)
+        self.checkpoint_runtime = getattr(self.tool_registry, "checkpoint_runtime", None)
         self._set_effective_model_capabilities(
             getattr(self.tool_registry, "model_capabilities", None)
         )
@@ -1525,6 +1541,7 @@ class AgentRunWorker(QObject):
     async def _shutdown_async(self) -> None:
         self._clear_cli_output_bridge()
         await close_runtime_resources(self.tool_registry)
+        self.checkpoint_runtime = None
         self.ui_run_logger = None
 
 

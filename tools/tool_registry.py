@@ -42,6 +42,7 @@ class ToolRegistry:
         "loader_status",
         "mcp_server_status",
         "checkpoint_info",
+        "checkpoint_runtime",
         "_cleanup_callbacks",
     )
 
@@ -54,6 +55,7 @@ class ToolRegistry:
         self.loader_status: List[Dict[str, Any]] = []
         self.mcp_server_status: List[Dict[str, Any]] = []
         self.checkpoint_info: Dict[str, Any] = {}
+        self.checkpoint_runtime: Any = None
         self._cleanup_callbacks: List[Callable[[], Any]] = []
 
     async def load_all(self):
@@ -79,6 +81,22 @@ class ToolRegistry:
                     setter(target_cwd)
                 except Exception:
                     logger.debug("Failed to sync cwd for %s", module_name, exc_info=True)
+
+    def reconfigure(self, config: AgentConfig) -> None:
+        """Refresh module-level runtime config without reloading tools or MCP clients."""
+        self.config = config
+        for spec in self._loader_specs():
+            if not spec.enabled(self.config) or not spec.configure:
+                continue
+            try:
+                module = importlib.import_module(spec.module_name)
+            except Exception:
+                logger.debug("Failed to import %s during tool registry reconfigure.", spec.module_name, exc_info=True)
+                continue
+            try:
+                spec.configure(module, self.config)
+            except Exception:
+                logger.debug("Failed to reconfigure %s tools.", spec.name, exc_info=True)
 
     def _loader_specs(self) -> List[ToolLoaderSpec]:
         return [
