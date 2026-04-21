@@ -3,6 +3,7 @@ from .composer import ComposerTextEdit
 from .dialogs import ApprovalDialog, ModelSettingsDialog
 from .foundation import TRANSCRIPT_MAX_WIDTH, _fa_icon
 from .messages import (
+    ApprovalRequestCardWidget,
     AssistantMessageWidget,
     NoticeWidget,
     RunStatsWidget,
@@ -10,13 +11,14 @@ from .messages import (
     UserChoiceCardWidget,
     UserMessageWidget,
 )
-from .panels import InfoPopupDialog, OverviewPanelWidget, ToolsPanelWidget
+from .panels import InfoPopupDialog, InspectorPanelWidget, OverviewPanelWidget, ToolsPanelWidget
 from .sidebar import SessionItemDelegate, SessionListModel, SessionSidebarWidget
 from .tools import CliExecWidget, ToolCardWidget
 from .transcript import ChatTranscriptWidget, ConversationTurnWidget
 
 __all__ = [
     "ApprovalDialog",
+    "ApprovalRequestCardWidget",
     "AssistantMessageWidget",
     "ChatTranscriptWidget",
     "CliExecWidget",
@@ -39,4 +41,5 @@ __all__ = [
     "UserChoiceCardWidget",
     "UserMessageWidget",
     "_fa_icon",
+    "InspectorPanelWidget",
 ]

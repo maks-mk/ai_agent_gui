@@ -988,7 +988,7 @@ class AgentRunWorker(QObject):
         success_notice_message: str,
         sync_runtime: bool = False,
         runtime_failure_kind: str = "model_switch_failed",
-        runtime_failure_message_prefix: str = "Не удалось применить выбранную модель",
+        runtime_failure_message_prefix: str = "Failed to apply the selected model",
     ) -> bool:
         if self.profile_store is None:
             raise RuntimeError("Model profile store is not initialized.")
@@ -1041,7 +1041,7 @@ class AgentRunWorker(QObject):
                 StreamEvent(
                     "summary_notice",
                     {
-                        "message": f"Не удалось применить выбранную модель: {exc}",
+                        "message": f"Failed to apply the selected model: {exc}",
                         "kind": "model_switch_failed",
                     },
                 )
@@ -1113,8 +1113,8 @@ class AgentRunWorker(QObject):
             selected_session,
             fallback_event_type="session_restore_fallback",
             notice_message=(
-                "Не удалось открыть рабочую папку восстановленного чата. "
-                "Создан новый чат в текущем проекте."
+                "Could not open the restored chat workspace. "
+                "Created a new chat in the current project."
             ),
         )
 
@@ -1267,9 +1267,8 @@ class AgentRunWorker(QObject):
                         "summary_notice",
                         {
                             "message": (
-                                "Модель не приняла прикреплённое изображение. "
-                                "Проверьте чекбокс поддержки изображений у профиля "
-                                "или отправьте запрос без картинки."
+                                "The model rejected the attached image. "
+                                "Check the profile image-input setting or send the request without an image."
                             ),
                             "kind": "image_input_failed",
                             "level": "warning",
@@ -1369,8 +1368,8 @@ class AgentRunWorker(QObject):
             target,
             fallback_event_type="session_switch_fallback",
             notice_message=(
-                "Не удалось открыть рабочую папку выбранного чата. "
-                "Создан новый чат в текущем проекте."
+                "Could not open the selected chat workspace. "
+                "Created a new chat in the current project."
             ),
         )
         await self._repair_current_session_if_needed()
@@ -1390,13 +1389,13 @@ class AgentRunWorker(QObject):
         deleted = self.store.delete_session(session_id)
         if not deleted:
             self.event_emitted.emit(
-                StreamEvent("summary_notice", {"message": "Чат не найден в истории.", "kind": "session_delete"})
+                StreamEvent("summary_notice", {"message": "Chat not found in history.", "kind": "session_delete"})
             )
             return
 
         active_deleted = self.current_session.session_id == session_id
         self.event_emitted.emit(
-            StreamEvent("summary_notice", {"message": "Чат удалён из истории.", "kind": "session_delete"})
+            StreamEvent("summary_notice", {"message": "Chat deleted from history.", "kind": "session_delete"})
         )
 
         if not active_deleted:
@@ -1413,8 +1412,8 @@ class AgentRunWorker(QObject):
             replacement,
             fallback_event_type="session_delete_fallback",
             notice_message=(
-                "Не удалось открыть рабочую папку следующего чата. "
-                "Создан новый чат в текущем проекте."
+                "Could not open the next chat workspace. "
+                "Created a new chat in the current project."
             ),
         )
 
@@ -1429,7 +1428,7 @@ class AgentRunWorker(QObject):
                 StreamEvent(
                     "summary_notice",
                     {
-                        "message": "Нельзя переключить модель во время выполнения.",
+                        "message": "Cannot switch models while a run is active.",
                         "kind": "model_switch_blocked",
                     },
                 )
@@ -1444,7 +1443,7 @@ class AgentRunWorker(QObject):
                 StreamEvent(
                     "summary_notice",
                     {
-                        "message": f"Не удалось переключить модель: {exc}",
+                        "message": f"Failed to switch models: {exc}",
                         "kind": "model_switch_failed",
                     },
                 )
@@ -1463,7 +1462,7 @@ class AgentRunWorker(QObject):
                 StreamEvent(
                     "summary_notice",
                     {
-                        "message": "Выбранный профиль не найден.",
+                        "message": "The selected profile was not found.",
                         "kind": "model_switch_failed",
                     },
                 )
@@ -1476,9 +1475,9 @@ class AgentRunWorker(QObject):
         target_profile = find_active_profile(candidate)
         target_model = str((target_profile or {}).get("model") or "").strip()
         success_notice_message = (
-            f"Модель переключена на {target_model}."
+            f"Switched to {target_model}."
             if target_model
-            else "Модель переключена."
+            else "Model switched."
         )
         await self._apply_model_profiles(
             candidate,
@@ -1486,7 +1485,7 @@ class AgentRunWorker(QObject):
             success_notice_message=success_notice_message,
             sync_runtime=True,
             runtime_failure_kind="model_switch_failed",
-            runtime_failure_message_prefix="Не удалось применить выбранную модель",
+            runtime_failure_message_prefix="Failed to apply the selected model",
         )
 
     @Slot(object)
@@ -1496,7 +1495,7 @@ class AgentRunWorker(QObject):
                 StreamEvent(
                     "summary_notice",
                     {
-                        "message": "Нельзя сохранить профили во время выполнения.",
+                        "message": "Cannot save profiles while a run is active.",
                         "kind": "profiles_save_blocked",
                     },
                 )
@@ -1512,7 +1511,7 @@ class AgentRunWorker(QObject):
                 StreamEvent(
                     "summary_notice",
                     {
-                        "message": f"Не удалось сохранить профили: {exc}",
+                        "message": f"Failed to save profiles: {exc}",
                         "kind": "profiles_save_failed",
                     },
                 )
@@ -1522,10 +1521,10 @@ class AgentRunWorker(QObject):
         await self._apply_model_profiles(
             config_payload,
             success_notice_kind="profiles_saved",
-            success_notice_message="Профили моделей сохранены.",
+            success_notice_message="Model profiles saved.",
             sync_runtime=True,
             runtime_failure_kind="profiles_apply_failed",
-            runtime_failure_message_prefix="Профили сохранены, но не удалось применить активную модель",
+            runtime_failure_message_prefix="Profiles were saved, but the active model could not be applied",
         )
 
     @Slot()

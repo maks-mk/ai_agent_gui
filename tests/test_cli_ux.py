@@ -253,9 +253,10 @@ class GuiUxTests(unittest.TestCase):
         tool_cards = self.window.tools_panel.findChildren(QFrame, "ToolCard")
         self.assertEqual(len(tool_cards), 3)
         self.assertIn("Help", self.window.help_text.toPlainText())
-        self.assertEqual(self.window.info_popup.tabs.tabText(0), "Info")
-        self.assertEqual(self.window.info_popup.tabs.tabText(1), "Tools")
-        self.assertEqual(self.window.info_popup.tabs.tabText(2), "Help")
+        self.assertEqual(self.window.inspector_panel.tabs.tabText(0), "Run")
+        self.assertEqual(self.window.inspector_panel.tabs.tabText(1), "Tools")
+        self.assertEqual(self.window.inspector_panel.tabs.tabText(2), "Help")
+        self.assertEqual(self.window.splitter.count(), 3)
         self.assertIn("Workdir:", self.window.runtime_meta_label.text())
         self.assertIn("Model: gpt-4o", self.window.runtime_meta_label.text())
         self.assertIn("Tools: 3", self.window.runtime_meta_label.text())
@@ -342,7 +343,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         self.assertFalse(self.window.user_choice_card.isHidden())
-        self.assertEqual(self.window.user_choice_card.title_label.text(), "Нужен выбор пользователя")
+        self.assertEqual(self.window.user_choice_card.title_label.text(), "Your input is required")
         self.assertEqual(self.window.user_choice_card.question_label.text(), "Какой режим выбираем?")
         option_buttons = self.window.user_choice_card.findChildren(QPushButton, "UserChoiceOptionButton")
         self.assertEqual(len(option_buttons), 2)
@@ -455,7 +456,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         self.assertFalse(self.window.model_image_badge.isHidden())
-        self.assertEqual(self.window.model_image_badge.text(), "no img")
+        self.assertEqual(self.window.model_image_badge.text(), "No image input")
         self.assertEqual(self.window.draft_image_attachments, [])
         self.assertFalse(self.window.composer_notice_label.isHidden())
         self.assertIn("does not support image input", self.window.composer_notice_label.text())
@@ -776,13 +777,13 @@ class GuiUxTests(unittest.TestCase):
             StreamEvent("status_changed", {"label": "Compressing context", "node": "summarize"})
         )
         self.assertIsNotNone(self.window.current_turn.summary_notice_widget)
-        self.assertIn("сжимается", self.window.current_turn.summary_notice_widget.text_label.text().lower())
+        self.assertIn("compressed", self.window.current_turn.summary_notice_widget.text_label.text().lower())
 
         self.window._handle_event(
             StreamEvent("status_changed", {"label": "Thinking", "node": "agent"})
         )
         self.assertIsNotNone(self.window.current_turn.summary_notice_widget)
-        self.assertIn("контекст сжат", self.window.current_turn.summary_notice_widget.text_label.text().lower())
+        self.assertIn("context compressed", self.window.current_turn.summary_notice_widget.text_label.text().lower())
 
         self.window._handle_event(
             StreamEvent(
@@ -809,7 +810,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         self.assertIsNotNone(self.window.current_turn.summary_notice_widget)
-        self.assertIn("контекст автоматически сжат", self.window.current_turn.summary_notice_widget.text_label.text().lower())
+        self.assertIn("context compressed automatically", self.window.current_turn.summary_notice_widget.text_label.text().lower())
         self.assertNotIn("notice", self.window.current_turn.block_kinds())
 
     def test_stream_events_render_transcript_and_compact_tool_sections(self):
@@ -1518,21 +1519,23 @@ class GuiUxTests(unittest.TestCase):
         self.assertTrue(any("3.1s" in text and "Out: 106" in text for text in labels))
         self.assertFalse(any("[dim]" in text for text in labels))
 
-    def test_approval_dialog_resumes_controller_with_selected_choice(self):
+    def test_inline_approval_card_resumes_controller_with_selected_choice(self):
         self.window._handle_initialized(self._snapshot_payload())
         payload = {
             "tools": [{"name": "edit_file", "args": {"path": "demo.txt"}, "policy": {"mutating": True}}],
             "summary": {"risk_level": "medium", "impacts": ["files"], "default_approve": True},
         }
 
-        dialog_instance = mock.Mock()
-        dialog_instance.choice = (True, True)
-        dialog_instance.exec.return_value = 0
+        self.window._handle_approval_request(payload)
+        self._process_events()
 
-        with mock.patch.object(agent_cli, "ApprovalDialog", return_value=dialog_instance):
-            self.window._handle_approval_request(payload)
-
+        self.assertTrue(self.window.awaiting_approval)
+        self.assertFalse(self.window.approval_card.isHidden())
+        self.assertIn("protected action", self.window.approval_card.summary_label.text().lower())
+        QTest.mouseClick(self.window.approval_card.always_button, Qt.LeftButton)
+        self._process_events()
         self.assertEqual(self.controller.resume_calls, [(True, True)])
+        self.assertTrue(self.window.approval_card.isHidden())
 
     def test_auto_approval_after_always_mode_does_not_repeat_notice(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1629,21 +1632,26 @@ class GuiUxTests(unittest.TestCase):
         self.assertIn(SURFACE_CARD, stylesheet)
         self.assertIn(TEXT_MUTED, stylesheet)
 
-    def test_info_popup_coexists_with_sidebar_and_closes_on_toggle(self):
+    def test_inspector_toggle_collapses_and_restores_right_panel(self):
         self.window.show()
         self._process_events()
         self.assertTrue(self.window.sidebar_container.isVisible())
-        self.assertFalse(self.window.info_popup.isVisible())
-        self.assertTrue(bool(self.window.info_popup.windowFlags() & Qt.Popup))
+        self.assertTrue(self.window.inspector_container.isVisible())
+        expanded_sizes = self.window.splitter.sizes()
+        self.assertGreater(expanded_sizes[2], 0)
+        self.assertFalse(self.window.inspector_collapsed)
 
         self.window._toggle_info_popup()
         self._process_events()
-        self.assertTrue(self.window.info_popup.isVisible())
-        self.assertEqual(self.window.info_popup.tabs.currentIndex(), 0)
+        collapsed_sizes = self.window.splitter.sizes()
+        self.assertTrue(self.window.inspector_collapsed)
+        self.assertEqual(collapsed_sizes[2], 0)
 
         self.window._toggle_info_popup()
         self._process_events()
-        self.assertFalse(self.window.info_popup.isVisible())
+        restored_sizes = self.window.splitter.sizes()
+        self.assertFalse(self.window.inspector_collapsed)
+        self.assertGreater(restored_sizes[2], 0)
 
     def test_sidebar_toggle_hides_and_restores_chat_list(self):
         self.window.show()
@@ -1666,6 +1674,23 @@ class GuiUxTests(unittest.TestCase):
         self.window.sidebar._emit_clicked_session(index)
 
         self.assertEqual(self.controller.switch_session_calls, ["session-older"])
+
+    def test_sidebar_search_filters_sessions_and_shows_empty_state(self):
+        payload = self._snapshot_payload()
+        self.window._handle_initialized(payload)
+
+        self.window.sidebar.search_field.setText("other-project")
+        self._process_events()
+
+        self.assertEqual(self.window.sidebar.model.session_row_count(), 1)
+        self.assertFalse(self.window.sidebar.list_view.isHidden())
+
+        self.window.sidebar.search_field.setText("missing-chat")
+        self._process_events()
+
+        self.assertEqual(self.window.sidebar.model.session_row_count(), 0)
+        self.assertFalse(self.window.sidebar.list_view.isVisible())
+        self.assertEqual(self.window.sidebar.empty_label.text(), "No chats match this search")
 
     def test_delete_session_requests_controller_after_confirmation(self):
         payload = self._snapshot_payload()
@@ -1699,16 +1724,22 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(self.window.new_project_button.iconSize().width(), 14)
         self.assertEqual(self.window.info_button.iconSize().width(), 14)
 
-    def test_approval_dialog_uses_smaller_default_size(self):
-        dialog = agent_cli.ApprovalDialog(
-            {
-                "tools": [{"name": "edit_file", "args": {"path": "demo.txt"}, "policy": {"mutating": True}}],
-                "summary": {"risk_level": "medium", "impacts": ["files"], "default_approve": True},
-            }
-        )
-        self.assertLessEqual(dialog.width(), 470)
-        self.assertLessEqual(dialog.height(), 320)
-        dialog.close()
+    def test_approval_card_blocks_input_and_exposes_human_readable_fields(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        payload = {
+            "tools": [{"name": "edit_file", "display": "edit_file", "args": {"path": "demo.txt"}, "policy": {"mutating": True}}],
+            "summary": {"risk_level": "medium", "impacts": ["files"], "default_approve": True},
+        }
+
+        self.window._handle_approval_request(payload)
+        self._process_events()
+
+        self.assertFalse(self.window.composer.isEnabled())
+        self.assertEqual(self.window.approval_card.risk_badge.text(), "Medium")
+        self.assertIn("Impacts: files", self.window.approval_card.impacts_label.text())
+        self.assertEqual(self.window.approval_card.approve_button.text(), "Approve")
+        self.assertEqual(self.window.approval_card.always_button.text(), "Always for this session")
+        self.assertEqual(self.window.approval_card.deny_button.text(), "Deny")
 
     def test_transcript_sticky_autofollow_respects_manual_scroll(self):
         scrollbar = self.window.transcript.scroll.verticalScrollBar()
@@ -1748,6 +1779,26 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
         self.assertEqual(scrollbar.value(), scrollbar.maximum())
 
+    def test_transcript_jump_button_appears_when_autofollow_is_off_and_scrolls_to_latest(self):
+        self.window.show()
+        self._process_events()
+        scrollbar = self.window.transcript.scroll.verticalScrollBar()
+        scrollbar.setRange(0, 240)
+        with mock.patch.object(self.window.transcript, "is_near_bottom", return_value=False):
+            self.window.transcript._auto_follow_enabled = False
+            self.window.transcript._update_jump_button()
+            self._process_events()
+
+        self.assertFalse(self.window.transcript.auto_follow_enabled)
+        self.assertFalse(self.window.transcript.jump_to_latest_button.isHidden())
+
+        QTest.mouseClick(self.window.transcript.jump_to_latest_button, Qt.LeftButton)
+        self._process_events()
+
+        self.assertTrue(self.window.transcript.auto_follow_enabled)
+        self.assertFalse(self.window.transcript.jump_to_latest_button.isVisible())
+        self.assertEqual(scrollbar.value(), scrollbar.maximum())
+
     def test_transcript_uses_centered_column_instead_of_full_width_feed(self):
         self.assertEqual(self.window.transcript.column.maximumWidth(), TRANSCRIPT_MAX_WIDTH)
         self.assertEqual(self.window.transcript.column.objectName(), "TranscriptColumn")
@@ -1756,7 +1807,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertGreaterEqual(self.window.composer_shell.contentsMargins().top(), 16)
 
     def test_composer_buttons_have_correct_tooltips(self):
-        self.assertEqual(self.window.attach_button.toolTip(), "Add image or insert file path")
+        self.assertEqual(self.window.attach_button.toolTip(), "Add images or insert file paths")
         self.assertEqual(self.window.send_button.toolTip(), "Send (Enter)")
 
     def test_model_selector_renders_active_profile_and_tooltip(self):
@@ -2174,10 +2225,18 @@ class GuiUxTests(unittest.TestCase):
 
     def test_composer_bottom_controls_match_new_layout(self):
         self.assertTrue(hasattr(self.window, "model_chip"))
-        self.assertTrue(hasattr(self.window, "effort_chip"))
-        self.assertTrue(hasattr(self.window, "voice_button"))
-        self.assertEqual(self.window.effort_chip.text(), "Высокий")
-        self.assertEqual(self.window.voice_button.toolTip(), "Voice input (soon)")
+        self.assertFalse(hasattr(self.window, "effort_chip"))
+        self.assertFalse(hasattr(self.window, "voice_button"))
+        self.assertEqual(self.window.stop_action_button.objectName(), "ComposerStopButton")
+        self.assertEqual(self.window.model_chip.accessibleName(), "Model selector")
+
+    def test_primary_widgets_expose_accessible_names(self):
+        self.assertEqual(self.window.sidebar.search_field.accessibleName(), "Chat search")
+        self.assertEqual(self.window.sidebar.list_view.accessibleName(), "Chat list")
+        self.assertEqual(self.window.transcript.accessibleName(), "Conversation transcript")
+        self.assertEqual(self.window.composer.accessibleName(), "Composer")
+        self.assertEqual(self.window.send_button.accessibleName(), "Send request")
+        self.assertEqual(self.window.inspector_panel.tabs.accessibleName(), "Inspector tabs")
 
 
 if __name__ == "__main__":

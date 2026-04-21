@@ -1,7 +1,7 @@
 import os
 import sys
 
-from PySide6.QtCore import QPoint, QSize, Qt, QTimer
+from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
@@ -34,11 +34,11 @@ from core.model_profiles import normalize_profiles_payload
 from ui.runtime import AgentRuntimeController
 from ui.theme import ACCENT_BLUE, ERROR_RED, SUCCESS_GREEN, TEXT_MUTED, build_stylesheet
 from ui.widgets import (
-    ApprovalDialog,
+    ApprovalRequestCardWidget,
     ChatTranscriptWidget,
     ComposerTextEdit,
     ImageAttachmentStripWidget,
-    InfoPopupDialog,
+    InspectorPanelWidget,
     ModelSettingsDialog,
     SessionSidebarWidget,
     TRANSCRIPT_MAX_WIDTH,
@@ -46,7 +46,7 @@ from ui.widgets import (
     _fa_icon,
 )
 
-COMPOSER_ATTACH_TOOLTIP = "Add image or insert file path"
+COMPOSER_ATTACH_TOOLTIP = "Add images or insert file paths"
 COMPOSER_ADD_IMAGE_LABEL = "Add image…"
 COMPOSER_INSERT_FILE_PATH_LABEL = "Insert file path…"
 
@@ -71,6 +71,8 @@ class MainWindow(QMainWindow):
         self.is_busy = False
         self.sidebar_collapsed = False
         self._sidebar_width = 280
+        self.inspector_collapsed = False
+        self._inspector_width = 340
         self._custom_choice_armed = False
         self._tools_hash: int = 0  # cache: skip set_tools rebuild when tools haven’t changed
         self._summarize_in_progress = False
@@ -83,7 +85,7 @@ class MainWindow(QMainWindow):
         self._composer_min_height = 56
         self._composer_max_height = 56
         self._composer_height_padding = 16
-        self._composer_growth_lines = 2
+        self._composer_growth_lines = 5
         self._composer_height_sync_pending = False
         self._build_ui()
         self._connect_signals()
@@ -119,13 +121,14 @@ class MainWindow(QMainWindow):
 
         self.setCentralWidget(central)
         self.setStyleSheet(build_stylesheet())
+        self._set_inspector_collapsed(True)
         self._set_input_enabled(False)
 
     def _build_menu_bar(self) -> None:
         self.toggle_sidebar_action = QAction(_fa_icon("fa5s.columns", color=ACCENT_BLUE, size=14), "Toggle Sidebar", self)
         self.new_session_action = QAction(_fa_icon("fa5s.plus", color=ACCENT_BLUE, size=14), "New Session", self)
         self.settings_action = QAction(_fa_icon("fa5s.cog", color=ACCENT_BLUE, size=14), "Settings", self)
-        self.info_action = QAction(_fa_icon("fa5s.info-circle", color=ACCENT_BLUE, size=14), "Information", self)
+        self.info_action = QAction(_fa_icon("fa5s.sliders-h", color=ACCENT_BLUE, size=14), "Toggle Inspector", self)
         self.quit_action = QAction(_fa_icon("fa5s.sign-out-alt", color=ERROR_RED, size=14), "Quit", self)
 
         # Keyboard shortcuts
@@ -137,7 +140,7 @@ class MainWindow(QMainWindow):
             (self.toggle_sidebar_action, "Show or hide chat history (Ctrl+B)"),
             (self.new_session_action, "Start a new session (Ctrl+N)"),
             (self.settings_action, "Manage model profiles"),
-            (self.info_action, "Show session information, tools, and help (Ctrl+I)"),
+            (self.info_action, "Show or hide the inspector (Ctrl+I)"),
             (self.quit_action, "Quit"),
         ):
             action.setToolTip(tooltip)
@@ -158,13 +161,15 @@ class MainWindow(QMainWindow):
         view_menu.addAction(self.settings_action)
         view_menu.addAction(self.info_action)
 
-        # Keep runtime status labels as lightweight state holders; the visible
-        # status now lives in the bottom status bar and inside the transcript.
         self.status_icon = QLabel()
         self.status_text = QLabel("Initializing runtime…")
         self.status_text.setObjectName("StatusLabel")
         self.status_meta = QLabel("")
         self.status_meta.setObjectName("MetaText")
+        self.top_status_chip = QLabel("Initializing runtime…")
+        self.top_status_chip.setObjectName("TopStatusChip")
+        self.top_status_chip.setAccessibleName("Run status")
+        self.top_status_chip.setAccessibleDescription("Displays the current agent run status")
 
         # --- Right-side action buttons ---
         self.new_project_button = QToolButton()
@@ -205,12 +210,13 @@ class MainWindow(QMainWindow):
         self.info_button.setAutoRaise(False)
         self.info_button.setToolTip(self.info_action.toolTip())
         self.info_button.setStatusTip(self.info_action.statusTip())
+        self.info_button.clicked.connect(lambda _checked=False: self.info_action.trigger())
 
         right_buttons = QWidget()
         right_layout = QHBoxLayout(right_buttons)
         right_layout.setContentsMargins(0, 2, 4, 2)
-        right_layout.setSpacing(4)
-        #right_layout.addWidget(self.stop_button)
+        right_layout.setSpacing(6)
+        right_layout.addWidget(self.top_status_chip, 0, Qt.AlignVCenter)
         right_layout.addWidget(self.new_project_button)
         right_layout.addWidget(self.new_session_button)
         right_layout.addWidget(self.settings_button)
@@ -234,11 +240,6 @@ class MainWindow(QMainWindow):
 
         self.setMenuWidget(top_bar)
 
-        self.info_popup = InfoPopupDialog(self)
-        self.overview_panel = self.info_popup.overview_panel
-        self.tools_panel = self.info_popup.tools_panel
-        self.help_text = self.info_popup.help_text
-
         self._set_status_visual("Initializing runtime…", busy=True)
 
     def _build_workspace(self) -> QWidget:
@@ -252,7 +253,7 @@ class MainWindow(QMainWindow):
 
         self.sidebar_container = QFrame()
         self.sidebar_container.setObjectName("SidebarCard")
-        self.sidebar_container.setMinimumWidth(220)
+        self.sidebar_container.setMinimumWidth(250)
         self.sidebar_container.setMaximumWidth(360)
         sidebar_layout = QVBoxLayout(self.sidebar_container)
         sidebar_layout.setContentsMargins(10, 10, 10, 10)
@@ -261,13 +262,15 @@ class MainWindow(QMainWindow):
         self.sidebar = SessionSidebarWidget()
         sidebar_layout.addWidget(self.sidebar, 1)
 
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-        right_layout.setContentsMargins(0, 0, 0, 0)
-        right_layout.setSpacing(0)
+        center_panel = QWidget()
+        center_layout = QVBoxLayout(center_panel)
+        center_layout.setContentsMargins(0, 0, 0, 0)
+        center_layout.setSpacing(0)
 
         self.transcript = ChatTranscriptWidget()
-        right_layout.addWidget(self.transcript, 1)
+        self.transcript.setAccessibleName("Conversation transcript")
+        self.transcript.setAccessibleDescription("Shows user messages, assistant output, tools, and notices")
+        center_layout.addWidget(self.transcript, 1)
 
         # ---- Bottom composer bar ----
         self.composer_shell = QHBoxLayout()
@@ -282,6 +285,9 @@ class MainWindow(QMainWindow):
         outer_layout = QVBoxLayout(self.composer_container)
         outer_layout.setContentsMargins(0, 0, 0, 0)
         outer_layout.setSpacing(8)
+
+        self.approval_card = ApprovalRequestCardWidget()
+        outer_layout.addWidget(self.approval_card)
 
         self.user_choice_card = UserChoiceCardWidget()
         outer_layout.addWidget(self.user_choice_card)
@@ -303,7 +309,9 @@ class MainWindow(QMainWindow):
         pill_layout.addWidget(self.composer_notice_label)
 
         self.composer = ComposerTextEdit()
-        self.composer.setPlaceholderText("Ask the agent…")
+        self.composer.setPlaceholderText("Ask the agent, attach images, or insert file paths…")
+        self.composer.setAccessibleName("Composer")
+        self.composer.setAccessibleDescription("Write a request for the agent")
         line_spacing = max(14, self.composer.fontMetrics().lineSpacing())
         self._composer_max_height = self._composer_min_height + (self._composer_growth_lines * line_spacing)
         self.composer.setMinimumHeight(self._composer_min_height)
@@ -324,6 +332,8 @@ class MainWindow(QMainWindow):
         self.attach_button.setFixedSize(28, 28)
         self.attach_button.setObjectName("ComposerAttachButton")
         self.attach_button.setToolTip(COMPOSER_ATTACH_TOOLTIP)
+        self.attach_button.setAccessibleName("Add attachments")
+        self.attach_button.setAccessibleDescription("Add images or insert file paths")
         self.attach_menu = QMenu(self.attach_button)
         self.add_image_action = self.attach_menu.addAction(COMPOSER_ADD_IMAGE_LABEL)
         self.insert_file_path_action = self.attach_menu.addAction(COMPOSER_INSERT_FILE_PATH_LABEL)
@@ -338,13 +348,15 @@ class MainWindow(QMainWindow):
         self.model_chip.setText("Model")
         self.model_chip.setCursor(Qt.PointingHandCursor)
         self.model_chip.setFocusPolicy(Qt.NoFocus)
+        self.model_chip.setAccessibleName("Model selector")
+        self.model_chip.setAccessibleDescription("Select the active model profile")
         self.model_chip_menu = QMenu(self.model_chip)
         self.model_chip.setMenu(self.model_chip_menu)
         self.model_chip_group = QActionGroup(self.model_chip_menu)
         self.model_chip_group.setExclusive(True)
         control_row.addWidget(self.model_chip, 0, Qt.AlignVCenter)
 
-        self.model_image_badge = QLabel("no img")
+        self.model_image_badge = QLabel("No image input")
         self.model_image_badge.setObjectName("ComposerCapabilityBadge")
         self.model_image_badge.setVisible(False)
         control_row.addWidget(self.model_image_badge, 0, Qt.AlignVCenter)
@@ -360,36 +372,21 @@ class MainWindow(QMainWindow):
         self.open_settings_inline_button.setFocusPolicy(Qt.NoFocus)
         control_row.addWidget(self.open_settings_inline_button, 0, Qt.AlignVCenter)
 
-        self.effort_chip = QPushButton("Высокий")
-        self.effort_chip.setObjectName("ComposerMetaChip")
-        self.effort_chip.setEnabled(False)
-        self.effort_chip.setCursor(Qt.ArrowCursor)
-        self.effort_chip.setFocusPolicy(Qt.NoFocus)
-        self.effort_chip.setVisible(False)
-        # control_row.addWidget(self.effort_chip, 0, Qt.AlignVCenter)
-
         control_row.addStretch(1)
-
-        self.voice_button = QToolButton()
-        self.voice_button.setObjectName("ComposerGhostButton")
-        self.voice_button.setIcon(_fa_icon("fa5s.microphone", color=TEXT_MUTED, size=11))
-        self.voice_button.setIconSize(QSize(11, 11))
-        self.voice_button.setToolTip("Voice input (soon)")
-        self.voice_button.setEnabled(False)
-        self.voice_button.setFixedSize(24, 24)
-        self.voice_button.setVisible(False)
-        # control_row.addWidget(self.voice_button, 0, Qt.AlignVCenter)
 
         self.send_button = QPushButton(_fa_icon("fa5s.arrow-up", color="#08090B", size=14), "")
         self.send_button.setObjectName("ComposerSendButton")
         self.send_button.setToolTip("Send (Enter)")
         self.send_button.setFixedSize(32, 32)
+        self.send_button.setAccessibleName("Send request")
+        self.send_button.setAccessibleDescription("Submit the current request")
         control_row.addWidget(self.send_button, 0, Qt.AlignVCenter)
         
         self.stop_action_button = QPushButton(_fa_icon("fa5s.stop", color="#FFFFFF", size=14), "")
-        self.stop_action_button.setStyleSheet("QPushButton { background: #F26D6D; border: none; border-radius: 15px; } QPushButton:hover { background: #ff8b8b; }")
+        self.stop_action_button.setObjectName("ComposerStopButton")
         self.stop_action_button.setToolTip("Stop")
         self.stop_action_button.setFixedSize(32, 32)
+        self.stop_action_button.setAccessibleName("Stop current run")
         self.stop_action_button.setVisible(False)
         control_row.addWidget(self.stop_action_button, 0, Qt.AlignVCenter)
         pill_layout.addLayout(control_row)
@@ -397,13 +394,28 @@ class MainWindow(QMainWindow):
         outer_layout.addWidget(self.composer_pill)
         self.composer_shell.addWidget(self.composer_container, 3)
         self.composer_shell.addStretch(1)
-        right_layout.addLayout(self.composer_shell)
+        center_layout.addLayout(self.composer_shell)
+
+        self.inspector_container = QFrame()
+        self.inspector_container.setObjectName("SidebarCard")
+        self.inspector_container.setMinimumWidth(320)
+        self.inspector_container.setMaximumWidth(420)
+        inspector_layout = QVBoxLayout(self.inspector_container)
+        inspector_layout.setContentsMargins(12, 12, 12, 12)
+        inspector_layout.setSpacing(0)
+        self.inspector_panel = InspectorPanelWidget()
+        self.overview_panel = self.inspector_panel.overview_panel
+        self.tools_panel = self.inspector_panel.tools_panel
+        self.help_text = self.inspector_panel.help_text
+        inspector_layout.addWidget(self.inspector_panel, 1)
 
         self.splitter.addWidget(self.sidebar_container)
-        self.splitter.addWidget(right_panel)
+        self.splitter.addWidget(center_panel)
+        self.splitter.addWidget(self.inspector_container)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
-        self.splitter.setSizes([self._sidebar_width, 1000])
+        self.splitter.setStretchFactor(2, 0)
+        self.splitter.setSizes([self._sidebar_width, 1000, self._inspector_width])
         layout.addWidget(self.splitter, 1)
         return workspace
 
@@ -412,7 +424,6 @@ class MainWindow(QMainWindow):
         self.new_session_action.triggered.connect(lambda _checked=False: self._new_session())
         self.settings_action.triggered.connect(lambda _checked=False: self._open_settings_dialog())
         self.info_action.triggered.connect(lambda _checked=False: self._toggle_info_popup())
-        self.info_button.clicked.connect(lambda _checked=False: self._toggle_info_popup())
         self.open_settings_inline_button.clicked.connect(lambda _checked=False: self._open_settings_dialog())
         self.quit_action.triggered.connect(lambda _checked=False: self.close())
         self.stop_action_button.clicked.connect(lambda _checked=False: self.controller.stop_run())
@@ -432,6 +443,7 @@ class MainWindow(QMainWindow):
             self._queue_composer_height_sync
         )
         self.composer_attachments_strip.attachment_remove_requested.connect(self._remove_draft_attachment)
+        self.approval_card.decision_made.connect(self._handle_inline_approval_decision)
         self.user_choice_card.option_selected.connect(self._handle_user_choice_selected)
         self.user_choice_card.custom_option_requested.connect(self._handle_custom_choice_requested)
 
@@ -592,6 +604,7 @@ class MainWindow(QMainWindow):
 
     def _on_run_started(self, payload: dict) -> None:
         self._clear_user_choice_request()
+        self._clear_approval_request()
         self.current_turn = self.transcript.start_turn(
             payload.get("text", ""),
             attachments=list(payload.get("attachments", []) or []),
@@ -617,10 +630,10 @@ class MainWindow(QMainWindow):
             transcript_changed = True
             if node == "summarize":
                 self._summarize_in_progress = True
-                self.current_turn.set_summary_notice("Контекст автоматически сжимается…", level="info")
+                self.current_turn.set_summary_notice("Context is being compressed automatically…", level="info")
             elif self._summarize_in_progress:
                 self._summarize_in_progress = False
-                self.current_turn.set_summary_notice("Контекст сжат", level="success")
+                self.current_turn.set_summary_notice("Context compressed", level="success")
             if transcript_changed:
                 self.transcript.notify_content_changed()
 
@@ -659,11 +672,11 @@ class MainWindow(QMainWindow):
                 count = int(payload.get("count", 0) or 0)
                 if count > 0:
                     self.current_turn.set_summary_notice(
-                        f"Контекст автоматически сжат ({count} сообщ.).",
+                        f"Context compressed automatically ({count} message(s)).",
                         level="success",
                     )
                 else:
-                    self.current_turn.set_summary_notice("Контекст сжат", level="success")
+                    self.current_turn.set_summary_notice("Context compressed", level="success")
                 self.transcript.notify_content_changed()
             return
         if self.current_turn is not None:
@@ -720,6 +733,7 @@ class MainWindow(QMainWindow):
         self._clear_draft_image_attachments()
         self._clear_composer_notice()
         self._clear_user_choice_request()
+        self._clear_approval_request()
         self._show_transient_status_message("Started a new session")
 
     # --------------------------------------------------------------------------
@@ -746,29 +760,16 @@ class MainWindow(QMainWindow):
         icon_name = "fa5s.spinner" if busy else "fa5s.check-circle" if success else "fa5s.times-circle" if error else "fa5s.circle"
         self.status_text.setText(label)
         self.status_icon.setPixmap(_fa_icon(icon_name, color=color, size=14).pixmap(14, 14))
+        self.top_status_chip.setText(label)
+        self.top_status_chip.setProperty("statusState", "busy" if busy else "success" if success else "error" if error else "idle")
+        style = self.top_status_chip.style()
+        if style is not None:
+            style.unpolish(self.top_status_chip)
+            style.polish(self.top_status_chip)
         self._set_primary_status_message(label)
 
     def _toggle_info_popup(self) -> None:
-        if self.info_popup.isVisible():
-            self.info_popup.hide()
-            return
-        self.info_popup.tabs.setCurrentIndex(0)
-        self._position_info_popup()
-        self.info_popup.show()
-        self.info_popup.raise_()
-        self.info_popup.activateWindow()
-
-    def _position_info_popup(self) -> None:
-        anchor = self.info_button if hasattr(self, "info_button") else self.menuBar()
-        global_pos = anchor.mapToGlobal(QPoint(anchor.width() - self.info_popup.width(), anchor.height() + 8))
-        screen = self.screen() or QApplication.primaryScreen()
-        if screen is not None:
-            bounds = screen.availableGeometry()
-            max_x = max(bounds.left() + 8, bounds.right() - self.info_popup.width() - 8)
-            max_y = max(bounds.top() + 8, bounds.bottom() - self.info_popup.height() - 8)
-            global_pos.setX(max(bounds.left() + 8, min(global_pos.x(), max_x)))
-            global_pos.setY(max(bounds.top() + 8, min(global_pos.y(), max_y)))
-        self.info_popup.move(global_pos)
+        self._set_inspector_collapsed(not self.inspector_collapsed)
 
     def _set_input_enabled(self, enabled: bool) -> None:
         has_pending_interrupt = self.awaiting_approval or self.awaiting_user_choice
@@ -794,7 +795,9 @@ class MainWindow(QMainWindow):
         self.model_chip.setEnabled(can_edit and self._has_active_model)
         self.open_settings_inline_button.setEnabled(enabled and not has_pending_interrupt and not self.is_busy)
         self.settings_button.setEnabled(enabled and not has_pending_interrupt and not self.is_busy)
+        self.info_button.setEnabled(enabled and not self.is_busy)
         self.sidebar.setEnabled(enabled and not has_pending_interrupt and not self.is_busy)
+        self.approval_card.set_actions_enabled(self.awaiting_approval and not self.is_busy)
         self.user_choice_card.set_actions_enabled(
             enabled and self.awaiting_user_choice and not self.awaiting_approval and not self.is_busy
         )
@@ -978,11 +981,12 @@ class MainWindow(QMainWindow):
             self._clear_draft_image_attachments()
             self._clear_composer_notice()
             self._clear_user_choice_request()
+            self._clear_approval_request()
 
     def _handle_busy_changed(self, busy: bool) -> None:
         self.is_busy = busy
-        
-        # Переключаем видимость кнопок
+
+        # Swap send/stop affordances depending on whether a run is active.
         self.send_button.setVisible(not busy)
         self.stop_action_button.setVisible(busy)
 
@@ -1003,13 +1007,20 @@ class MainWindow(QMainWindow):
 
     def _handle_approval_request(self, payload: dict) -> None:
         self.awaiting_approval = True
+        self.awaiting_user_choice = False
+        self._custom_choice_armed = False
+        self._clear_user_choice_request()
+        self.approval_card.set_request(payload)
         self._set_input_enabled(False)
         self._set_status_visual("Waiting for approval", busy=False)
+        self.approval_card.setFocus()
+        self.transcript.notify_content_changed()
 
-        dialog = ApprovalDialog(payload, self)
-        dialog.exec()
-        approved, always = dialog.choice
+    def _handle_inline_approval_decision(self, approved: bool, always: bool) -> None:
+        if not self.awaiting_approval:
+            return
         self.awaiting_approval = False
+        self._clear_approval_request()
         self.controller.resume_approval(approved, always)
         self._set_input_enabled(False)
 
@@ -1063,6 +1074,9 @@ class MainWindow(QMainWindow):
         self.awaiting_user_choice = False
         self._custom_choice_armed = False
         self.user_choice_card.clear_request()
+
+    def _clear_approval_request(self) -> None:
+        self.approval_card.clear_request()
 
     def _handle_user_choice_selected(self, submit_text: str) -> None:
         text = str(submit_text or "").strip()
@@ -1123,16 +1137,32 @@ class MainWindow(QMainWindow):
             return
         self.sidebar_collapsed = collapsed
         if collapsed:
-            self._sidebar_width = max(220, self.sidebar_container.width())
+            self._sidebar_width = max(250, self.sidebar_container.width())
             self.sidebar_container.hide()
-            self.splitter.setSizes([0, 1000])
+            self.splitter.setSizes([0, 1000, 0 if self.inspector_collapsed else self._inspector_width])
             self.toggle_sidebar_action.setToolTip("Show chat history (Ctrl+B)")
             self.sidebar_toggle_button.setToolTip(self.toggle_sidebar_action.toolTip())
         else:
             self.sidebar_container.show()
-            self.splitter.setSizes([self._sidebar_width, 1000])
+            self.splitter.setSizes([self._sidebar_width, 1000, 0 if self.inspector_collapsed else self._inspector_width])
             self.toggle_sidebar_action.setToolTip("Hide chat history (Ctrl+B)")
             self.sidebar_toggle_button.setToolTip(self.toggle_sidebar_action.toolTip())
+
+    def _set_inspector_collapsed(self, collapsed: bool) -> None:
+        if self.inspector_collapsed == collapsed:
+            return
+        self.inspector_collapsed = collapsed
+        if collapsed:
+            self._inspector_width = max(320, self.inspector_container.width())
+            self.inspector_container.hide()
+            self.info_action.setToolTip("Show inspector (Ctrl+I)")
+            self.info_button.setToolTip(self.info_action.toolTip())
+            self.splitter.setSizes([0 if self.sidebar_collapsed else self._sidebar_width, 1000, 0])
+            return
+        self.inspector_container.show()
+        self.info_action.setToolTip("Hide inspector (Ctrl+I)")
+        self.info_button.setToolTip(self.info_action.toolTip())
+        self.splitter.setSizes([0 if self.sidebar_collapsed else self._sidebar_width, 1000, self._inspector_width])
 
     def _switch_session(self, session_id: str) -> None:
         if (
@@ -1155,18 +1185,18 @@ class MainWindow(QMainWindow):
     def _request_delete_session(self, session_id: str) -> None:
         if not session_id or self.is_busy or self.awaiting_approval or self.awaiting_user_choice:
             return
-        title = self.sidebar.title_for_session(session_id) or "Этот чат"
-        message = f"Удалить чат «{title}» из истории?"
+        title = self.sidebar.title_for_session(session_id) or "this chat"
+        message = f"Delete “{title}” from chat history?"
         answer = QMessageBox.question(
             self,
-            "Удаление чата",
+            "Delete chat",
             message,
             QMessageBox.Yes | QMessageBox.No,
             QMessageBox.No,
         )
         if answer != QMessageBox.Yes:
             return
-        self._show_transient_status_message("Удаляю чат из истории…")
+        self._show_transient_status_message("Deleting chat from history…")
         self.controller.delete_session(session_id)
 
     def _new_session(self) -> None:
@@ -1182,6 +1212,7 @@ class MainWindow(QMainWindow):
         self._clear_draft_image_attachments()
         self._clear_composer_notice()
         self._clear_user_choice_request()
+        self._clear_approval_request()
         self.controller.new_session()
         self._show_transient_status_message("Created a new session")
 
@@ -1211,6 +1242,7 @@ class MainWindow(QMainWindow):
         self.current_turn = None
         self.transcript.clear_transcript()
         self._clear_user_choice_request()
+        self._clear_approval_request()
         self._set_status_visual("Creating a new chat for the selected folder…", busy=True)
         self.controller.reinitialize(force_new_session=True)
 

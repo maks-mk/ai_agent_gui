@@ -3,9 +3,9 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import QTimer, Qt
-from PySide6.QtWidgets import QHBoxLayout, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QHBoxLayout, QPushButton, QScrollArea, QSizePolicy, QVBoxLayout, QWidget
 
-from .foundation import TRANSCRIPT_MAX_WIDTH
+from .foundation import TRANSCRIPT_MAX_WIDTH, _fa_icon
 from .messages import AssistantMessageWidget, NoticeWidget, RunStatsWidget, StatusIndicatorWidget, UserMessageWidget
 from .tools import ToolCardWidget
 
@@ -234,6 +234,13 @@ class ChatTranscriptWidget(QWidget):
         scrollbar.valueChanged.connect(self._handle_scrollbar_value_changed)
         scrollbar.rangeChanged.connect(self._handle_scrollbar_range_changed)
 
+        self.jump_to_latest_button = QPushButton(_fa_icon("fa5s.arrow-down", size=12), "Jump to latest", self)
+        self.jump_to_latest_button.setObjectName("TranscriptJumpButton")
+        self.jump_to_latest_button.setVisible(False)
+        self.jump_to_latest_button.setAccessibleName("Jump to latest message")
+        self.jump_to_latest_button.setAccessibleDescription("Scroll to the most recent transcript event")
+        self.jump_to_latest_button.clicked.connect(self.scroll_to_bottom)
+
     def clear_transcript(self) -> None:
         while self.layout.count() > 1:
             item = self.layout.takeAt(0)
@@ -245,6 +252,7 @@ class ChatTranscriptWidget(QWidget):
         self._pending_force_scroll = False
         self._range_follow_ticket = 0
         self._range_follow_force = False
+        self.jump_to_latest_button.setVisible(False)
 
     def add_global_notice(self, message: str, level: str = "info") -> None:
         self.layout.insertWidget(self.layout.count() - 1, NoticeWidget(message, level=level, parent=self.column))
@@ -284,9 +292,11 @@ class ChatTranscriptWidget(QWidget):
         self._auto_follow_enabled = self.is_near_bottom()
         if not self._auto_follow_enabled:
             self._range_follow_force = False
+        self._update_jump_button()
 
     def _handle_scrollbar_range_changed(self, _minimum: int, _maximum: int) -> None:
         if not self._range_follow_ticket:
+            self._update_jump_button()
             return
         self._follow_to_bottom(self._range_follow_ticket)
 
@@ -313,6 +323,7 @@ class ChatTranscriptWidget(QWidget):
         self._range_follow_force = force
         self._scrollbar_to_bottom()
         self._auto_follow_enabled = True
+        self._update_jump_button()
         self._schedule_follow_up_scroll(force=force)
 
     def _scrollbar_to_bottom(self) -> None:
@@ -337,6 +348,7 @@ class ChatTranscriptWidget(QWidget):
             return
         self._scrollbar_to_bottom()
         self._auto_follow_enabled = True
+        self._update_jump_button()
 
     def _finish_follow_up(self, ticket: int) -> None:
         if ticket != self._range_follow_ticket:
@@ -348,7 +360,19 @@ class ChatTranscriptWidget(QWidget):
         self._pending_force_scroll = False
         self._scrollbar_to_bottom()
         self._auto_follow_enabled = True
+        self._update_jump_button()
         self._schedule_follow_up_scroll(force=True)
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        button_size = self.jump_to_latest_button.sizeHint()
+        x = max(12, self.width() - button_size.width() - 18)
+        y = max(12, self.height() - button_size.height() - 18)
+        self.jump_to_latest_button.move(x, y)
+
+    def _update_jump_button(self) -> None:
+        should_show = not self._auto_follow_enabled and not self.is_near_bottom()
+        self.jump_to_latest_button.setVisible(should_show)
 
 
 

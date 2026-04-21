@@ -3,9 +3,20 @@ from __future__ import annotations
 from typing import Any
 
 from PySide6.QtCore import Qt
-from PySide6.QtWidgets import QDialog, QFormLayout, QFrame, QHBoxLayout, QLabel, QScrollArea, QTabWidget, QTextBrowser, QVBoxLayout, QWidget
+from PySide6.QtWidgets import (
+    QDialog,
+    QFormLayout,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QScrollArea,
+    QTabWidget,
+    QTextBrowser,
+    QVBoxLayout,
+    QWidget,
+)
 
-from ui.theme import ACCENT_BLUE, AMBER_WARNING, BORDER, MONO_FONT_FAMILY, SURFACE_CARD, TEXT_MUTED, TEXT_PRIMARY
+from ui.theme import ACCENT_BLUE
 from .foundation import _fa_icon
 
 
@@ -33,6 +44,7 @@ class OverviewPanelWidget(QWidget):
         ):
             label = QLabel("—")
             label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextSelectableByMouse)
             self._labels[key] = label
             form.addRow(key, label)
 
@@ -82,19 +94,13 @@ class ToolsPanelWidget(QWidget):
     def set_tools(self, tools: list[dict[str, str]]) -> None:
         while self._inner.count() > 1:
             item = self._inner.takeAt(0)
-            w = item.widget()
-            if w:
-                w.deleteLater()
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
 
         grouped: dict[str, list[dict[str, str]]] = {"Read-only": [], "Protected": [], "MCP": []}
         for row in tools:
             grouped.setdefault(row["group"], []).append(row)
-
-        group_colors = {
-            "Read-only": TEXT_MUTED,
-            "Protected": AMBER_WARNING,
-            "MCP": ACCENT_BLUE,
-        }
 
         insert_pos = 0
         for group_name in ("Read-only", "Protected", "MCP"):
@@ -103,34 +109,26 @@ class ToolsPanelWidget(QWidget):
                 continue
 
             header = QLabel(group_name.upper())
-            header.setStyleSheet(
-                f"color: {group_colors[group_name]}; font-size: 7.2pt; "
-                f"font-weight: 700; letter-spacing: 0.8px; "
-                f"padding: 8px 4px 3px 4px;"
-            )
+            header.setObjectName("ToolGroupHeader")
+            header.setProperty("toolGroup", group_name.lower().replace("-", "_"))
+            header.style().unpolish(header)
+            header.style().polish(header)
             self._inner.insertWidget(insert_pos, header)
             insert_pos += 1
 
             for row in items:
                 card = QFrame()
                 card.setObjectName("ToolCard")
-                card.setStyleSheet(
-                    f"QFrame#ToolCard {{ background: {SURFACE_CARD}; "
-                    f"border: 1px solid {BORDER}; border-radius: 6px; "
-                    f"margin: 1px 0px; }}"
-                )
                 card_layout = QVBoxLayout(card)
-                card_layout.setContentsMargins(8, 6, 8, 6)
-                card_layout.setSpacing(3)
+                card_layout.setContentsMargins(10, 8, 10, 8)
+                card_layout.setSpacing(4)
 
                 top_row = QHBoxLayout()
                 top_row.setSpacing(6)
 
                 name_label = QLabel(row["name"])
-                name_label.setStyleSheet(
-                    f"color: {TEXT_PRIMARY}; font-weight: 600; "
-                    f"font-size: 8.8pt; font-family: '{MONO_FONT_FAMILY}';"
-                )
+                name_label.setObjectName("ToolCardTitle")
+                name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
                 top_row.addWidget(name_label, 1)
 
                 flags = row.get("flags", "")
@@ -139,17 +137,16 @@ class ToolsPanelWidget(QWidget):
                         flag = flag.strip()
                         if not flag:
                             continue
-                        flag_color = (
-                            AMBER_WARNING if flag in ("mutating", "destructive", "approval")
-                            else ACCENT_BLUE if flag in ("mcp", "network")
-                            else TEXT_MUTED
-                        )
                         chip = QLabel(flag)
-                        chip.setStyleSheet(
-                            f"color: {flag_color}; font-size: 7pt; "
-                            f"border: 1px solid {flag_color}33; "
-                            f"border-radius: 3px; padding: 0px 4px;"
-                        )
+                        chip.setObjectName("ToolFlagChip")
+                        if flag in ("mutating", "destructive", "approval"):
+                            chip.setProperty("flagVariant", "warning")
+                        elif flag in ("mcp", "network"):
+                            chip.setProperty("flagVariant", "accent")
+                        else:
+                            chip.setProperty("flagVariant", "muted")
+                        chip.style().unpolish(chip)
+                        chip.style().polish(chip)
                         top_row.addWidget(chip, 0)
 
                 card_layout.addLayout(top_row)
@@ -158,9 +155,7 @@ class ToolsPanelWidget(QWidget):
                 if desc:
                     desc_label = QLabel(desc)
                     desc_label.setWordWrap(True)
-                    desc_label.setStyleSheet(
-                        f"color: {TEXT_MUTED}; font-size: 8pt;"
-                    )
+                    desc_label.setObjectName("ToolCardDescription")
                     card_layout.addWidget(desc_label)
 
                 self._inner.insertWidget(insert_pos, card)
@@ -168,9 +163,58 @@ class ToolsPanelWidget(QWidget):
 
             sep = QFrame()
             sep.setFixedHeight(1)
-            sep.setStyleSheet(f"background: {BORDER}; margin: 4px 0px;")
+            sep.setObjectName("ToolGroupSeparator")
             self._inner.insertWidget(insert_pos, sep)
             insert_pos += 1
+
+
+class InspectorPanelWidget(QWidget):
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("InspectorPanel")
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(8)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(6)
+
+        title = QLabel("Inspector")
+        title.setObjectName("SectionTitle")
+        header_row.addWidget(title)
+        header_row.addStretch(1)
+
+        hint = QLabel("Run details, tools, and help")
+        hint.setObjectName("MetaText")
+        header_row.addWidget(hint, 0, Qt.AlignRight)
+        layout.addLayout(header_row)
+
+        self.tabs = QTabWidget()
+        self.tabs.setAccessibleName("Inspector tabs")
+        self.tabs.setAccessibleDescription("Switch between run details, tools, and help")
+        self.overview_panel = OverviewPanelWidget()
+        self.overview_panel.setAccessibleName("Run details")
+        self.tools_panel = ToolsPanelWidget()
+        self.tools_panel.setAccessibleName("Tools panel")
+
+        help_widget = QWidget()
+        help_layout = QVBoxLayout(help_widget)
+        help_layout.setContentsMargins(0, 0, 0, 0)
+        help_layout.setSpacing(0)
+        self.help_text = QTextBrowser()
+        self.help_text.setObjectName("InspectorHelpText")
+        self.help_text.setOpenLinks(False)
+        self.help_text.setOpenExternalLinks(False)
+        self.help_text.setReadOnly(True)
+        self.help_text.setAccessibleName("Help content")
+        help_layout.addWidget(self.help_text)
+
+        self.tabs.addTab(self.overview_panel, _fa_icon("fa5s.play-circle", color=ACCENT_BLUE, size=14), "Run")
+        self.tabs.addTab(self.tools_panel, _fa_icon("fa5s.tools", color=ACCENT_BLUE, size=14), "Tools")
+        self.tabs.addTab(help_widget, _fa_icon("fa5s.question-circle", color=ACCENT_BLUE, size=14), "Help")
+        layout.addWidget(self.tabs, 1)
 
 
 class InfoPopupDialog(QDialog):
@@ -185,38 +229,9 @@ class InfoPopupDialog(QDialog):
         layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(8)
 
-        title_row = QHBoxLayout()
-        title_row.setContentsMargins(0, 0, 0, 0)
-        title_row.setSpacing(6)
-
-        title = QLabel("Session information")
-        title.setObjectName("SectionTitle")
-        title_row.addWidget(title)
-        title_row.addStretch(1)
-
-        hint = QLabel("Esc or click outside to close")
-        hint.setObjectName("MetaText")
-        title_row.addWidget(hint, 0, Qt.AlignRight)
-        layout.addLayout(title_row)
-
-        self.tabs = QTabWidget()
-        self.overview_panel = OverviewPanelWidget()
-        self.tools_panel = ToolsPanelWidget()
-
-        help_widget = QWidget()
-        help_layout = QVBoxLayout(help_widget)
-        help_layout.setContentsMargins(0, 0, 0, 0)
-        help_layout.setSpacing(0)
-        self.help_text = QTextBrowser()
-        self.help_text.setOpenLinks(False)
-        self.help_text.setOpenExternalLinks(False)
-        self.help_text.setReadOnly(True)
-        help_layout.addWidget(self.help_text)
-
-        self.tabs.addTab(self.overview_panel, _fa_icon("fa5s.info-circle", color=ACCENT_BLUE, size=14), "Info")
-        self.tabs.addTab(self.tools_panel, _fa_icon("fa5s.tools", color=ACCENT_BLUE, size=14), "Tools")
-        self.tabs.addTab(help_widget, _fa_icon("fa5s.question-circle", color=ACCENT_BLUE, size=14), "Help")
-        layout.addWidget(self.tabs, 1)
-
-
-
+        inspector = InspectorPanelWidget()
+        self.tabs = inspector.tabs
+        self.overview_panel = inspector.overview_panel
+        self.tools_panel = inspector.tools_panel
+        self.help_text = inspector.help_text
+        layout.addWidget(inspector)

@@ -1,12 +1,23 @@
 from __future__ import annotations
 
+import json
+from typing import Any
+
 from PySide6.QtCore import QSize, Qt, Signal
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QToolButton, QVBoxLayout, QWidget
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from core.text_utils import split_markdown_segments
 from ui.theme import ACCENT_BLUE, AMBER_WARNING, ERROR_RED, SUCCESS_GREEN, TEXT_MUTED
 from .attachments import ImageAttachmentStripWidget
-from .foundation import AutoTextBrowser, CodeBlockWidget, _collapsed_user_message_text, _fa_icon
+from .foundation import (
+    AutoTextBrowser,
+    CodeBlockWidget,
+    CollapsibleSection,
+    CopySafePlainTextEdit,
+    _collapsed_user_message_text,
+    _fa_icon,
+    _make_mono_font,
+)
 
 
 class NoticeWidget(QFrame):
@@ -134,7 +145,7 @@ class UserMessageWidget(QFrame):
         layout.setContentsMargins(0, 12, 0, 16)
         layout.setSpacing(0)
 
-        # Пружина выталкивает пузырь вправо
+        # Keep user turns visually anchored to the right.
         layout.addStretch(1)
 
         self.bubble = QFrame(self)
@@ -274,7 +285,7 @@ class UserChoiceCardWidget(QFrame):
         layout.setContentsMargins(14, 12, 14, 12)
         layout.setSpacing(8)
 
-        self.title_label = QLabel("Нужен выбор пользователя")
+        self.title_label = QLabel("Your input is required")
         self.title_label.setObjectName("UserChoiceCardTitle")
         layout.addWidget(self.title_label)
 
@@ -296,7 +307,7 @@ class UserChoiceCardWidget(QFrame):
         self.options_layout.setSpacing(6)
         layout.addWidget(self.options_host)
 
-        self.custom_button = QPushButton("Свой вариант")
+        self.custom_button = QPushButton("Custom response")
         self.custom_button.setObjectName("UserChoiceCustomButton")
         self.custom_button.clicked.connect(self.custom_option_requested.emit)
         layout.addWidget(self.custom_button)
@@ -308,9 +319,9 @@ class UserChoiceCardWidget(QFrame):
         options = list(payload.get("options") or [])
         recommended_key = str(payload.get("recommended_key") or payload.get("recommended") or "").strip()
 
-        self.question_label.setText(question or "Выберите, как продолжить.")
+        self.question_label.setText(question or "Choose how to continue.")
         if recommended_key:
-            self.hint_label.setText(f"Рекомендуемый вариант: {recommended_key}")
+            self.hint_label.setText(f"Recommended: {recommended_key}")
             self.hint_label.setVisible(True)
         else:
             self.hint_label.clear()
@@ -361,5 +372,168 @@ class UserChoiceCardWidget(QFrame):
             button.setEnabled(enabled)
         self.custom_button.setEnabled(enabled)
 
+
+class ApprovalRequestCardWidget(QFrame):
+    decision_made = Signal(bool, bool)
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.setObjectName("ApprovalRequestCard")
+        self.setFrameShape(QFrame.NoFrame)
+        self._tool_sections: list[CollapsibleSection] = []
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        layout.setSpacing(10)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+
+        self.title_label = QLabel("Approval required")
+        self.title_label.setObjectName("ApprovalCardTitle")
+        title_row.addWidget(self.title_label)
+
+        self.risk_badge = QLabel("")
+        self.risk_badge.setObjectName("ApprovalRiskBadge")
+        self.risk_badge.setVisible(False)
+        title_row.addWidget(self.risk_badge, 0, Qt.AlignVCenter)
+        title_row.addStretch(1)
+        layout.addLayout(title_row)
+
+        self.summary_label = QLabel("")
+        self.summary_label.setObjectName("ApprovalCardSummary")
+        self.summary_label.setWordWrap(True)
+        layout.addWidget(self.summary_label)
+
+        self.impacts_label = QLabel("")
+        self.impacts_label.setObjectName("ApprovalCardImpacts")
+        self.impacts_label.setWordWrap(True)
+        self.impacts_label.setVisible(False)
+        layout.addWidget(self.impacts_label)
+
+        self.tools_scroll = QScrollArea()
+        self.tools_scroll.setWidgetResizable(True)
+        self.tools_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
+        self.tools_scroll.setMinimumHeight(0)
+        self.tools_scroll.setMaximumHeight(220)
+        self.tools_scroll.setVisible(False)
+
+        self.tools_container = QWidget()
+        self.tools_layout = QVBoxLayout(self.tools_container)
+        self.tools_layout.setContentsMargins(0, 0, 0, 0)
+        self.tools_layout.setSpacing(8)
+        self.tools_layout.addStretch(1)
+        self.tools_scroll.setWidget(self.tools_container)
+        layout.addWidget(self.tools_scroll)
+
+        actions_row = QHBoxLayout()
+        actions_row.setContentsMargins(0, 0, 0, 0)
+        actions_row.setSpacing(8)
+
+        self.approve_button = QPushButton("Approve")
+        self.approve_button.setObjectName("PrimaryButton")
+        self.approve_button.clicked.connect(lambda: self.decision_made.emit(True, False))
+        actions_row.addWidget(self.approve_button)
+
+        self.always_button = QPushButton("Always for this session")
+        self.always_button.setObjectName("SecondaryButton")
+        self.always_button.clicked.connect(lambda: self.decision_made.emit(True, True))
+        actions_row.addWidget(self.always_button)
+
+        self.deny_button = QPushButton("Deny")
+        self.deny_button.setObjectName("DangerButton")
+        self.deny_button.clicked.connect(lambda: self.decision_made.emit(False, False))
+        actions_row.addWidget(self.deny_button)
+        actions_row.addStretch(1)
+        layout.addLayout(actions_row)
+
+        self.setAccessibleName("Approval request")
+        self.setAccessibleDescription("Review and approve protected tool actions")
+        self.approve_button.setAccessibleName("Approve protected action")
+        self.always_button.setAccessibleName("Always approve in this session")
+        self.deny_button.setAccessibleName("Deny protected action")
+        self.setVisible(False)
+
+    def set_request(self, payload: dict[str, Any]) -> None:
+        summary = payload.get("summary", {}) if isinstance(payload, dict) else {}
+        risk_level = str(summary.get("risk_level", "unknown") or "unknown")
+        impacts = [str(item).strip() for item in list(summary.get("impacts", []) or []) if str(item).strip()]
+        tools = list(payload.get("tools", []) or [])
+        default_approve = bool(summary.get("default_approve"))
+
+        self.risk_badge.setText(risk_level.title())
+        self.risk_badge.setProperty("riskLevel", risk_level)
+        style = self.risk_badge.style()
+        if style is not None:
+            style.unpolish(self.risk_badge)
+            style.polish(self.risk_badge)
+        self.risk_badge.setVisible(True)
+
+        tools_count = len(tools)
+        default_text = "approve" if default_approve else "deny"
+        self.summary_label.setText(
+            f"This action needs confirmation before the agent can continue. "
+            f"{tools_count} protected action(s) requested. Default policy: {default_text}."
+        )
+        if impacts:
+            self.impacts_label.setText(f"Impacts: {', '.join(impacts)}")
+            self.impacts_label.setVisible(True)
+        else:
+            self.impacts_label.clear()
+            self.impacts_label.setVisible(False)
+
+        while self.tools_layout.count() > 1:
+            item = self.tools_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._tool_sections.clear()
+
+        for tool in tools:
+            card = QFrame()
+            card.setObjectName("ApprovalToolCard")
+            card_layout = QVBoxLayout(card)
+            card_layout.setContentsMargins(10, 10, 10, 10)
+            card_layout.setSpacing(6)
+
+            name = str(tool.get("display") or tool.get("name") or "tool").strip() or "tool"
+            name_label = QLabel(name)
+            name_label.setObjectName("ApprovalToolTitle")
+            card_layout.addWidget(name_label)
+
+            args_view = CopySafePlainTextEdit()
+            args_view.setObjectName("InlineCodeView")
+            args_view.setReadOnly(True)
+            args_view.setFont(_make_mono_font())
+            args_view.setPlainText(json.dumps(tool.get("args", {}), ensure_ascii=False, indent=2))
+            args_view.setMinimumHeight(84)
+            section = CollapsibleSection("Request details", args_view, expanded=False)
+            card_layout.addWidget(section)
+            self._tool_sections.append(section)
+            self.tools_layout.insertWidget(self.tools_layout.count() - 1, card)
+
+        self.tools_scroll.setVisible(bool(tools))
+        self.setVisible(True)
+
+    def clear_request(self) -> None:
+        self.summary_label.clear()
+        self.impacts_label.clear()
+        self.impacts_label.setVisible(False)
+        self.risk_badge.clear()
+        self.risk_badge.setVisible(False)
+        while self.tools_layout.count() > 1:
+            item = self.tools_layout.takeAt(0)
+            widget = item.widget()
+            if widget is not None:
+                widget.deleteLater()
+        self._tool_sections.clear()
+        self.tools_scroll.setVisible(False)
+        self.setVisible(False)
+
+    def set_actions_enabled(self, enabled: bool) -> None:
+        self.approve_button.setEnabled(enabled)
+        self.always_button.setEnabled(enabled)
+        self.deny_button.setEnabled(enabled)
 
 

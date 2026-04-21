@@ -5,6 +5,7 @@ from typing import Any
 
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import (
+    QApplication,
     QCheckBox,
     QComboBox,
     QDialog,
@@ -19,8 +20,10 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPlainTextEdit,
     QPushButton,
-    QSizePolicy,
     QScrollArea,
+    QSizePolicy,
+    QSplitter,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -38,8 +41,8 @@ class ModelSettingsDialog(QDialog):
         self.setObjectName("ModelSettingsDialog")
         self.setWindowTitle("Model Settings")
         self.setModal(True)
-        self.resize(900, 520)
-        self.setMinimumSize(820, 450)
+        self.resize(960, 560)
+        self.setMinimumSize(860, 500)
 
         normalized = normalize_profiles_payload(payload or {})
         self._profiles: list[dict[str, Any]] = [dict(item) for item in normalized.get("profiles", [])]
@@ -47,18 +50,29 @@ class ModelSettingsDialog(QDialog):
         self._name_manual_flags: list[bool] = []
         self._selected_row = -1
         self._loading_form = False
+        self._filter_text = ""
         self._result_payload = normalized
         self._name_manual_flags = self._compute_initial_name_manual_flags()
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(14, 12, 14, 12)
-        root.setSpacing(8)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(10)
+
+        header_row = QHBoxLayout()
+        header_row.setContentsMargins(0, 0, 0, 0)
+        header_row.setSpacing(8)
 
         header_title = QLabel("Model Profiles")
         header_title.setObjectName("ModelSettingsTitle")
-        root.addWidget(header_title)
+        header_row.addWidget(header_title, 0, Qt.AlignLeft | Qt.AlignVCenter)
 
-        header_hint = QLabel("Manage provider/model/API credentials. Active profile is used for new runs.")
+        self.profile_count_chip = QLabel("")
+        self.profile_count_chip.setObjectName("ModelSettingsChip")
+        header_row.addWidget(self.profile_count_chip, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        header_row.addStretch(1)
+        root.addLayout(header_row)
+
+        header_hint = QLabel("Manage provider, model, and API credentials. The active profile is used for new runs.")
         header_hint.setObjectName("ModelSettingsSubtitle")
         header_hint.setWordWrap(True)
         root.addWidget(header_hint)
@@ -69,37 +83,59 @@ class ModelSettingsDialog(QDialog):
         self.active_profile_label.setWordWrap(True)
         root.addWidget(self.active_profile_label)
 
-        body = QHBoxLayout()
-        body.setSpacing(12)
+        self.body_splitter = QSplitter(Qt.Horizontal)
+        self.body_splitter.setChildrenCollapsible(False)
+        self.body_splitter.setHandleWidth(8)
 
         left_container = QFrame()
         left_container.setObjectName("ModelSettingsPane")
         left = QVBoxLayout(left_container)
-        left.setContentsMargins(10, 10, 10, 10)
-        left.setSpacing(6)
+        left.setContentsMargins(12, 12, 12, 12)
+        left.setSpacing(8)
+
+        left_header = QHBoxLayout()
+        left_header.setContentsMargins(0, 0, 0, 0)
+        left_header.setSpacing(6)
         left_label = QLabel("Profiles")
         left_label.setObjectName("SectionTitle")
-        left.addWidget(left_label)
+        left_header.addWidget(left_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+
+        self.left_meta_chip = QLabel("")
+        self.left_meta_chip.setObjectName("ModelSettingsChip")
+        left_header.addWidget(self.left_meta_chip, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        left_header.addStretch(1)
+        left.addLayout(left_header)
+
+        self.search_edit = QLineEdit()
+        self.search_edit.setObjectName("ModelSettingsSearchField")
+        self.search_edit.setPlaceholderText("Search profiles...")
+        self.search_edit.setClearButtonEnabled(True)
+        self.search_edit.setAccessibleName("Profile search")
+        self.search_edit.setAccessibleDescription("Filter profiles by name, provider, or model")
+        self.search_edit.addAction(_fa_icon("fa5s.search", color=TEXT_MUTED, size=12), QLineEdit.TrailingPosition)
+        left.addWidget(self.search_edit)
 
         self.profile_list = QListWidget()
         self.profile_list.setObjectName("ModelProfileList")
         self.profile_list.setMinimumWidth(280)
+        self.profile_list.setAccessibleName("Profile list")
+        self.profile_list.setAccessibleDescription("Select a model profile to edit")
         self.profile_list.currentRowChanged.connect(self._on_selection_changed)
         left.addWidget(self.profile_list, 1)
 
         left_buttons = QHBoxLayout()
         left_buttons.setSpacing(6)
-        self.add_button = QPushButton("Add")
+        self.add_button = QPushButton("Add Profile")
         self.add_button.setObjectName("SettingsAddButton")
         self.add_button.setIcon(_fa_icon("fa5s.plus", color=TEXT_PRIMARY, size=11))
-        self.delete_button = QPushButton("Delete")
+        self.delete_button = QPushButton("Delete Profile")
         self.delete_button.setObjectName("SettingsDeleteButton")
         self.delete_button.setIcon(_fa_icon("fa5s.trash", color=TEXT_PRIMARY, size=11))
         left_buttons.addWidget(self.add_button)
         left_buttons.addWidget(self.delete_button)
         left.addLayout(left_buttons)
 
-        left_hint = QLabel("Tip: leave Name empty to auto-generate it from Model.")
+        left_hint = QLabel("Tip: leave Name empty to auto-generate it from the model name.")
         left_hint.setObjectName("ModelSettingsMeta")
         left_hint.setWordWrap(True)
         left.addWidget(left_hint)
@@ -107,11 +143,27 @@ class ModelSettingsDialog(QDialog):
         right_container = QFrame()
         right_container.setObjectName("ModelSettingsPane")
         right = QVBoxLayout(right_container)
-        right.setContentsMargins(10, 10, 10, 10)
-        right.setSpacing(8)
-        right_label = QLabel("Profile")
+        right.setContentsMargins(12, 12, 12, 12)
+        right.setSpacing(10)
+
+        right_header = QHBoxLayout()
+        right_header.setContentsMargins(0, 0, 0, 0)
+        right_header.setSpacing(6)
+        right_label = QLabel("Profile Details")
         right_label.setObjectName("SectionTitle")
-        right.addWidget(right_label)
+        right_header.addWidget(right_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+
+        self.profile_state_chip = QLabel("No profile selected")
+        self.profile_state_chip.setObjectName("ModelSettingsChip")
+        right_header.addWidget(self.profile_state_chip, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        right_header.addStretch(1)
+
+        self.duplicate_button = QPushButton("Duplicate")
+        self.duplicate_button.setObjectName("ModelSettingsInlineButton")
+        self.duplicate_button.setIcon(_fa_icon("fa5s.copy", color=TEXT_PRIMARY, size=11))
+        self.duplicate_button.setEnabled(False)
+        right_header.addWidget(self.duplicate_button, 0, Qt.AlignRight | Qt.AlignVCenter)
+        right.addLayout(right_header)
 
         self.form_hint = QLabel("Select a profile and edit fields on the right.")
         self.form_hint.setObjectName("ModelSettingsMeta")
@@ -124,53 +176,127 @@ class ModelSettingsDialog(QDialog):
         self.save_state_label.setVisible(False)
         right.addWidget(self.save_state_label)
 
+        self.summary_card = QFrame()
+        self.summary_card.setObjectName("ModelSettingsSummaryCard")
+        summary_layout = QHBoxLayout(self.summary_card)
+        summary_layout.setContentsMargins(10, 8, 10, 8)
+        summary_layout.setSpacing(8)
+
+        self.summary_provider = QLabel("Provider: —")
+        self.summary_provider.setObjectName("ModelSettingsSummaryLabel")
+        self.summary_model = QLabel("Model: —")
+        self.summary_model.setObjectName("ModelSettingsSummaryLabel")
+        self.summary_images = QLabel("Image input: off")
+        self.summary_images.setObjectName("ModelSettingsSummaryLabel")
+        summary_layout.addWidget(self.summary_provider)
+        summary_layout.addWidget(self.summary_model, 1)
+        summary_layout.addWidget(self.summary_images)
+        right.addWidget(self.summary_card)
+
         form_frame = QFrame()
         form_frame.setObjectName("ModelSettingsFormCard")
         form_layout = QFormLayout(form_frame)
         form_layout.setContentsMargins(10, 10, 10, 10)
         form_layout.setHorizontalSpacing(10)
         form_layout.setVerticalSpacing(8)
+        form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
+        form_layout.setRowWrapPolicy(QFormLayout.DontWrapRows)
         form_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         form_layout.setFormAlignment(Qt.AlignTop)
 
         self.name_edit = QLineEdit()
         self.name_edit.setPlaceholderText("profile-id")
+        self.name_edit.setClearButtonEnabled(True)
+        self.name_edit.setAccessibleName("Profile name")
+
         self.provider_combo = QComboBox()
         self.provider_combo.addItems(["openai", "gemini"])
+        self.provider_combo.setAccessibleName("Provider")
+
         self.model_edit = QLineEdit()
         self.model_edit.setPlaceholderText("e.g. openai/gpt-oss-120b or gemini-1.5-flash")
+        self.model_edit.setClearButtonEnabled(True)
+        self.model_edit.setAccessibleName("Model")
+
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setEchoMode(QLineEdit.Password)
         self.api_key_edit.setPlaceholderText("API key")
+        self.api_key_edit.setAccessibleName("API key")
+
+        self.api_key_reveal_button = QToolButton()
+        self.api_key_reveal_button.setObjectName("ModelSettingsInlineToolButton")
+        self.api_key_reveal_button.setIcon(_fa_icon("fa5s.eye", color=TEXT_MUTED, size=12))
+        self.api_key_reveal_button.setToolTip("Show or hide API key")
+        self.api_key_reveal_button.setAccessibleName("Toggle API key visibility")
+
+        self.api_key_copy_button = QToolButton()
+        self.api_key_copy_button.setObjectName("ModelSettingsInlineToolButton")
+        self.api_key_copy_button.setIcon(_fa_icon("fa5s.copy", color=TEXT_MUTED, size=12))
+        self.api_key_copy_button.setToolTip("Copy API key")
+        self.api_key_copy_button.setAccessibleName("Copy API key")
+
         self.base_url_edit = QLineEdit()
         self.base_url_edit.setPlaceholderText("https://api.openai.com/v1")
-        self.supports_images_checkbox = QCheckBox("Поддержка изображений")
-        self.supports_images_checkbox.setObjectName("ModelSupportsImagesCheckbox")
-        self.supports_images_checkbox.setToolTip("Разрешает прикреплять изображения для этого профиля.")
+        self.base_url_edit.setClearButtonEnabled(True)
+        self.base_url_edit.setAccessibleName("Base URL")
 
-        label_width = 76
-        name_label = QLabel("Name")
-        provider_label = QLabel("Provider")
-        model_label = QLabel("Model")
-        api_key_label = QLabel("API Key")
-        base_url_label = QLabel("Base URL")
-        images_label = QLabel("Images")
+        self.supports_images_checkbox = QCheckBox("Image input support")
+        self.supports_images_checkbox.setObjectName("ModelSupportsImagesCheckbox")
+        self.supports_images_checkbox.setToolTip("Allow image attachments for this profile.")
+        self.supports_images_checkbox.setAccessibleName("Image input support")
+
+        self.images_hint_label = QLabel("Enables sending images with prompts when the selected model supports vision input.")
+        self.images_hint_label.setObjectName("ModelSettingsHintText")
+        self.images_hint_label.setWordWrap(True)
+
+        api_key_row = QWidget()
+        api_key_row.setObjectName("ModelSettingsFieldRow")
+        api_key_layout = QHBoxLayout(api_key_row)
+        api_key_layout.setContentsMargins(0, 0, 0, 0)
+        api_key_layout.setSpacing(6)
+        api_key_layout.addWidget(self.api_key_edit, 1)
+        api_key_layout.addWidget(self.api_key_reveal_button, 0, Qt.AlignVCenter)
+        api_key_layout.addWidget(self.api_key_copy_button, 0, Qt.AlignVCenter)
+
+        images_row = QWidget()
+        images_layout = QVBoxLayout(images_row)
+        images_layout.setContentsMargins(0, 2, 0, 2)
+        images_layout.setSpacing(4)
+        images_layout.addWidget(self.supports_images_checkbox)
+        images_layout.addWidget(self.images_hint_label)
+
+        label_width = 84
+        name_label = QLabel("&Name")
+        provider_label = QLabel("&Provider")
+        model_label = QLabel("&Model")
+        api_key_label = QLabel("&API Key")
+        base_url_label = QLabel("Base &URL")
+        images_label = QLabel("I&mages")
         for label in (name_label, provider_label, model_label, api_key_label, base_url_label, images_label):
             label.setObjectName("ModelSettingsFieldLabel")
             label.setFixedWidth(label_width)
 
+        name_label.setBuddy(self.name_edit)
+        provider_label.setBuddy(self.provider_combo)
+        model_label.setBuddy(self.model_edit)
+        api_key_label.setBuddy(self.api_key_edit)
+        base_url_label.setBuddy(self.base_url_edit)
+        images_label.setBuddy(self.supports_images_checkbox)
+
         form_layout.addRow(name_label, self.name_edit)
         form_layout.addRow(provider_label, self.provider_combo)
         form_layout.addRow(model_label, self.model_edit)
-        form_layout.addRow(api_key_label, self.api_key_edit)
+        form_layout.addRow(api_key_label, api_key_row)
         form_layout.addRow(base_url_label, self.base_url_edit)
-        form_layout.addRow(images_label, self.supports_images_checkbox)
+        form_layout.addRow(images_label, images_row)
         right.addWidget(form_frame, 1)
 
         left_container.setMinimumWidth(320)
-        body.addWidget(left_container, 5)
-        body.addWidget(right_container, 9)
-        root.addLayout(body, 1)
+        right_container.setMinimumWidth(430)
+        self.body_splitter.addWidget(left_container)
+        self.body_splitter.addWidget(right_container)
+        self.body_splitter.setSizes([330, 580])
+        root.addWidget(self.body_splitter, 1)
 
         actions = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
         actions.setObjectName("ModelSettingsActions")
@@ -186,6 +312,8 @@ class ModelSettingsDialog(QDialog):
 
         self.add_button.clicked.connect(self._add_profile)
         self.delete_button.clicked.connect(self._delete_selected_profile)
+        self.duplicate_button.clicked.connect(self._duplicate_selected_profile)
+        self.search_edit.textChanged.connect(self._apply_profile_filter)
         if self.save_button is not None:
             self.save_button.clicked.connect(self._save_and_accept)
         if self.close_button is not None:
@@ -195,6 +323,8 @@ class ModelSettingsDialog(QDialog):
         self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
         self.model_edit.textChanged.connect(self._on_model_changed)
         self.api_key_edit.textChanged.connect(self._on_form_changed)
+        self.api_key_reveal_button.clicked.connect(self._toggle_api_key_visibility)
+        self.api_key_copy_button.clicked.connect(self._copy_api_key)
         self.base_url_edit.textChanged.connect(self._on_form_changed)
         self.supports_images_checkbox.checkStateChanged.connect(self._on_form_changed)
 
@@ -203,6 +333,7 @@ class ModelSettingsDialog(QDialog):
             self.profile_list.setCurrentRow(self._preferred_row_for_open())
         else:
             self._set_form_enabled(False)
+        self._refresh_profile_counts()
 
     def result_payload(self) -> dict[str, Any]:
         return dict(self._result_payload)
@@ -228,6 +359,41 @@ class ModelSettingsDialog(QDialog):
         text = str(message or "").strip()
         self.save_state_label.setText(text)
         self.save_state_label.setVisible(bool(text))
+
+    def _refresh_profile_counts(self) -> None:
+        total = len(self._profiles)
+        enabled = sum(1 for profile in self._profiles if bool(profile.get("enabled", True)))
+        self.profile_count_chip.setText(f"{total} total")
+        self.left_meta_chip.setText(f"{enabled} enabled")
+        active_name = str(self._active_profile or "").strip() or "none"
+        self.active_profile_label.setText(f"Active now: <span style='color:#10B981;font-weight:600'>{active_name}</span>")
+
+    def _apply_profile_filter(self, value: str) -> None:
+        self._filter_text = str(value or "").strip().lower()
+        visible_rows: list[int] = []
+        for row in range(self.profile_list.count()):
+            item = self.profile_list.item(row)
+            if item is None:
+                continue
+            haystack = " ".join((str(item.data(Qt.UserRole) or ""), str(item.toolTip() or ""))).lower()
+            should_hide = bool(self._filter_text) and self._filter_text not in haystack
+            item.setHidden(should_hide)
+            if not should_hide:
+                visible_rows.append(row)
+
+        current_row = self.profile_list.currentRow()
+        if current_row < 0:
+            if visible_rows:
+                self.profile_list.setCurrentRow(visible_rows[0])
+            return
+
+        current_item = self.profile_list.item(current_row)
+        if current_item is not None and current_item.isHidden():
+            if visible_rows:
+                self.profile_list.setCurrentRow(visible_rows[0])
+            else:
+                self.profile_list.clearSelection()
+                self._sync_form_to_profile(-1)
 
     def _update_base_url_field_state(self, provider: str) -> None:
         provider_normalized = str(provider or "").strip().lower()
@@ -255,14 +421,41 @@ class ModelSettingsDialog(QDialog):
         details = " · ".join(part for part in (provider, model_name) if part)
         return f"{title}\n{details}" if details else title
 
+    def _refresh_profile_item_states(self) -> None:
+        current_row = self._current_row()
+        for row in range(self.profile_list.count()):
+            item = self.profile_list.item(row)
+            widget = self.profile_list.itemWidget(item) if item is not None else None
+            if widget is None:
+                continue
+            profile = self._profiles[row] if 0 <= row < len(self._profiles) else {}
+            is_selected = row == current_row and not bool(item.isHidden()) if item is not None else False
+            is_active = bool(str(profile.get("id") or "").strip() and str(profile.get("id") or "").strip() == self._active_profile)
+            is_enabled = bool(profile.get("enabled", True))
+            widget.setProperty("selectedProfile", is_selected)
+            widget.setProperty("activeProfile", is_active)
+            widget.setProperty("disabledProfile", not is_enabled)
+            widget.style().unpolish(widget)
+            widget.style().polish(widget)
+
+    def _toggle_api_key_visibility(self) -> None:
+        reveal = self.api_key_edit.echoMode() != QLineEdit.Normal
+        self.api_key_edit.setEchoMode(QLineEdit.Normal if reveal else QLineEdit.Password)
+        icon_name = "fa5s.eye-slash" if reveal else "fa5s.eye"
+        self.api_key_reveal_button.setIcon(_fa_icon(icon_name, color=TEXT_MUTED, size=12))
+
+    def _copy_api_key(self) -> None:
+        QApplication.clipboard().setText(self.api_key_edit.text())
+        self._set_save_state("API key copied to clipboard.")
+
     def _build_profile_item_widget(self, profile: dict[str, Any], row: int) -> QWidget:
         container = QWidget()
-        container.setObjectName("ModelProfileItemWidget")
+        container.setObjectName("ModelProfileRowCard")
         is_enabled = bool(profile.get("enabled", True))
         container.setProperty("disabledProfile", not is_enabled)
         layout = QHBoxLayout(container)
-        layout.setContentsMargins(4, 3, 2, 3)
-        layout.setSpacing(10)
+        layout.setContentsMargins(14, 10, 12, 10)
+        layout.setSpacing(12)
 
         text_column = QVBoxLayout()
         text_column.setContentsMargins(0, 0, 0, 0)
@@ -277,17 +470,21 @@ class ModelSettingsDialog(QDialog):
         title_label = QLabel(profile_id)
         title_label.setObjectName("ModelProfileItemTitle")
         title_label.setEnabled(is_enabled)
+        title_label.setMargin(0)
+        title_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         title_label.setMinimumWidth(0)
         title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         first_row.addWidget(title_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
 
         if is_active:
-            active_label = QLabel("• active")
-            active_label.setObjectName("ModelProfileItemActive")
+            active_label = QLabel("Active")
+            active_label.setObjectName("ModelProfileItemBadge")
+            active_label.setProperty("badgeVariant", "active")
             first_row.addWidget(active_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
         elif not is_enabled:
-            disabled_label = QLabel("• disabled")
-            disabled_label.setObjectName("ModelProfileItemMeta")
+            disabled_label = QLabel("Disabled")
+            disabled_label.setObjectName("ModelProfileItemBadge")
+            disabled_label.setProperty("badgeVariant", "muted")
             first_row.addWidget(disabled_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
 
         first_row.addStretch(1)
@@ -299,6 +496,8 @@ class ModelSettingsDialog(QDialog):
         details_label = QLabel(details)
         details_label.setObjectName("ModelProfileItemMeta")
         details_label.setEnabled(is_enabled)
+        details_label.setMargin(0)
+        details_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         details_label.setWordWrap(False)
         details_label.setMinimumWidth(0)
         details_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
@@ -316,6 +515,11 @@ class ModelSettingsDialog(QDialog):
         enabled_switch.pressed.connect(lambda target_row=row: self.profile_list.setCurrentRow(target_row))
         enabled_switch.toggled.connect(lambda checked, target_row=row: self._toggle_profile_enabled(target_row, checked))
         layout.addWidget(enabled_switch, 0, Qt.AlignRight | Qt.AlignVCenter)
+        container.ensurePolished()
+        title_label.ensurePolished()
+        details_label.ensurePolished()
+        title_label.setMinimumHeight(title_label.fontMetrics().height() + 6)
+        details_label.setMinimumHeight(details_label.fontMetrics().height() + 4)
         container.adjustSize()
         return container
 
@@ -326,8 +530,10 @@ class ModelSettingsDialog(QDialog):
             item_widget = self._build_profile_item_widget(profile, row)
             item = QListWidgetItem("")
             item.setData(Qt.UserRole, self._display_name(profile))
+            item_widget.ensurePolished()
             widget_hint = item_widget.sizeHint()
-            item_height = max(48, widget_hint.height() + 4)
+            minimum_hint = item_widget.minimumSizeHint()
+            item_height = max(72, widget_hint.height(), minimum_hint.height()) + 6
             item.setSizeHint(QSize(widget_hint.width(), item_height))
             provider = str(profile.get("provider") or "").strip()
             model_name = str(profile.get("model") or "").strip()
@@ -343,11 +549,18 @@ class ModelSettingsDialog(QDialog):
             self._selected_row = -1
             self._set_form_enabled(False)
             self.form_hint.setText("Add a profile to start configuring models.")
+            self.profile_state_chip.setText("No profile selected")
+            self.summary_provider.setText("Provider: —")
+            self.summary_model.setText("Model: —")
+            self.summary_images.setText("Image input: off")
+            self.duplicate_button.setEnabled(False)
             return
 
         row = preferred_row if preferred_row is not None else self._preferred_row_for_open()
         row = max(0, min(row, len(self._profiles) - 1))
         self.profile_list.setCurrentRow(row)
+        self._apply_profile_filter(self.search_edit.text())
+        self._refresh_profile_item_states()
 
     def _preferred_row_for_open(self) -> int:
         active_id = str(self._active_profile or "").strip()
@@ -362,6 +575,12 @@ class ModelSettingsDialog(QDialog):
             self._selected_row = -1
             self._set_form_enabled(False)
             self.form_hint.setText("Select a profile and edit fields on the right.")
+            self.profile_state_chip.setText("No profile selected")
+            self.summary_provider.setText("Provider: —")
+            self.summary_model.setText("Model: —")
+            self.summary_images.setText("Image input: off")
+            self.duplicate_button.setEnabled(False)
+            self._refresh_profile_item_states()
             return
         profile = self._profiles[row]
         self._loading_form = True
@@ -381,8 +600,18 @@ class ModelSettingsDialog(QDialog):
         profile_id = str(profile.get("id") or "").strip() or "(unnamed)"
         status = "enabled" if bool(profile.get("enabled", True)) else "disabled"
         self.form_hint.setText(f"Editing profile: {profile_id} ({status})")
-        active_name = str(self._active_profile or "").strip() or "none"
-        self.active_profile_label.setText(f"Active now: {active_name}")
+        is_active = bool(profile_id != "(unnamed)" and profile_id == self._active_profile)
+        self.profile_state_chip.setText("Active profile" if is_active else status.title())
+        self.duplicate_button.setEnabled(True)
+        provider_text = str(profile.get("provider") or "—").strip() or "—"
+        model_name = str(profile.get("model") or "—").strip() or "—"
+        self.summary_provider.setText(f"Provider: {provider_text}")
+        self.summary_model.setText(f"Model: {model_name}")
+        self.summary_images.setText(
+            "Image input: on" if bool(profile.get("supports_image_input")) else "Image input: off"
+        )
+        self._refresh_profile_counts()
+        self._refresh_profile_item_states()
 
     def _sync_current_profile_from_form(self, row: int | None = None) -> None:
         if self._loading_form:
@@ -405,7 +634,12 @@ class ModelSettingsDialog(QDialog):
         }
         item = self.profile_list.item(target_row)
         if item is not None:
-            item.setText(self._display_name(self._profiles[target_row]))
+            item.setData(Qt.UserRole, self._display_name(self._profiles[target_row]))
+            provider_text = str(self._profiles[target_row].get("provider") or "").strip()
+            model_name = str(self._profiles[target_row].get("model") or "").strip()
+            enabled = "yes" if bool(self._profiles[target_row].get("enabled", True)) else "no"
+            item.setToolTip(f"Provider: {provider_text}\nModel: {model_name}\nEnabled: {enabled}".strip())
+        self._refresh_profile_counts()
 
     def _reconcile_active_profile(self) -> None:
         enabled_ids = [
@@ -432,6 +666,7 @@ class ModelSettingsDialog(QDialog):
         self._reconcile_active_profile()
         self._set_save_state("")
         self._refresh_profile_list(preferred_row=row)
+        self._refresh_profile_counts()
 
     def _suggest_unique_id(self, model_text: str, *, row: int) -> str:
         used = {
@@ -507,6 +742,22 @@ class ModelSettingsDialog(QDialog):
         self._name_manual_flags.append(False)
         self._set_save_state("")
         self._refresh_profile_list(preferred_row=len(self._profiles) - 1)
+        self.name_edit.setFocus()
+
+    def _duplicate_selected_profile(self) -> None:
+        row = self._current_row()
+        if row < 0 or row >= len(self._profiles):
+            return
+        self._sync_current_profile_from_form(self._selected_row)
+        source = dict(self._profiles[row])
+        duplicated = dict(source)
+        duplicated["id"] = ""
+        duplicated["enabled"] = bool(source.get("enabled", True))
+        self._profiles.insert(row + 1, duplicated)
+        self._name_manual_flags.insert(row + 1, False)
+        self._set_save_state("Duplicated profile. Rename it before saving if needed.")
+        self._refresh_profile_list(preferred_row=row + 1)
+        self.name_edit.setFocus()
 
     def _delete_selected_profile(self) -> None:
         row = self._current_row()
@@ -523,6 +774,7 @@ class ModelSettingsDialog(QDialog):
 
         self._set_save_state("")
         self._refresh_profile_list(preferred_row=row)
+        self._refresh_profile_counts()
 
     def _validated_payload(self) -> dict[str, Any] | None:
         self._sync_current_profile_from_form(self._selected_row)
@@ -534,11 +786,11 @@ class ModelSettingsDialog(QDialog):
             model_name = str(profile.get("model") or "").strip()
             if provider not in ALLOWED_PROVIDERS:
                 self.profile_list.setCurrentRow(idx)
-                QMessageBox.warning(self, "Validation", "Provider должен быть openai или gemini.")
+                QMessageBox.warning(self, "Validation", "Provider must be openai or gemini.")
                 return None
             if not model_name:
                 self.profile_list.setCurrentRow(idx)
-                QMessageBox.warning(self, "Validation", "Model не может быть пустым.")
+                QMessageBox.warning(self, "Validation", "Model cannot be empty.")
                 return None
 
             requested_id = sanitize_profile_id(profile.get("id") or "")
@@ -574,6 +826,7 @@ class ModelSettingsDialog(QDialog):
         current_row = self._current_row()
         preferred_row = current_row if current_row >= 0 else self._preferred_row_for_open()
         self._refresh_profile_list(preferred_row=preferred_row)
+        self._refresh_profile_counts()
         self._set_save_state("Saved. You can keep this window open and continue editing.")
         self.profiles_saved.emit(dict(self._result_payload))
 
@@ -658,4 +911,3 @@ class ApprovalDialog(QDialog):
     def _deny(self) -> None:
         self.choice = (False, False)
         self.reject()
-
