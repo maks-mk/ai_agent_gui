@@ -91,13 +91,7 @@ def _normalize_command(command: Union[str, List[str]]) -> List[str]:
 
 @tool("run_background_process")
 def run_background_process(command: Union[str, List[str]], cwd: str = ".") -> str:
-    """
-    Starts a background process with a validated working directory and argv-like command.
-
-    Args:
-        command: Either a list of command arguments or a simple shell-free command string.
-        cwd: Working directory inside the current workspace (default ".").
-    """
+    """Start a background process in a workspace cwd. Pass argv list or simple shell-free command string."""
     # Clean up dead processes first
     _cleanup_zombies()
     
@@ -135,9 +129,7 @@ def run_background_process(command: Union[str, List[str]], cwd: str = ".") -> st
 
 @tool("stop_background_process")
 def stop_background_process(pid: int) -> str:
-    """
-    Stops a background process by PID.
-    """
+    """Stop a tracked background process by PID."""
     _cleanup_zombies()
     
     try:
@@ -174,9 +166,7 @@ def stop_background_process(pid: int) -> str:
 
 @tool("find_process_by_port")
 def find_process_by_port(port: int) -> str:
-    """
-    Finds a process PID listening on a specific port.
-    """
+    """Find the PID listening on a port."""
     try:
         if psutil is None:
             return format_error(ErrorType.CONFIG, "psutil is required for process inspection tools.")

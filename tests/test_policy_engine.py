@@ -1,12 +1,10 @@
 import unittest
 
-from core.policy_engine import PolicyEngine, classify_shell_command
+from core.policy_engine import classify_shell_command, shell_command_requires_approval, tool_requires_approval
+from core.tool_policy import ToolMetadata
 
 
-class PolicyEngineTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.engine = PolicyEngine()
-
+class ToolApprovalPolicyTests(unittest.TestCase):
     def test_classify_shell_command_detects_inspect_only(self):
         profile = classify_shell_command("Get-Process | Select-Object Id,ProcessName")
         self.assertTrue(profile["inspect_only"])
@@ -33,79 +31,47 @@ class PolicyEngineTests(unittest.TestCase):
         self.assertTrue(profile["mutating"])
         self.assertFalse(profile["inspect_only"])
 
-    def test_tool_call_allowed_for_inspect_turn(self):
-        decision = self.engine.tool_call_allowed_for_turn(
-            {"name": "read_file", "args": {"path": "README.md"}},
-            inspect_only=True,
-            tool_is_read_only=lambda name: name == "read_file",
-        )
-        self.assertTrue(decision.allowed)
+    def test_shell_approval_skips_read_only_commands(self):
+        self.assertFalse(shell_command_requires_approval("ping google.com; curl -I https://ya.ru"))
 
-    def test_cli_exec_network_probe_allowed_in_inspect_turn(self):
-        decision = self.engine.tool_call_allowed_for_turn(
-            {"name": "cli_exec", "args": {"command": "ping google.com; curl -I https://ya.ru"}},
-            inspect_only=True,
-            tool_is_read_only=lambda _name: False,
-        )
-        self.assertTrue(decision.allowed)
+    def test_shell_approval_requires_mutating_commands(self):
+        self.assertTrue(shell_command_requires_approval("taskkill /IM node.exe /F"))
+        self.assertTrue(shell_command_requires_approval("npm run dev"))
+        self.assertTrue(shell_command_requires_approval("curl -X POST https://example.com -d 'x=1'"))
 
-    def test_cli_exec_mutating_command_blocked_in_inspect_turn(self):
-        decision = self.engine.tool_call_allowed_for_turn(
-            {"name": "cli_exec", "args": {"command": "taskkill /IM node.exe /F"}},
-            inspect_only=True,
-            tool_is_read_only=lambda _name: False,
+    def test_tool_approval_uses_metadata_for_non_shell_tools(self):
+        self.assertFalse(
+            tool_requires_approval(
+                "read_file",
+                metadata=ToolMetadata(name="read_file", read_only=True),
+            )
         )
-        self.assertFalse(decision.allowed)
-        self.assertEqual(decision.reason, "cli_exec_non_inspect")
+        self.assertTrue(
+            tool_requires_approval(
+                "edit_file",
+                metadata=ToolMetadata(name="edit_file", mutating=True),
+            )
+        )
+        self.assertTrue(
+            tool_requires_approval(
+                "safe_delete_file",
+                metadata=ToolMetadata(name="safe_delete_file", destructive=True),
+            )
+        )
 
-    def test_choose_fallback_tool_names_prefers_read_only(self):
-        chosen = self.engine.choose_fallback_tool_names(
-            preferred_tool_names=["run_background_process", "find_process_by_port"],
-            recent_tool_names=["find_process_by_port", "stop_background_process"],
-            all_tool_names=["run_background_process", "find_process_by_port", "stop_background_process"],
-            prefer_read_only=True,
-            tool_is_read_only=lambda name: name == "find_process_by_port",
+    def test_tool_approval_respects_global_disable(self):
+        self.assertFalse(
+            tool_requires_approval(
+                "edit_file",
+                metadata=ToolMetadata(name="edit_file", mutating=True),
+                approvals_enabled=False,
+            )
         )
-        self.assertEqual(chosen, ["find_process_by_port"])
 
-    def test_evaluate_turn_detects_read_only_action_request(self):
-        decision = self.engine.evaluate_turn(
-            task="Проверь статус процесса на порту 8080",
-            messages=[],
-            current_turn_id=1,
-            is_internal_retry=lambda _msg: False,
-        )
-        self.assertTrue(decision.inspect_only)
-        self.assertEqual(decision.turn_mode, "inspect")
-        self.assertTrue(decision.requires_evidence)
-        self.assertTrue(decision.should_force_tools)
-        self.assertEqual(decision.intent, "inspect")
-
-    def test_evaluate_turn_treats_analysis_request_as_inspect_even_with_generic_make_verb(self):
-        decision = self.engine.evaluate_turn(
-            task="Сделай анализ кода в папке",
-            messages=[],
-            current_turn_id=1,
-            is_internal_retry=lambda _msg: False,
-        )
-        self.assertTrue(decision.inspect_only)
-        self.assertEqual(decision.turn_mode, "inspect")
-        self.assertTrue(decision.requires_evidence)
-        self.assertTrue(decision.should_force_tools)
-        self.assertEqual(decision.intent, "inspect")
-
-    def test_evaluate_turn_does_not_treat_plain_slash_text_as_path_hint(self):
-        decision = self.engine.evaluate_turn(
-            task="Какая производительность у моделей на видеокартах типа 4090/5090 16gb?",
-            messages=[],
-            current_turn_id=1,
-            is_internal_retry=lambda _msg: False,
-        )
-        self.assertFalse(decision.inspect_only)
-        self.assertEqual(decision.turn_mode, "chat")
-        self.assertFalse(decision.requires_evidence)
-        self.assertFalse(decision.should_force_tools)
-        self.assertEqual(decision.intent, "chat")
+    def test_cli_exec_approval_uses_command_profile(self):
+        self.assertFalse(tool_requires_approval("cli_exec", {"command": "Get-Process"}))
+        self.assertTrue(tool_requires_approval("cli_exec", {"command": "Remove-Item demo.txt"}))
+        self.assertTrue(tool_requires_approval("cli_exec", {"command": ""}))
 
 
 if __name__ == "__main__":

@@ -20,6 +20,10 @@ _MCP_POLICY_FIELDS = (
 )
 
 
+def _compact_text(value: Any) -> str:
+    return " ".join(str(value or "").split())
+
+
 @dataclass(frozen=True)
 class ToolLoaderSpec:
     name: str
@@ -277,6 +281,24 @@ class ToolRegistry:
             return metadata
         return default_tool_metadata(tool_name)
 
+    @staticmethod
+    def _optimize_tool_description(tool: BaseTool) -> None:
+        """Minimize tool metadata sent to the model without changing call shape."""
+        compact_description = _compact_text(getattr(tool, "description", ""))
+        if compact_description:
+            try:
+                tool.description = compact_description
+            except Exception:
+                logger.debug("Failed to compact description for tool %s", getattr(tool, "name", ""), exc_info=True)
+
+        args_schema = getattr(tool, "args_schema", None)
+        schema_doc = _compact_text(getattr(args_schema, "__doc__", ""))
+        if args_schema is not None and compact_description and schema_doc == compact_description:
+            try:
+                args_schema.__doc__ = None
+            except Exception:
+                logger.debug("Failed to strip duplicate args schema doc for %s", getattr(tool, "name", ""), exc_info=True)
+
     def _record_loader_status(
         self,
         *,
@@ -302,6 +324,7 @@ class ToolRegistry:
             loaded_tools: List[BaseTool] = []
             for attr_name in self._iter_spec_tool_names(spec, module):
                 tool = getattr(module, attr_name)
+                self._optimize_tool_description(tool)
                 loaded_tools.append(tool)
                 metadata = self._metadata_for_spec_attr(spec, attr_name, tool.name)
                 self.tool_metadata[tool.name] = metadata
@@ -555,6 +578,7 @@ class ToolRegistry:
                 if mcp_tools:
                     self.tools.extend(mcp_tools)
                     for tool in mcp_tools:
+                        self._optimize_tool_description(tool)
                         metadata = self._infer_mcp_metadata(
                             tool,
                             server_policy=server_policy,

@@ -66,7 +66,7 @@ def _render_network_error(exc: Exception) -> str:
 
 @tool("get_public_ip")
 async def get_public_ip() -> str:
-    """Gets public IPv4/IPv6 address and ISP info."""
+    """Get public IP and ISP info."""
     try:
         return _format_result(await get_net_client().my_ip())
     except Exception as e:
@@ -75,7 +75,7 @@ async def get_public_ip() -> str:
 
 @tool("lookup_ip_info")
 async def lookup_ip_info(ip: str) -> str:
-    """Looks up geolocation, ASN, and ISP details for a given IP address."""
+    """Look up IP geolocation, ASN, and ISP."""
     try:
         return _format_result(await get_net_client().get_ip_info(ip))
     except Exception as e:
@@ -105,7 +105,7 @@ def _get_system_info_sync() -> str:
 
 @tool("get_system_info")
 async def get_system_info() -> str:
-    """Returns real-time OS, CPU, RAM and Disk usage statistics."""
+    """Get OS, CPU, RAM, and disk stats."""
     return await asyncio.to_thread(_get_system_info_sync)
 
 
@@ -126,5 +126,5 @@ def _get_local_network_info_sync() -> str:
 
 @tool("get_local_network_info")
 async def get_local_network_info() -> str:
-    """Lists local IP addresses, hostnames, and active network interfaces."""
+    """List hostname, local IPs, and interfaces."""
     return await asyncio.to_thread(_get_local_network_info_sync)

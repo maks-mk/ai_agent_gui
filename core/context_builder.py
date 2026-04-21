@@ -360,10 +360,6 @@ class ContextBuilder:
         overlay_lines.append(
             "SAFETY POLICY: Any write, delete, move, or process-launch working directory must stay inside the active workspace."
         )
-        if self.config.enable_approvals:
-            overlay_lines.append(
-                "LEGACY POLICY: Some protected tools may still request explicit approval when approvals are enabled."
-            )
         if self.config.enable_shell_tool:
             overlay_lines.append(
                 "SAFETY POLICY: Shell execution is high risk. Prefer safer project-local tools whenever possible."

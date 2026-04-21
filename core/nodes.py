@@ -33,7 +33,7 @@ from core.tool_args import canonicalize_tool_args, inspect_tool_args_payload
 from core.utils import truncate_output
 from core.errors import format_error, ErrorType
 from core.message_context import MessageContextHelper
-from core.policy_engine import PolicyEngine, classify_shell_command, shell_command_requires_approval, tool_requires_approval
+from core.policy_engine import classify_shell_command, shell_command_requires_approval, tool_requires_approval
 from core.message_utils import compact_text, is_error_text, stringify_content
 from core.self_correction_engine import normalize_tool_args, repair_fingerprint
 from core.text_utils import format_exception_friendly
@@ -53,6 +53,11 @@ class ProviderContextError(RuntimeError):
     """Raised when the agent context violates provider message-ordering constraints."""
     pass
 
+
+class EmptyLLMResponseError(RuntimeError):
+    """Raised when the provider returns no content, tool calls, or invalid-call details."""
+    pass
+
 logger = logging.getLogger("agent")
 
 
@@ -68,7 +73,6 @@ class AgentNodes:
         "run_logger",
         "_cached_base_prompt",
         "message_context",
-        "policy_engine",
         "context_builder",
         "recovery_manager",
         "tool_executor",
@@ -111,19 +115,6 @@ class AgentNodes:
         }
     )
     PROVIDER_SAFE_TOOL_CALL_ID_RE = re.compile(r"^[A-Za-z0-9]{9}$")
-    PATCH_STYLE_MARKERS = (
-        "```",
-        "*** Begin Patch",
-        "*** Update File:",
-        "*** Add File:",
-        "*** Delete File:",
-        "diff --git",
-        "@@",
-    )
-    PLAINTEXT_TOOL_CALL_TAG_RE = re.compile(
-        r"<\s*/?\s*(?:tool(?:[_-]?[a-z0-9]+)?|tool_call|function(?:_call)?)\b",
-        re.IGNORECASE,
-    )
     def __init__(
         self,
         config: AgentConfig,
@@ -144,7 +135,6 @@ class AgentNodes:
         self.tool_metadata = tool_metadata or {}
         self.run_logger = run_logger
         self.message_context = MessageContextHelper()
-        self.policy_engine = PolicyEngine()
         self.recovery_manager = RecoveryManager()
 
         # Оптимизация: кэширование базового промпта (чтобы не читать с диска на каждый шаг)
@@ -491,47 +481,6 @@ class AgentNodes:
             )
             return {}
 
-    async def classify_turn_node(self, state: AgentState):
-        node_timer = self._log_node_start(
-            state,
-            "classify_turn",
-            message_count=len(state.get("messages") or []),
-        )
-        messages = state.get("messages") or []
-        current_task = self._resolve_current_task(state, messages)
-        current_turn_id = self._current_turn_id(state, messages)
-        decision = self.policy_engine.evaluate_turn(
-            task=current_task,
-            messages=messages,
-            current_turn_id=current_turn_id,
-            is_internal_retry=self._is_internal_retry_message,
-        )
-        recovery_state = self._get_recovery_state(state, current_turn_id=current_turn_id)
-        self._log_run_event(
-            state,
-            "intent_decision",
-            run_id=state.get("run_id", ""),
-            intent=decision.intent,
-            turn_mode=decision.turn_mode,
-            inspect_only=decision.inspect_only,
-            requires_evidence=decision.requires_evidence,
-            task_preview=compact_text(current_task, 180),
-        )
-        self._log_node_end(
-            state,
-            "classify_turn",
-            node_timer,
-            turn_mode=decision.turn_mode,
-            requires_evidence=decision.requires_evidence,
-        )
-        return {
-            "current_task": current_task,
-            "turn_id": current_turn_id,
-            "turn_mode": decision.turn_mode,
-            "requires_evidence": decision.requires_evidence,
-            "recovery_state": recovery_state,
-        }
-
     def _format_history_for_summary(self, messages: List[BaseMessage]) -> str:
         return format_history_for_summary(messages, is_internal_retry=self._is_internal_retry_message)
 
@@ -737,84 +686,6 @@ class AgentNodes:
             },
         )
 
-    def _current_turn_has_tool_evidence(self, messages: List[BaseMessage]) -> bool:
-        return self.message_context.current_turn_has_tool_evidence(
-            messages,
-            self._is_internal_retry_message,
-        )
-
-    def _current_turn_tool_messages(self, messages: List[BaseMessage]) -> List[ToolMessage]:
-        human_indexes = self.message_context.non_internal_human_indexes(
-            messages,
-            self._is_internal_retry_message,
-        )
-        if not human_indexes:
-            return []
-        return [
-            message
-            for message in messages[human_indexes[-1] + 1 :]
-            if isinstance(message, ToolMessage)
-        ]
-
-    def _current_turn_has_non_read_only_tool_evidence(self, messages: List[BaseMessage]) -> bool:
-        for message in self._current_turn_tool_messages(messages):
-            tool_name = str(message.name or "").strip()
-            if not tool_name or self._tool_is_read_only(tool_name):
-                continue
-            parsed = parse_tool_execution_result(stringify_content(message.content))
-            status = str(getattr(message, "status", "") or "").strip().lower()
-            if parsed.ok or status == "success":
-                return True
-        return False
-
-    def _response_looks_like_unapplied_code(self, content: Any) -> bool:
-        text = stringify_content(content).strip()
-        if not text:
-            return False
-        if any(marker in text for marker in self.PATCH_STYLE_MARKERS):
-            return True
-        if re.search(r"```(?:[\w.+-]+)?\s*\n[\s\S]+?\n```", text):
-            return True
-
-        non_empty_lines = [line.rstrip() for line in text.splitlines() if line.strip()]
-        if len(non_empty_lines) < 6:
-            return False
-
-        code_like_lines = 0
-        narrative_lines = 0
-        for line in non_empty_lines:
-            stripped = line.strip()
-            if re.match(r"^(?:[-*]\s|#{1,6}\s|\d+\.\s)", stripped):
-                narrative_lines += 1
-                continue
-            if re.search(
-                r"^(def|class|function|const|let|var|if|else|for|while|return|import|from)\b",
-                stripped,
-            ):
-                code_like_lines += 1
-                continue
-            if re.search(r"^(?:<[^>]+>|[{}])$", stripped):
-                code_like_lines += 1
-                continue
-            if "=>" in stripped or stripped.endswith(";"):
-                code_like_lines += 1
-                continue
-            if re.search(r"\b[A-Za-z_][A-Za-z0-9_]*\s*\(", stripped) and len(stripped.split()) <= 8:
-                code_like_lines += 1
-                continue
-            if re.search(r"^\s*[-+]{1,3}\s", line):
-                code_like_lines += 1
-                continue
-            narrative_lines += 1
-
-        return code_like_lines >= max(5, len(non_empty_lines) - 1) and narrative_lines <= 1
-
-    def _response_looks_like_plaintext_tool_invocation(self, content: Any) -> bool:
-        text = stringify_content(content).strip()
-        if not text:
-            return False
-        return bool(self.PLAINTEXT_TOOL_CALL_TAG_RE.search(text))
-
     def _hide_message_from_ui(
         self,
         message: AIMessage,
@@ -966,9 +837,6 @@ class AgentNodes:
         open_tool_issue: Dict[str, Any] | None = None,
         recovery_state: Dict[str, Any] | None = None,
         allowed_tool_names: List[str] | None = None,
-        should_force_tools: bool = False,
-        inspect_only_turn: bool = False,
-        current_turn_has_tool_evidence: bool = False,
     ) -> Dict[str, Any]:
         token_usage_update = {}
         if getattr(response, "usage_metadata", None):
@@ -1079,99 +947,6 @@ class AgentNodes:
                     id=response.id,
                 )
                 has_tool_calls = False
-
-            response_preview = stringify_content(response.content).strip()
-            if (
-                tools_available
-                and not has_tool_calls
-                and protocol_issue is None
-                and (
-                    should_force_tools
-                    or current_turn_has_tool_evidence
-                    or open_tool_issue is not None
-                )
-                and self._response_looks_like_plaintext_tool_invocation(response_preview)
-            ):
-                protocol_issue = self._build_protocol_open_tool_issue(
-                    current_turn_id=turn_id,
-                    summary=(
-                        "Модель вывела имитацию tool call обычным текстом вместо структурированного вызова инструмента."
-                    ),
-                    reason="tool_protocol_error",
-                    source="agent",
-                    tool_names=list(allowed_tool_names or []),
-                    tool_args={},
-                    details={
-                        "allowed_tool_names": list(allowed_tool_names or []),
-                        "response_kind": "plaintext_tool_invocation",
-                    },
-                    response_preview=response_preview,
-                )
-                protocol_error = self._merge_protocol_error_text(
-                    protocol_error,
-                    "INTERNAL TOOL PROTOCOL ERROR: do not emit pseudo-tool markup in plain text. "
-                    "Use a valid structured tool call payload instead.",
-                )
-
-            if (
-                tools_available
-                and should_force_tools
-                and not has_tool_calls
-                and not current_turn_has_tool_evidence
-                and protocol_issue is None
-            ):
-                if response_preview:
-                    protocol_issue = self._build_protocol_open_tool_issue(
-                        current_turn_id=turn_id,
-                        summary=(
-                            "Запрос требует проверяемого действия или инструментального подтверждения, "
-                            "но модель завершила шаг обычным текстом без валидного tool call."
-                        ),
-                        reason="action_requires_tools",
-                        source="agent",
-                        tool_names=list(allowed_tool_names or []),
-                        tool_args={},
-                        details={"allowed_tool_names": list(allowed_tool_names or [])},
-                        response_preview=response_preview,
-                    )
-                    protocol_error = self._merge_protocol_error_text(
-                        protocol_error,
-                        "ACTION REQUIRES TOOLS: do not stop at prose. Continue with a valid tool call or a real blocking reason."
-                    )
-            elif (
-                tools_available
-                and should_force_tools
-                and not inspect_only_turn
-                and not has_tool_calls
-                and protocol_issue is None
-            ):
-                if (
-                    response_preview
-                    and current_turn_has_tool_evidence
-                    and not self._current_turn_has_non_read_only_tool_evidence(messages)
-                    and self._response_looks_like_unapplied_code(response_preview)
-                ):
-                    protocol_issue = self._build_protocol_open_tool_issue(
-                        current_turn_id=turn_id,
-                        summary=(
-                            "После read-only шага модель вывела код или патч как обычный текст, "
-                            "но не выполнила реальное изменение через инструмент."
-                        ),
-                        reason="code_dump_after_read_only_evidence",
-                        source="agent",
-                        tool_names=list(allowed_tool_names or []),
-                        tool_args={},
-                        details={
-                            "allowed_tool_names": list(allowed_tool_names or []),
-                            "response_kind": "code_without_tool_call",
-                            "evidence_kind": "read_only_only",
-                        },
-                        response_preview=response_preview,
-                    )
-                    protocol_error = self._merge_protocol_error_text(
-                        protocol_error,
-                        "ACTION REQUIRES TOOLS: do not print unapplied code after inspection. Use a valid edit/exec tool call or explain a real external blocker."
-                    )
 
             if protocol_issue is not None and not has_tool_calls:
                 response = self._hide_message_from_ui(
@@ -1319,40 +1094,19 @@ class AgentNodes:
         open_tool_issue = self._get_active_open_tool_issue(state, messages, current_turn_id)
         recovery_state = self._get_recovery_state(state, current_turn_id=current_turn_id)
 
-        turn_mode = str(state.get("turn_mode") or "").strip().lower()
-        requires_evidence = state.get("requires_evidence")
-        if turn_mode not in {"chat", "inspect", "act", "recover"} or requires_evidence is None:
-            fallback_policy = self.policy_engine.evaluate_turn(
-                task=current_task,
-                messages=messages,
-                current_turn_id=current_turn_id,
-                is_internal_retry=self._is_internal_retry_message,
-            )
-            turn_mode = fallback_policy.turn_mode
-            requires_evidence = fallback_policy.requires_evidence
-        else:
-            requires_evidence = bool(requires_evidence)
-        turn_mode = turn_mode or "chat"
         active_tools, active_tool_names = self._active_tools_for_turn(
             state,
             messages,
-            current_turn_id=current_turn_id,
-            recovery_state=recovery_state,
-            turn_mode=turn_mode,
         )
         llm_for_turn = self._select_llm_for_active_tools(active_tools, active_tool_names)
         tools_available = bool(active_tool_names)
         user_choice_locked = self._current_turn_has_completed_user_choice(messages)
-        inspect_only_turn = turn_mode == "inspect"
-        current_turn_has_tool_evidence = self._current_turn_has_tool_evidence(messages)
         self._log_run_event(
             state,
-            "policy_decision",
+            "tool_context_selected",
             run_id=state.get("run_id", ""),
-            turn_mode=turn_mode,
-            inspect_only=inspect_only_turn,
-            requires_evidence=requires_evidence,
-            has_current_turn_evidence=current_turn_has_tool_evidence,
+            active_tool_count=len(active_tool_names),
+            user_choice_locked=user_choice_locked,
         )
         try:
             validation_handoff_reason = ""
@@ -1466,9 +1220,6 @@ class AgentNodes:
                 open_tool_issue=open_tool_issue,
                 recovery_state=recovery_state,
                 allowed_tool_names=active_tool_names,
-                should_force_tools=requires_evidence,
-                inspect_only_turn=inspect_only_turn,
-                current_turn_has_tool_evidence=current_turn_has_tool_evidence,
             )
             if result.pop("_retry_user_input_turn", False):
                 self._log_run_event(
@@ -1506,9 +1257,6 @@ class AgentNodes:
                     open_tool_issue=open_tool_issue,
                     recovery_state=recovery_state,
                     allowed_tool_names=active_tool_names,
-                    should_force_tools=requires_evidence,
-                    inspect_only_turn=inspect_only_turn,
-                    current_turn_has_tool_evidence=current_turn_has_tool_evidence,
                 )
                 result.pop("_retry_user_input_turn", None)
             if result.get("open_tool_issue") and result.get("has_protocol_error"):
@@ -1534,6 +1282,34 @@ class AgentNodes:
                 has_open_tool_issue=bool(open_tool_issue),
             )
             return result
+        except EmptyLLMResponseError as e:
+            self._log_node_error(
+                state,
+                "agent",
+                node_timer,
+                e,
+                tools_available=tools_available,
+                has_open_tool_issue=bool(open_tool_issue),
+                handled=True,
+            )
+            return {
+                "messages": [
+                    AIMessage(
+                        content=(
+                            "Модель вернула пустой ответ после повторных попыток. "
+                            "Я не выполнял дополнительных действий; повторите запрос или уточните формулировку."
+                        )
+                    )
+                ],
+                "current_task": current_task,
+                "turn_id": current_turn_id,
+                "turn_outcome": "finish_turn",
+                "pending_approval": None,
+                "open_tool_issue": None,
+                "has_protocol_error": False,
+                "last_tool_error": str(e),
+                "last_tool_result": "",
+            }
         except Exception as e:
             self._log_node_error(
                 state,
@@ -1621,7 +1397,6 @@ class AgentNodes:
 
         turn_outcome = "finish_turn"
         next_recovery_state = result["recovery_state"]
-        next_turn_mode = str(state.get("turn_mode") or "chat").strip().lower() or "chat"
         if result["turn_outcome"] == "recover_agent":
             prepared = self.recovery_manager.apply_recovery(
                 deepcopy(next_recovery_state),
@@ -1629,7 +1404,6 @@ class AgentNodes:
             )
             next_recovery_state = prepared["recovery_state"]
             turn_outcome = "recover_agent"
-            next_turn_mode = "recover"
             self._log_run_event(
                 state,
                 "recovery_prepared",
@@ -1661,8 +1435,6 @@ class AgentNodes:
         )
         payload = {
             "turn_outcome": turn_outcome,
-            "turn_mode": next_turn_mode,
-            "requires_evidence": True,
             "recovery_state": next_recovery_state,
             "open_tool_issue": result["open_tool_issue"],
             "has_protocol_error": result["has_protocol_error"],
@@ -1813,7 +1585,6 @@ class AgentNodes:
         _, active_tool_names = self._active_tools_for_turn(
             state,
             messages,
-            current_turn_id=current_turn_id,
         )
 
         # Оптимизация: собираем историю вызовов один раз, а не для каждого инструмента.
@@ -2266,10 +2037,6 @@ class AgentNodes:
         self,
         state: AgentState,
         messages: List[BaseMessage],
-        *,
-        current_turn_id: int | None = None,
-        recovery_state: Dict[str, Any] | None = None,
-        turn_mode: str | None = None,
     ) -> Tuple[List[BaseTool], List[str]]:
         if not self.config.model_supports_tools:
             return [], []
@@ -2409,7 +2176,7 @@ class AgentNodes:
                 response = await current_llm.ainvoke(normalized_context)
                 invalid_calls = getattr(response, "invalid_tool_calls", None)
                 if not response.content and not response.tool_calls and not invalid_calls:
-                    raise ValueError("Empty response from LLM")
+                    raise EmptyLLMResponseError("Empty response from LLM")
                 self._log_run_event(
                     state,
                     "llm_invoke_success",

@@ -1,37 +1,37 @@
 # Portable Autonomous AI Agent (GUI)
 
-Desktop AI-agent с графовым runtime (`LangGraph`) и интерфейсом на `PySide6`.
-Проект можно запускать из исходников (`python main.py`) или собрать в portable-режиме через `build.bat`.
+Десктопный AI-агент с runtime на `LangGraph` и графическим интерфейсом на `PySide6` для работы с кодом, файлами, shell-командами, MCP и web-assisted сценариями.
+
+Проект можно запускать из исходников через `python main.py` или собирать в portable-исполняемый файл для Windows через `build.bat`.
 
 ![Portable Autonomous AI Agent](./img/01.jpg)
 
-## Что умеет агент
+## Что Это За Проект Сейчас
 
-- Анализировать кодовую базу и структуру проекта.
-- Читать, искать, редактировать и создавать файлы через инструменты файловой системы.
-- Выполнять shell-команды (если включено `ENABLE_SHELL_TOOL`).
-- Работать с системными и процессными инструментами (по флагам).
-- Выполнять web-поиск и извлекать контент:
-- `web_search`
-- `fetch_content`
-- `batch_web_search`
-- Подключать внешние MCP-инструменты из `mcp.json` с явной policy-конфигурацией.
-- Показывать действия в transcript (tool cards, diff, статус выполнения).
-- Запрашивать у пользователя явный выбор через `request_user_input` при неоднозначных сценариях.
-- Поддерживать approval-паузы для потенциально опасных операций.
-- Принимать мультимодальный ввод (изображения), если активный профиль это поддерживает.
+Этот репозиторий представляет собой локальное десктопное агентное приложение с:
 
-## Runtime flow
+- графовым runtime на `LangGraph`
+- GUI с историей чатов, transcript, approvals, настройками и вложениями
+- подключаемыми инструментами: filesystem, shell, search, system, process, MCP
+- сохранением сессий и durable checkpoints
+- approval-паузами перед рискованными действиями
+- bounded recovery и self-correction после tool/protocol ошибок
+- управлением профилями моделей прямо в GUI
+- опциональной поддержкой ввода изображений для активного профиля модели
 
-Текущий граф хода запроса:
+Текущая точка входа находится в [`main.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/main.py), который проксирует запуск в [`ui/main_window.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/ui/main_window.py). Сборка и маршрутизация графа агента находятся в [`agent.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/agent.py).
+
+## Runtime Flow
+
+Актуальный граф в [`agent.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/agent.py):
 
 ```text
 START
   -> summarize
-  -> classify_turn
   -> update_step
   -> agent
-     -> approval? -> tools
+     -> approval -> tools
+     -> tools
      -> recovery
      -> END
 
@@ -39,26 +39,66 @@ tools -> recovery | update_step
 recovery -> update_step | END
 ```
 
-`stability_guard` больше не используется: в runtime остался один recovery-контур через `recovery_node()`.
+Ключевые детали:
 
-## Интерфейс (GUI)
+- `summarize` сжимает старый контекст, когда история сессии становится слишком большой.
+- `agent` решает, нужно ли отвечать сразу, вызывать tools или передавать ход в recovery.
+- `approval` ставит выполнение на паузу перед mutating или рискованными tool-вызовами.
+- `tools` исполняет подтверждённые tool-вызовы и фиксирует проблемы.
+- `recovery` применяет ограниченную стратегию retry/self-correction вместо бесконечных циклов.
+- `MAX_LOOPS` и per-tool loop guards ограничивают runaway tool loops.
 
-- Левая панель: история чатов, сгруппированная по проектам.
-- Центр: transcript с ответами, инструментами и результатами.
-- Composer: ввод текста, `@`-упоминание файлов, вставка путей, вложения изображений.
-- Info popup (`Ctrl+I`): вкладки `Info`, `Tools`, `Help`.
-- Settings: управление профилями моделей.
+## GUI
 
-### Горячие клавиши
+Основные возможности интерфейса:
 
-- `Enter`: отправка запроса
-- `Shift+Enter`: новая строка
-- `Ctrl+N`: новый чат
-- `Ctrl+B`: показать/скрыть боковую панель
-- `Ctrl+I`: открыть инфо-панель
-- `Up/Down` в пустом composer: история отправленных запросов
+- боковая панель с историей чатов по проекту
+- transcript со streaming-ответами, tool cards, summary-сообщениями и статусными notice
+- composer с многострочным вводом, вставкой путей к файлам и image attachments
+- диалог approval для mutating и рискованных инструментов
+- переключатель активной модели и окно настроек профилей
+- info popup с вкладками runtime, tools и help
+- переключение проекта, которое создаёт новый чат-контекст для выбранной папки
 
-## Быстрый старт
+Горячие клавиши:
+
+- `Enter` отправить сообщение
+- `Shift+Enter` новая строка
+- `Ctrl+N` новый чат
+- `Ctrl+B` показать или скрыть боковую панель
+- `Ctrl+I` открыть info popup
+- `Up/Down` в пустом composer листает историю отправленных сообщений
+
+## Возможности Агента
+
+В зависимости от флагов в `.env` и установленных зависимостей агент умеет:
+
+- читать и изменять файлы через filesystem tools
+- выполнять локальные shell-команды через shell tool
+- смотреть системное состояние и, при включении флага, управлять процессами
+- выполнять web search и fetch контента через Tavily
+- вызывать MCP tools, описанные в [`mcp.json`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/mcp.json)
+- запрашивать у пользователя один явный блокирующий выбор через `request_user_input`
+- принимать изображения во вложениях, если активный профиль модели поддерживает image input
+
+## Встроенная Модель Безопасности
+
+В текущем проекте реализован довольно строгий policy-слой runtime:
+
+- approvals по умолчанию включены для mutating и destructive действий
+- shell-команды предварительно классифицируются перед выполнением
+- MCP tools по умолчанию требуют approval, если явная policy не помечает их как read-only
+- tool errors могут переводить выполнение в recovery, а не игнорироваться
+- self-correction ограничен параметром `SELF_CORRECTION_RETRY_LIMIT`
+- количество фоновых процессов ограничено `MAX_BACKGROUND_PROCESSES`
+
+`request_user_input` обрабатывается отдельно:
+
+- он должен использоваться только для действительно блокирующего выбора
+- за один пользовательский ход допускается только один такой запрос
+- его нельзя батчить вместе с другими tool calls в одном assistant-ответе
+
+## Быстрый Старт
 
 ```powershell
 python -m venv venv
@@ -67,75 +107,76 @@ Copy-Item env_example.txt .env
 python main.py
 ```
 
-## Portable сборка
+## Portable Сборка
+
+Сборка portable-версии описана в [`build.bat`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/build.bat), который использует `PyInstaller` в режиме `--onefile --windowed`.
 
 ```powershell
 .\build.bat
 ```
 
-После сборки можно переносить `.exe` и сопутствующие runtime-файлы в другую директорию/на другой ПК.
-
-## Структура проекта
+## Структура Проекта
 
 ```text
 .
 ├─ agent.py
 ├─ main.py
+├─ build.bat
 ├─ core/
 ├─ tools/
 ├─ ui/
 ├─ tests/
 ├─ utils/
-├─ env_example.txt
-├─ requirements.txt
-├─ mcp.json
 ├─ prompt.txt
 ├─ prompt_code.txt
-├─ pytest.ini
-└─ build.bat
+├─ prompt_dev.txt
+├─ env_example.txt
+├─ requirements.txt
+└─ mcp.json
 ```
 
-## Компоненты
+Ключевые каталоги:
 
-- `core/` — конфигурация, графовый runtime, policy, recovery, prompt overlays, состояние сессий.
-- `tools/` — встроенные инструменты (filesystem/shell/search/system/process/user_input) и MCP-интеграция.
-- `tools/filesystem.py` — публичный facade для filesystem tools; детали реализации живут в `tools/filesystem_impl/`.
-- `ui/` — окно приложения, панели, transcript, настройки моделей.
-- `tests/` — unit и интеграционные тесты поведения runtime и GUI.
+- [`core/`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/core) runtime, конфиг, checkpointing, policy-логика, recovery, состояние сессий и моделей
+- [`tools/`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/tools) встроенные инструменты и MCP-интеграция
+- [`tools/filesystem_impl/`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/tools/filesystem_impl) низкоуровневая реализация filesystem-операций
+- [`ui/`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/ui) Qt runtime bridge, главное окно, виджеты и streaming-представление
+- [`tests/`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/tests) тесты runtime, tooling, policy, model profiles и GUI
 
-## Конфигурация `.env`
+## Конфигурация
 
-Ниже перечислены актуальные параметры из `core/config.py` и `env_example.txt`.
+Приложение читает настройки из `.env` через [`core/config.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/core/config.py).
 
-### 1) Провайдер и модели
+### Провайдер И Модели
 
 - `PROVIDER=gemini|openai`
 - `GEMINI_API_KEY`
-- `GEMINI_MODEL` (по умолчанию `gemini-1.5-flash`)
+- `GEMINI_MODEL`, по умолчанию `gemini-1.5-flash`
 - `OPENAI_API_KEY`
-- `OPENAI_MODEL` (по умолчанию `gpt-4o`)
-- `OPENAI_BASE_URL` (опционально, для совместимых backend)
+- `OPENAI_MODEL`, по умолчанию `gpt-4o`
+- `OPENAI_BASE_URL` опционален для OpenAI-compatible backend
 
-### 2) Основные runtime-параметры
+### Управление Runtime
 
-- `TEMPERATURE` (по умолчанию `0.2`)
-- `MAX_LOOPS` (по умолчанию `50`)
-- `TOOL_LOOP_WINDOW` (опционально)
-- `TOOL_LOOP_LIMIT_MUTATING` (опционально)
-- `TOOL_LOOP_LIMIT_READONLY` (опционально)
+- `TEMPERATURE`
+- `MAX_LOOPS`
+- `TOOL_LOOP_WINDOW`
+- `TOOL_LOOP_LIMIT_MUTATING`
+- `TOOL_LOOP_LIMIT_READONLY`
+- `SELF_CORRECTION_RETRY_LIMIT`
 
-### 3) Пути и файлы состояния
+### Состояние И Персистентность
 
-- `PROMPT_PATH` (по умолчанию `prompt.txt`; в coding-сценариях проект также использует `prompt_code.txt`)
-- `MCP_CONFIG_PATH` (по умолчанию `mcp.json`)
+- `PROMPT_PATH`
+- `MCP_CONFIG_PATH`
 - `CHECKPOINT_BACKEND=sqlite|memory|postgres`
-- `CHECKPOINT_SQLITE_PATH` (по умолчанию `.agent_state/checkpoints.sqlite`)
-- `CHECKPOINT_POSTGRES_URL` (опционально)
-- `SESSION_STATE_PATH` (по умолчанию `.agent_state/session.json`)
-- `RUN_LOG_DIR` (по умолчанию `logs/runs`)
-- `LOG_FILE` (по умолчанию `logs/agent.log`)
+- `CHECKPOINT_SQLITE_PATH`
+- `CHECKPOINT_POSTGRES_URL`
+- `SESSION_STATE_PATH`
+- `RUN_LOG_DIR`
+- `LOG_FILE`
 
-### 4) Включение подсистем и инструментов
+### Фиче-Флаги
 
 - `MODEL_SUPPORTS_TOOLS`
 - `ENABLE_SEARCH_TOOLS`
@@ -146,66 +187,79 @@ python main.py
 - `ENABLE_APPROVALS`
 - `ALLOW_EXTERNAL_PROCESS_CONTROL`
 
-### 5) Лимиты и защита
+### Лимиты
 
 - `MAX_TOOL_OUTPUT`
 - `MAX_SEARCH_CHARS`
-- `MAX_FILE_SIZE` (поддерживает форматы вроде `300MiB`, `4MB`)
+- `MAX_FILE_SIZE`
 - `MAX_READ_LINES`
 - `MAX_BACKGROUND_PROCESSES`
 - `STREAM_TEXT_MAX_CHARS`
 - `STREAM_EVENTS_MAX`
 - `STREAM_TOOL_BUFFER_MAX`
-- `SELF_CORRECTION_RETRY_LIMIT`
 
-### 6) Суммаризация и retry
+### Суммаризация И Retry
 
 - `SESSION_SIZE`
 - `SUMMARY_KEEP_LAST`
 - `MAX_RETRIES`
 - `RETRY_DELAY`
 
-### 7) Диагностика
+### Диагностика
 
 - `DEBUG`
 - `LOG_LEVEL`
 - `STRICT_MODE`
 
-## Legacy / bootstrap параметры
+## Профили Моделей
 
-`env_example.txt` также содержит универсальные ключи `MODEL`, `API_KEY`, `BASE_URL`.
-Они полезны для bootstrap-профилей при первом запуске, но основной runtime-конфиг читает provider-специфичные переменные (`OPENAI_*`, `GEMINI_*`).
+GUI теперь поддерживает несколько сохраняемых профилей моделей через [`core/model_profiles.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/core/model_profiles.py).
+
+Профиль хранит:
+
+- провайдера
+- имя модели
+- API key
+- опциональный `base_url` для OpenAI-compatible провайдеров
+- флаг поддержки image input
+- состояние enabled/disabled
+
+Важно:
+
+- активный профиль выбирается в GUI, а не только через `.env`
+- значения из `.env` всё ещё используются для bootstrap начального набора профилей
+- legacy-ключи `MODEL`, `API_KEY` и `BASE_URL` по-прежнему поддерживаются для bootstrap/import
+- для Gemini-профилей `base_url` игнорируется
+
+## Сессии И Checkpoints
+
+Текущее поведение persistence:
+
+- graph checkpoints могут использовать `sqlite`, `memory` или `postgres`
+- локально по умолчанию используется `.agent_state/checkpoints.sqlite`
+- активная сессия хранится в `.agent_state/session.json`
+- индекс сессий хранится в `.agent_state/session_index.json`
+- логи запусков сохраняются в формате JSONL в `logs/runs`
+
+Это позволяет приложению восстанавливать состояние чатов и продолжать работу с тем же durable graph thread metadata.
 
 ## MCP
 
-Файл `mcp.json` задаёт подключаемые MCP-серверы.
-Для каждого сервера поддерживаются:
+[`mcp.json`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/mcp.json) задаёт опциональные MCP-серверы.
 
-- `enabled` — включение/выключение сервера
-- transport-поля (`command`, `args`, `url`, `transport` и т.д.)
-- `policy` — явная security-настройка для MCP tools
+В текущем примере конфигурации есть:
 
-Поддерживаемые поля `policy`:
+- `filesystem` выключен
+- `context7` выключен и помечен как read-only
+- `sequential-thinking` включён и помечен как read-only
 
-- `read_only`
-- `tools` — словарь per-tool overrides, где для каждого tool тоже поддерживается только `read_only`
+Поведение policy:
 
-`policy` не обязательна, но без неё все MCP tools по умолчанию требуют approval.
-Это значит:
+- если `policy.read_only=true`, tools могут считаться read-only
+- если `policy.read_only=false`, tools требуют approval
+- если блока `policy` нет, MCP tools по умолчанию работают в консервативном approval-режиме
 
-- если указать `"read_only": true`, tool считается read-only и может выполняться без approval;
-- если указать `"read_only": false`, tool считается non-read-only и требует approval;
-- если блок `policy` отсутствует совсем, tool metadata может использоваться только как подсказка для формы tool, но approval всё равно обязателен;
-- для стабильного и предсказуемого поведения рекомендуется задавать `policy` явно хотя бы на уровне сервера.
-
-Порядок resolution для MCP metadata:
-
-1. server-level policy из `mcp.json`
-2. per-tool overrides из `mcp.json`
-3. metadata hints самого MCP tool (`readOnlyHint`, `executionHint`, `destructiveHint` и т.п.) используются только как shape hints, если явной policy нет
-4. conservative fallback `default_tool_metadata(..., source="mcp")`
-
-Пример:
+Минимальный пример:
 
 ```json
 {
@@ -217,43 +271,52 @@ python main.py
     "policy": {
       "read_only": true
     }
-  },
-  "my-server": {
-    "command": "npx",
-    "args": ["-y", "@acme/server"],
-    "transport": "stdio",
-    "enabled": true,
-    "policy": {
-      "read_only": true,
-      "tools": {
-        "terminal:run_command": {
-          "read_only": false
-        }
-      }
-    }
   }
 }
 ```
 
+## Prompt Layers
+
+Prompt-слои в текущем коде:
+
+- [`prompt.txt`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/prompt.txt) базовый системный prompt
+- [`prompt_code.txt`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/prompt_code.txt) coding-ориентированный вариант prompt
+- [`prompt_dev.txt`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/prompt_dev.txt) дополнительный prompt-ресурс
+- [`core/runtime_prompt_policy.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/core/runtime_prompt_policy.py) runtime overlay с tool и user-input policy
+- [`core/recovery_manager.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/core/recovery_manager.py) recovery-специфичная логика и подсказки
+
 ## Тесты
+
+Запуск тестов:
 
 ```powershell
 venv\Scripts\python.exe -m pytest
 ```
 
-`pytest.ini` ограничивает discovery директорией `tests/` и исключает временные каталоги вроде `pytest-cache-files-*`, чтобы случайные build/cache артефакты не ломали collection.
+В репозитории уже есть заметное покрытие для:
 
-## Prompt layers
+- поведения runtime graph
+- approvals и recovery
+- tool metadata и policy engine
+- session storage и checkpoints
+- model profile management
+- GUI-поведения и layout
 
-- `prompt.txt` / `prompt_code.txt` — базовые системные инструкции.
-- `core/runtime_prompt_policy.py` — короткий runtime overlay c данными окружения, доступными tools и user-input policy.
-- `core/recovery_manager.py` — recovery overlay только для активной стратегии и текущей blocking issue.
+## Требования И Примечания
 
-Общие правила теперь держатся в базовом prompt, а overlays добавляют только контекст текущего запуска, без повторения одной и той же инструкции на каждом ходу.
+- для `Gemini` нужен `GEMINI_API_KEY`
+- для `OpenAI` нужен `OPENAI_API_KEY`, если не используется совместимый backend
+- для web search нужен `TAVILY_API_KEY` и `ENABLE_SEARCH_TOOLS=true`
+- для desktop UI нужен `PySide6`
+- для дополнительных checkpoint backend нужны соответствующие пакеты зависимостей
 
-## Требования и ограничения
+## Текущий Tech Stack
 
-- Для `gemini` нужен `GEMINI_API_KEY`.
-- Для `openai` нужен `OPENAI_API_KEY` или `OPENAI_BASE_URL` (для локальных/совместимых endpoint).
-- Для web-поиска нужен `TAVILY_API_KEY` и `ENABLE_SEARCH_TOOLS=true`.
-- Локальные файловые/системные операции могут работать без интернет-доступа.
+- `LangChain`
+- `LangGraph`
+- `PySide6`
+- `pydantic-settings`
+- `Tavily`
+- `httpx`
+- `psutil`
+- опциональный MCP через `langchain-mcp-adapters` и `mcp`

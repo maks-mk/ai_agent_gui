@@ -23,8 +23,6 @@ class AgentState(TypedDict):
 
     # Internal workflow state
     turn_outcome: NotRequired[str]
-    turn_mode: NotRequired[str]
-    requires_evidence: NotRequired[bool]
     recovery_state: NotRequired[Dict[str, Any]]
     self_correction_retry_count: NotRequired[int]
     self_correction_retry_turn_id: NotRequired[int]
@@ -40,4 +38,3 @@ class AgentState(TypedDict):
     has_protocol_error: NotRequired[bool]
     last_tool_error: NotRequired[str]
     last_tool_result: NotRequired[str]
-    safety_mode: NotRequired[str]

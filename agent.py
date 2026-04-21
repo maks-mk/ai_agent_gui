@@ -72,21 +72,19 @@ def create_agent_workflow(
     config: AgentConfig,
     tools_enabled: Optional[bool] = None,
 ) -> StateGraph:
-    """Builds the LangGraph workflow with explicit turn classification and bounded recovery."""
+    """Builds the LangGraph workflow with tool-call based routing and bounded recovery."""
     tools_enabled = bool(nodes.tools) and config.model_supports_tools if tools_enabled is None else tools_enabled
     approval_enabled = bool(tools_enabled and config.enable_approvals)
 
     workflow = StateGraph(AgentState)
 
     workflow.add_node("summarize", nodes.summarize_node)
-    workflow.add_node("classify_turn", nodes.classify_turn_node)
     workflow.add_node("agent", nodes.agent_node)
     workflow.add_node("recovery", nodes.recovery_node)
     workflow.add_node("update_step", lambda state: {"steps": state.get("steps", 0) + 1})
 
     workflow.add_edge(START, "summarize")
-    workflow.add_edge("summarize", "classify_turn")
-    workflow.add_edge("classify_turn", "update_step")
+    workflow.add_edge("summarize", "update_step")
     workflow.add_edge("update_step", "agent")
 
     if tools_enabled:

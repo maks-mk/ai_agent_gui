@@ -183,7 +183,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             "open_tool_issue": None,
             "last_tool_error": "",
             "last_tool_result": "",
-            "safety_mode": "default",
         }
 
     def test_model_capabilities_normalize_profile_variants(self):
@@ -1925,7 +1924,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.assertIn("проверь list_mistral_models.py", visible_humans)
 
-    async def test_agent_node_forces_recovery_when_action_turn_ends_with_prose_only(self):
+    async def test_agent_node_allows_prose_only_response_without_forced_recovery(self):
         agent_llm = FakeLLM([AIMessage(content="Сейчас исправлю файл и внесу правки.")])
         edit_tool = FakeTool("edit_file", "ignored")
         nodes = AgentNodes(
@@ -1940,11 +1939,10 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         result = await nodes.agent_node(self._initial_state("исправь файл demo.txt"))
 
-        self.assertEqual(result["turn_outcome"], "recover_agent")
-        self.assertTrue(result["has_protocol_error"])
-        self.assertIsNotNone(result["open_tool_issue"])
-        self.assertEqual(result["open_tool_issue"]["kind"], "protocol_error")
-        self.assertEqual(result["open_tool_issue"]["details"]["protocol_reason"], "action_requires_tools")
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertFalse(result["has_protocol_error"])
+        self.assertIsNone(result["open_tool_issue"])
+        self.assertEqual(str(result["messages"][-1].content), "Сейчас исправлю файл и внесу правки.")
         self.assertEqual(len(agent_llm.invocations), 1)
 
     async def test_agent_node_marks_malformed_tool_payload_as_protocol_error(self):
@@ -1999,7 +1997,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIs(result, fallback_llm)
         self.assertEqual(llm.bound_tool_name_batches, [["read_file"]])
 
-    async def test_agent_node_marks_plaintext_tool_markup_as_protocol_error(self):
+    async def test_agent_node_treats_plaintext_tool_markup_as_regular_text(self):
         agent_llm = FakeLLM(
             [
                 AIMessage(
@@ -2020,14 +2018,15 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         result = await nodes.agent_node(self._initial_state("прочитай README.md"))
 
-        self.assertEqual(result["turn_outcome"], "recover_agent")
-        self.assertTrue(result["has_protocol_error"])
-        self.assertEqual(result["open_tool_issue"]["kind"], "protocol_error")
-        self.assertEqual(result["open_tool_issue"]["details"]["protocol_reason"], "tool_protocol_error")
-        self.assertEqual(result["open_tool_issue"]["details"]["response_kind"], "plaintext_tool_invocation")
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertFalse(result["has_protocol_error"])
+        self.assertIsNone(result["open_tool_issue"])
         response = result["messages"][-1]
         self.assertIsInstance(response, AIMessage)
-        self.assertFalse(response.additional_kwargs["agent_internal"]["visible_in_ui"])
+        self.assertEqual(
+            str(response.content),
+            '<tool_code>{"name":"read_file","args":{"path":"README.md"}}</tool_code>',
+        )
 
     async def test_agent_node_allows_plaintext_tool_markup_in_regular_chat_explanation(self):
         agent_llm = FakeLLM(
@@ -2047,11 +2046,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             llm_with_tools=agent_llm,
             tool_metadata={"read_file": ToolMetadata(name="read_file", read_only=True)},
         )
-        state = self._initial_state("объясни синтаксис tool_call")
-        state["turn_mode"] = "chat"
-        state["requires_evidence"] = False
-
-        result = await nodes.agent_node(state)
+        result = await nodes.agent_node(self._initial_state("объясни синтаксис tool_call"))
 
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertFalse(result["has_protocol_error"])
@@ -2119,10 +2114,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             llm_with_tools=agent_llm,
         )
 
-        state = self._initial_state("Проведи тест user input")
-        state["turn_mode"] = "act"
-        state["requires_evidence"] = True
-        result = await nodes.agent_node(state)
+        result = await nodes.agent_node(self._initial_state("Проведи тест user input"))
 
         self.assertEqual(result["turn_outcome"], "run_tools")
         self.assertTrue(result["has_protocol_error"])
@@ -2214,8 +2206,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                 name="request_user_input",
             ),
         ]
-        state["turn_mode"] = "act"
-        state["requires_evidence"] = True
 
         await nodes.agent_node(state)
 
@@ -2234,14 +2224,48 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             tools=[read_tool, edit_tool],
             llm_with_tools=tools_llm,
         )
-        state = self._initial_state("Проанализируй проект в папке")
-        state["turn_mode"] = "chat"
-        state["requires_evidence"] = False
-
-        await nodes.agent_node(state)
+        await nodes.agent_node(self._initial_state("Проанализируй проект в папке"))
 
         self.assertEqual(base_llm.invocations, [])
         self.assertEqual(len(tools_llm.invocations), 1)
+
+    async def test_agent_node_binds_tools_without_keyword_intent_scoping(self):
+        base_llm = FakeLLM([AIMessage(content="Понял, не буду выполнять установку.")])
+        tools_llm = FakeBindableLLM([AIMessage(content="", tool_calls=[{"name": "web_search", "args": {"query": "npcap"}, "id": "tc-web"}])])
+        search_tool = FakeTool("web_search", "ok")
+        nodes = AgentNodes(
+            config=self._make_config(),
+            llm=base_llm,
+            tools=[search_tool],
+            llm_with_tools=tools_llm,
+            tool_metadata={"web_search": ToolMetadata(name="web_search", read_only=True)},
+        )
+        state = self._initial_state("Не пытайся установить, он требует pcap")
+
+        result = await nodes.agent_node(state)
+
+        self.assertEqual(result["turn_outcome"], "run_tools")
+        self.assertEqual(base_llm.invocations, [])
+        self.assertEqual(len(tools_llm.invocations), 1)
+        response = result["messages"][-1]
+        self.assertIsInstance(response, AIMessage)
+        self.assertEqual(response.tool_calls[0]["name"], "web_search")
+
+    async def test_agent_node_handles_repeated_empty_llm_response_without_ui_error(self):
+        llm = FakeLLM([AIMessage(content="")])
+        nodes = AgentNodes(
+            config=self._make_config(MAX_RETRIES=1),
+            llm=llm,
+            tools=[],
+            llm_with_tools=llm,
+        )
+        result = await nodes.agent_node(self._initial_state("Ответь коротко"))
+
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertEqual(result["last_tool_error"], "Empty response from LLM")
+        response = result["messages"][-1]
+        self.assertIsInstance(response, AIMessage)
+        self.assertIn("Модель вернула пустой ответ", str(response.content))
 
     async def test_worker_delete_active_session_switches_to_fallback_session(self):
         tmp = self._workspace_tempdir()

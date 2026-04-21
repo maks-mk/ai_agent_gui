@@ -317,11 +317,6 @@ def build_repair_plan(
             guidance = (
                 "Do not continue from the broken tool chain. Inspect confirmed repository state and issue a fresh valid tool call."
             )
-        elif protocol_reason == "action_requires_tools":
-            notes = "The task still requires tool-backed execution or verification."
-            guidance = (
-                "The user requested a concrete action or verifiable check. Continue with tools instead of ending with prose."
-            )
         elif protocol_reason == "tool_not_allowed_for_turn":
             notes = "The model requested a tool outside the active tool set."
             guidance = (

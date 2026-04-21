@@ -23,7 +23,7 @@
       "@modelcontextprotocol/server-sequential-thinking"
     ],
     "transport": "stdio",
-    "enabled": false,
+    "enabled": true,
     "policy": {
       "read_only": true
     }

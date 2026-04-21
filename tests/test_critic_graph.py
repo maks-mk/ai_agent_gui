@@ -233,7 +233,7 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertIn("готово", str(result["messages"][-1].content).lower())
 
-    async def test_read_only_inspection_code_dump_is_recovered_into_real_edit(self):
+    async def test_read_only_inspection_code_dump_finishes_without_forced_edit(self):
         read_tool = FakeTool(
             "read_file",
             "document.addEventListener('keydown', event => { if (event.keyCode === 37) playerMove(-1); });",
@@ -260,21 +260,6 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
                         "```"
                     )
                 ),
-                AIMessage(
-                    content="",
-                    tool_calls=[
-                        {
-                            "name": "edit_file",
-                            "args": {
-                                "path": "script.js",
-                                "old_string": "event.keyCode === 37",
-                                "new_string": "event.key === 'ArrowLeft'",
-                            },
-                            "id": "tc-edit-keys",
-                        }
-                    ],
-                ),
-                AIMessage(content="Управление обновлено, правка применена через инструмент."),
             ],
             tools=[read_tool, edit_tool],
             tool_metadata={
@@ -289,20 +274,11 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         )
 
         self.assertEqual(read_tool.calls, [{"path": "script.js"}])
-        self.assertEqual(
-            edit_tool.calls,
-            [
-                {
-                    "path": "script.js",
-                    "old_string": "event.keyCode === 37",
-                    "new_string": "event.key === 'ArrowLeft'",
-                }
-            ],
-        )
-        self.assertGreaterEqual(len(agent_llm.invocations), 4)
+        self.assertEqual(edit_tool.calls, [])
+        self.assertEqual(len(agent_llm.invocations), 2)
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertIsNone(result["open_tool_issue"])
-        self.assertIn("правка применена", str(result["messages"][-1].content).lower())
+        self.assertIn("arrowleft", str(result["messages"][-1].content).lower())
 
     async def test_analysis_after_read_only_inspection_finishes_without_recovery(self):
         read_tool = FakeTool(

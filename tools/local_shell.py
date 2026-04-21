@@ -318,23 +318,7 @@ def _emit_cli_output(data: str, stream: str) -> None:
 
 @tool("cli_exec")
 async def cli_exec(command: str) -> str:
-    """
-    Executes a shell command on the host machine.
-    
-    IMPORTANT RULES FOR LLM:
-    1. STATELESSNESS: Commands are stateless. `cd folder` in one call will NOT affect the next call. 
-       If you need to change directories, chain commands: e.g., `cd folder && npm install`.
-    2. NO INTERACTIVE COMMANDS: DO NOT run commands that require user input (e.g., `nano`, `vim`, `python` without args, `less`, `top`). 
-       They will hang until timeout!
-    3. BACKGROUND TASKS: Never use cli_exec to start background processes or services.
-       Background runs (dev server, watcher, daemon) are not allowed in cli_exec.
-    4. LONG SCRIPTS: For complex logic, write a script file using `write_file` and then execute it.
-    
-    Supports pipe (|), redirects (>), and chain operators (&&).
-    
-    Args:
-        command: The shell command to execute (e.g., 'ls -la', 'git status').
-    """
+    """Run one non-interactive shell command in the workspace. Stateless: include cd/chains in the same command. Supports pipes, redirects, &&. Use run_background_process for servers/watchers; avoid prompts and interactive TUI commands."""
     if _SAFETY_POLICY and not _SAFETY_POLICY.allow_shell:
         return format_error(ErrorType.ACCESS_DENIED, "Shell execution is disabled by SafetyPolicy.")
 

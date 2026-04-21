@@ -55,6 +55,16 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         names = [tool.name for tool in registry.tools]
         self.assertEqual(names, ["safe_delete_file", "safe_delete_directory", "request_user_input"])
 
+    async def test_tool_registry_compacts_descriptions_and_schema_docs(self):
+        registry = ToolRegistry(self._make_config(ENABLE_SHELL_TOOL=True))
+        await registry.load_all()
+
+        tools_by_name = {tool.name: tool for tool in registry.tools}
+        cli_tool = tools_by_name["cli_exec"]
+        self.assertLess(len(cli_tool.description), 260)
+        self.assertNotIn("\n", cli_tool.description)
+        self.assertNotIn("description", cli_tool.args_schema.model_json_schema())
+
     def test_tool_registry_initializes_model_capabilities_slot(self):
         registry = ToolRegistry(self._make_config())
         self.assertEqual(registry.model_capabilities, DEFAULT_MODEL_CAPABILITIES)

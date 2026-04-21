@@ -10,19 +10,7 @@ def request_user_input(
     options: List[str],
     recommended: str = "",
 ) -> str:
-    """
-    Request an explicit user choice when the task cannot proceed without it.
-
-    Use only when:
-    - A decision has multiple valid paths with different outcomes.
-    - External information is required and cannot be inferred from context.
-
-    Do not use for uncertainty you can resolve with available tools.
-    Do not call more than once in the same assistant turn.
-    Do not batch multiple user-input requests.
-    Ask one concrete question, wait for resume, then continue with the answer.
-    For demo or test requests, do exactly one call and then finish with a brief confirmation.
-    """
+    """Ask one concrete user-choice question only when tools/context cannot resolve it. Use at most once per assistant turn; wait for the answer, then continue."""
     result = interrupt(
         {
             "kind": "user_choice",

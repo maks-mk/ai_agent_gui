@@ -355,12 +355,7 @@ async def _web_search_impl(
 
 @tool("web_search")
 async def web_search(query: str, max_results: int = 5, search_depth: str = "basic", topic: str = "general") -> str:
-    """Search internet for snippets and AI summary.
-
-    Allowed search_depth: basic, advanced, fast, ultra-fast.
-    Allowed topic: general, news, finance.
-    Common aliases are normalized automatically: deep -> advanced, model specs -> general.
-    """
+    """Search web snippets with an AI summary. search_depth: basic/advanced/fast/ultra-fast; topic: general/news/finance."""
     return await _web_search_impl(query, max_results, search_depth, topic)
 
 
@@ -430,12 +425,7 @@ async def batch_web_search(
     search_depth: str = "basic",
     topic: str = "general",
 ) -> str:
-    """Perform multiple searches in parallel.
-
-    Allowed search_depth: basic, advanced, fast, ultra-fast.
-    Allowed topic: general, news, finance.
-    Common aliases are normalized automatically: deep -> advanced, model specs -> general.
-    """
+    """Run up to 5 web searches in parallel. search_depth: basic/advanced/fast/ultra-fast; topic: general/news/finance."""
     if not queries:
         return format_error(ErrorType.VALIDATION, "No queries provided.")
 

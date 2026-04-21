@@ -104,23 +104,23 @@ def _cleanup_edit_path(raw: Any) -> str | None:
 
 
 class EditFileInput(BaseModel):
-    """Tolerant input schema for edit_file to reduce LLM argument-shape failures."""
+    """Input for edit_file; aliases accepted for old/new text."""
 
     model_config = ConfigDict(populate_by_name=True, extra="ignore")
 
     path: str | None = Field(
         default=None,
-        description="Path to the file to edit.",
+        description="File path.",
     )
     old_string: str | None = Field(
         default=None,
         validation_alias=AliasChoices("old_string", *_EDIT_FILE_ALIAS_MAP["old_string"]),
-        description="Exact old text block to replace.",
+        description="Exact text to replace.",
     )
     new_string: str | None = Field(
         default=None,
         validation_alias=AliasChoices("new_string", *_EDIT_FILE_ALIAS_MAP["new_string"]),
-        description="Replacement text block.",
+        description="Replacement text.",
     )
 
     @model_validator(mode="before")
@@ -151,25 +151,25 @@ class EditFileInput(BaseModel):
 
 @tool("file_info")
 def file_info_tool(path: str) -> str:
-    """Returns metadata for a file: size, line count, and suggested chunk size for read_file()."""
+    """File metadata: size, lines, suggested read_file chunk."""
     return fs_manager.file_info(path)
 
 
 @tool("read_file")
 def read_file_tool(path: str, offset: int = 0, limit: int = 2000, show_line_numbers: bool = True) -> str:
-    """Reads a file from the filesystem with automatic pagination."""
+    """Read a file with pagination."""
     return fs_manager.read_file(path, offset, limit, show_line_numbers)
 
 
 @tool("write_file")
 def write_file_tool(path: str, content: str) -> str:
-    """Writes content to a file. Overwrites existing files completely."""
+    """Write/overwrite a file."""
     return fs_manager.write_file(path, content)
 
 
 @tool("edit_file", args_schema=EditFileInput)
 def edit_file_tool(path: str | None = None, old_string: str | None = None, new_string: str | None = None) -> str:
-    """Replaces text in a file with exact-match and safe heuristic fallback modes."""
+    """Replace text in a file."""
     if not path:
         return format_error(ErrorType.VALIDATION, "Missing required field: path.")
     if old_string is None or not str(old_string).strip():
@@ -187,13 +187,13 @@ def edit_file_tool(path: str | None = None, old_string: str | None = None, new_s
 
 @tool("list_directory")
 def list_directory_tool(path: str = ".", include_hidden: bool = False) -> str:
-    """Lists files and directories in a given path."""
+    """List files and directories."""
     return fs_manager.list_files(path, include_hidden)
 
 
 @tool("search_in_file")
 def search_in_file_tool(path: str, pattern: str, use_regex: bool = False, ignore_case: bool = False) -> str:
-    """Searches for a text pattern (or regex) in a single file."""
+    """Search text or regex in one file."""
     return fs_manager.search_in_file(path, pattern, use_regex, ignore_case)
 
 
@@ -208,7 +208,7 @@ def search_in_directory_tool(
     max_files: int = 200,
     max_depth: Optional[int] = None,
 ) -> str:
-    """Recursively searches for a text pattern (or regex) across all files in a directory."""
+    """Search text or regex across a directory."""
     return fs_manager.search_in_directory(
         path,
         pattern,
@@ -223,19 +223,19 @@ def search_in_directory_tool(
 
 @tool("tail_file")
 def tail_file_tool(path: str, lines: int = 50, show_line_numbers: bool = True) -> str:
-    """Returns the last N lines of a file (like Unix `tail`)."""
+    """Read the last N lines of a file."""
     return fs_manager.tail_file(path, lines, show_line_numbers)
 
 
 @tool("safe_delete_file")
 async def safe_delete_file(file_path: str) -> str:
-    """Deletes a file in the working directory."""
+    """Delete a workspace file."""
     return await asyncio.to_thread(fs_manager.delete_file, file_path)
 
 
 @tool("safe_delete_directory")
 async def safe_delete_directory(dir_path: str, recursive: bool = False) -> str:
-    """Deletes a directory in the working directory."""
+    """Delete a workspace directory."""
     return await asyncio.to_thread(fs_manager.delete_directory, dir_path, recursive)
 
 
@@ -276,7 +276,7 @@ def _format_download_request_error(exc: httpx.RequestError) -> str:
 
 @tool("download_file")
 async def download_file(url: str, filename: Optional[str] = None) -> str:
-    """Downloads a file from a URL to the current working directory."""
+    """Download a URL to the workspace."""
     temp_destination: Optional[Path] = None
     try:
         if not filename:
@@ -337,7 +337,7 @@ async def download_file(url: str, filename: Optional[str] = None) -> str:
 
 @tool("find_file")
 def find_file_tool(name_pattern: str, path: str = ".", max_results: int = 200, max_depth: Optional[int] = None) -> str:
-    """Finds files by their name pattern in a directory (recursive)."""
+    """Find files by name pattern."""
     return fs_manager.find_files(path, name_pattern, max_results, max_depth)
 
 
