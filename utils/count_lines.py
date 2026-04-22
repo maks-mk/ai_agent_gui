@@ -1,6 +1,6 @@
 import os
 
-EXCLUDE_DIRS = {"venv", "__pycache__"}
+EXCLUDE_DIRS = {"venv", "__pycache__", "tests"}
 
 
 def count_code_lines(filepath):

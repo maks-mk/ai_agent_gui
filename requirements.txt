@@ -9,7 +9,6 @@ langchain-google-genai>=2.0.0
 langchain-openai>=0.2.0
 langgraph>=0.2.0
 langgraph-checkpoint-sqlite>=2.0.0
-langgraph-checkpoint-postgres>=2.0.0
 pydantic-settings>=2.0.0
 
 # --- TOOLS & API ---
@@ -21,7 +20,6 @@ aiofiles>=24.0.0
 # MCP (Model Context Protocol) - Optional, only if mcp.json exists
 langchain-mcp-adapters>=0.1.0
 mcp>=1.0.0
-psycopg[binary,pool]>=3.2.0
 
 # --- UTILS ---
 python-dotenv>=1.0.0

@@ -86,34 +86,4 @@ async def create_checkpoint_runtime(config: AgentConfig) -> CheckpointRuntime:
             close_callback=lambda: context_manager.__aexit__(None, None, None),
         )
 
-    if backend == "postgres":
-        if not config.checkpoint_postgres_url:
-            raise ValueError("CHECKPOINT_POSTGRES_URL is required when CHECKPOINT_BACKEND=postgres.")
-        try:
-            from langgraph.checkpoint.postgres.aio import AsyncPostgresSaver
-        except ImportError:
-            warning = (
-                "Postgres checkpointer is unavailable because 'langgraph-checkpoint-postgres' is not installed. "
-                "Falling back to MemorySaver."
-            )
-            logger.warning(warning)
-            return CheckpointRuntime(
-                backend=backend,
-                resolved_backend="memory",
-                target="in-memory",
-                checkpointer=MemorySaver(),
-                warnings=[warning],
-            )
-
-        context_manager = AsyncPostgresSaver.from_conn_string(config.checkpoint_postgres_url)
-        checkpointer = await context_manager.__aenter__()
-        await _maybe_setup(checkpointer)
-        return CheckpointRuntime(
-            backend=backend,
-            resolved_backend="postgres",
-            target=config.checkpoint_postgres_url,
-            checkpointer=checkpointer,
-            close_callback=lambda: context_manager.__aexit__(None, None, None),
-        )
-
     raise ValueError(f"Unsupported checkpoint backend: {backend}")

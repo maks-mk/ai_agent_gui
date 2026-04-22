@@ -47,9 +47,6 @@ class RecoveryManager:
             "turn_id": int(turn_id or 0),
             "active_issue": None,
             "active_strategy": None,
-            "strategy_queue": [],
-            "attempts_by_strategy": {},
-            "progress_markers": [],
             "last_successful_evidence": "",
             "external_blocker": None,
             "llm_replan_attempted_for": [],
@@ -63,12 +60,6 @@ class RecoveryManager:
         if int(recovery.get("turn_id", 0) or 0) != current_turn_id:
             return self.empty_state(turn_id=current_turn_id)
         recovery["turn_id"] = current_turn_id
-        if not isinstance(recovery.get("strategy_queue"), list):
-            recovery["strategy_queue"] = []
-        if not isinstance(recovery.get("attempts_by_strategy"), dict):
-            recovery["attempts_by_strategy"] = {}
-        if not isinstance(recovery.get("progress_markers"), list):
-            recovery["progress_markers"] = []
         if not isinstance(recovery.get("llm_replan_attempted_for"), list):
             recovery["llm_replan_attempted_for"] = []
         return recovery
@@ -329,7 +320,6 @@ class RecoveryManager:
         elif open_tool_issue and int(hard_loop_ceiling or 0) <= 0:
             next_recovery_state["active_issue"] = open_tool_issue
             next_recovery_state["active_strategy"] = None
-            next_recovery_state["strategy_queue"] = []
             next_recovery_state["external_blocker"] = {
                 "reason": "self_correction_disabled",
                 "issue_summary": str(open_tool_issue.get("summary", "")),
@@ -346,7 +336,6 @@ class RecoveryManager:
         elif open_tool_issue and int(next_retry_count or 0) >= max(1, int(hard_loop_ceiling or 1)):
             next_recovery_state["active_issue"] = open_tool_issue
             next_recovery_state["active_strategy"] = None
-            next_recovery_state["strategy_queue"] = []
             next_recovery_state["external_blocker"] = {
                 "reason": "recovery_stagnated",
                 "issue_summary": str(open_tool_issue.get("summary", "")),
@@ -365,9 +354,6 @@ class RecoveryManager:
             next_fingerprint_history = []
             next_recovery_state["active_issue"] = None
             next_recovery_state["active_strategy"] = None
-            next_recovery_state["strategy_queue"] = []
-            next_recovery_state["attempts_by_strategy"] = {}
-            next_recovery_state["progress_markers"] = []
             next_recovery_state["external_blocker"] = None
             next_recovery_state["llm_replan_attempted_for"] = []
             if isinstance(last_message, ToolMessage):
@@ -397,7 +383,6 @@ class RecoveryManager:
         elif repair_plan and (repair_plan.needs_external_input or repair_plan.terminal_reason):
             next_recovery_state["active_issue"] = open_tool_issue
             next_recovery_state["active_strategy"] = None
-            next_recovery_state["strategy_queue"] = []
             next_recovery_state["external_blocker"] = {
                 "reason": repair_plan.terminal_reason or repair_plan.reason,
                 "issue_summary": str(open_tool_issue.get("summary", "")),
@@ -418,6 +403,8 @@ class RecoveryManager:
                 repair_plan=repair_plan,
                 issue_fingerprint=issue_fingerprint,
                 next_recovery_state=next_recovery_state,
+                current_retry_count=next_retry_count,
+                fingerprint_history=next_fingerprint_history,
             )
 
         completion_reason = branch["completion_reason"]
@@ -447,27 +434,6 @@ class RecoveryManager:
             "successful_tool_name": successful_tool_name,
         }
 
-    def apply_recovery(self, recovery_state: Dict[str, Any], *, current_turn_id: int) -> Dict[str, Any]:
-        queue = list(recovery_state.get("strategy_queue") or [])
-        if not queue:
-            return {
-                "turn_outcome": "finish_turn",
-                "recovery_state": recovery_state,
-                "recovery_status": "empty_strategy_queue",
-                "turn_id": current_turn_id,
-            }
-
-        active_strategy = deepcopy(queue[0])
-        recovery_state["active_strategy"] = active_strategy
-        recovery_state["strategy_queue"] = deepcopy(queue[1:])
-        return {
-            "turn_outcome": "",
-            "recovery_state": recovery_state,
-            "recovery_status": "recovery_prepared",
-            "active_strategy": active_strategy,
-            "turn_id": current_turn_id,
-        }
-
     def _plan_recoverable_issue(
         self,
         *,
@@ -476,15 +442,13 @@ class RecoveryManager:
         repair_plan: RepairPlan | None,
         issue_fingerprint: str,
         next_recovery_state: Dict[str, Any],
+        current_retry_count: int,
+        fingerprint_history: List[str],
     ) -> Dict[str, Any]:
-        progress_markers = [
-            str(item).strip()
-            for item in (next_recovery_state.get("progress_markers") or [])
-            if str(item).strip()
-        ]
-        if issue_fingerprint and issue_fingerprint not in progress_markers:
-            progress_markers.append(issue_fingerprint)
-        next_recovery_state["progress_markers"] = progress_markers
+        next_retry_count = int(current_retry_count or 0) + 1
+        next_fingerprint_history = [str(item).strip() for item in (fingerprint_history or []) if str(item).strip()]
+        if issue_fingerprint and issue_fingerprint not in next_fingerprint_history:
+            next_fingerprint_history.append(issue_fingerprint)
 
         if not repair_plan:
             repair_plan = RepairPlan(
@@ -500,11 +464,6 @@ class RecoveryManager:
             )
 
         strategy_id = self.repair_plan_strategy_id(repair_plan)
-        attempts_by_strategy = dict(next_recovery_state.get("attempts_by_strategy") or {})
-        attempt_count = int(attempts_by_strategy.get(strategy_id, 0) or 0) + 1
-        attempts_by_strategy[strategy_id] = attempt_count
-        next_recovery_state["attempts_by_strategy"] = attempts_by_strategy
-
         llm_replans = [
             str(item).strip()
             for item in (next_recovery_state.get("llm_replan_attempted_for") or [])
@@ -517,17 +476,16 @@ class RecoveryManager:
             strategy_id=strategy_id,
         )
 
-        if attempt_count == 1:
+        if int(current_retry_count or 0) == 0:
             next_recovery_state["active_issue"] = open_tool_issue
-            next_recovery_state["active_strategy"] = None
-            next_recovery_state["strategy_queue"] = [strategy_payload]
+            next_recovery_state["active_strategy"] = strategy_payload
             next_recovery_state["external_blocker"] = None
             return {
                 "completion_reason": f"recover_{repair_plan.strategy}",
                 "turn_outcome": "recover_agent",
                 "next_open_tool_issue": open_tool_issue,
-                "next_retry_count": attempt_count,
-                "next_fingerprint_history": list(progress_markers),
+                "next_retry_count": next_retry_count,
+                "next_fingerprint_history": list(next_fingerprint_history),
             }
 
         if repair_plan.strategy != "llm_replan" and issue_fingerprint and issue_fingerprint not in llm_replans:
@@ -546,30 +504,24 @@ class RecoveryManager:
                 progress_fingerprint=repair_plan.progress_fingerprint,
             )
             llm_strategy_id = self.repair_plan_strategy_id(llm_replan)
-            attempts_by_strategy[llm_strategy_id] = int(attempts_by_strategy.get(llm_strategy_id, 0) or 0) + 1
-            next_recovery_state["attempts_by_strategy"] = attempts_by_strategy
             next_recovery_state["active_issue"] = open_tool_issue
-            next_recovery_state["active_strategy"] = None
-            next_recovery_state["strategy_queue"] = [
-                self.build_recovery_strategy(
-                    repair_plan=llm_replan,
-                    open_tool_issue=open_tool_issue,
-                    current_task=current_task,
-                    strategy_id=llm_strategy_id,
-                )
-            ]
+            next_recovery_state["active_strategy"] = self.build_recovery_strategy(
+                repair_plan=llm_replan,
+                open_tool_issue=open_tool_issue,
+                current_task=current_task,
+                strategy_id=llm_strategy_id,
+            )
             next_recovery_state["external_blocker"] = None
             return {
                 "completion_reason": "recover_llm_replan",
                 "turn_outcome": "recover_agent",
                 "next_open_tool_issue": open_tool_issue,
-                "next_retry_count": max(int(value or 0) for value in attempts_by_strategy.values()),
-                "next_fingerprint_history": list(progress_markers),
+                "next_retry_count": next_retry_count,
+                "next_fingerprint_history": list(next_fingerprint_history),
             }
 
         next_recovery_state["active_issue"] = open_tool_issue
         next_recovery_state["active_strategy"] = None
-        next_recovery_state["strategy_queue"] = []
         next_recovery_state["external_blocker"] = {
             "reason": "recovery_stagnated",
             "issue_summary": str(open_tool_issue.get("summary", "")),
@@ -582,8 +534,8 @@ class RecoveryManager:
                 open_tool_issue,
                 repair_plan=repair_plan,
             ),
-            "next_retry_count": max(int(value or 0) for value in attempts_by_strategy.values()),
-            "next_fingerprint_history": list(progress_markers),
+            "next_retry_count": next_retry_count,
+            "next_fingerprint_history": list(next_fingerprint_history),
         }
 
     def _count_repeated_successful_tool_results(self, messages: List[BaseMessage]) -> int:

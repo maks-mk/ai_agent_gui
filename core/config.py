@@ -92,7 +92,7 @@ class AgentConfig(BaseSettings):
     # Paths
     prompt_path: Path = Field(default_factory=lambda: _existing_path_or_default("prompt.txt"), alias="PROMPT_PATH")
     mcp_config_path: Path = Field(default_factory=lambda: _existing_path_or_default("mcp.json"), alias="MCP_CONFIG_PATH")
-    checkpoint_backend: Literal["sqlite", "memory", "postgres"] = Field(
+    checkpoint_backend: Literal["sqlite", "memory"] = Field(
         default="sqlite",
         alias="CHECKPOINT_BACKEND",
     )
@@ -100,7 +100,6 @@ class AgentConfig(BaseSettings):
         default=BASE_DIR / ".agent_state" / "checkpoints.sqlite",
         alias="CHECKPOINT_SQLITE_PATH",
     )
-    checkpoint_postgres_url: Optional[str] = Field(default=None, alias="CHECKPOINT_POSTGRES_URL")
     session_state_path: Path = Field(
         default=BASE_DIR / ".agent_state" / "session.json",
         alias="SESSION_STATE_PATH",
@@ -270,7 +269,7 @@ class AgentConfig(BaseSettings):
     @classmethod
     def normalize_checkpoint_backend(cls, v: str) -> str:
         value = str(v or "sqlite").strip().lower()
-        if value not in {"sqlite", "memory", "postgres"}:
+        if value not in {"sqlite", "memory"}:
             return "sqlite"
         return value
 

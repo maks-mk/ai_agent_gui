@@ -85,6 +85,8 @@ class RefactorServicesTests(unittest.TestCase):
         self.assertNotIn("Before using any tool or tool batch", joined)
         self.assertNotIn("After any system change", joined)
         self.assertIn("TOOLS:", joined)
+        self.assertIn("TOOL INTENT REQUIREMENT:", joined)
+        self.assertIn("Never send an empty assistant message when tool_calls are present.", joined)
         self.assertIn("Execution environment: os=windows;", joined)
         self.assertIn("paths=windows.", joined)
         self.assertIn("Workspace root:", joined)

@@ -1398,20 +1398,16 @@ class AgentNodes:
         turn_outcome = "finish_turn"
         next_recovery_state = result["recovery_state"]
         if result["turn_outcome"] == "recover_agent":
-            prepared = self.recovery_manager.apply_recovery(
-                deepcopy(next_recovery_state),
-                current_turn_id=current_turn_id,
-            )
-            next_recovery_state = prepared["recovery_state"]
             turn_outcome = "recover_agent"
+            active_strategy = next_recovery_state.get("active_strategy") if isinstance(next_recovery_state, dict) else {}
             self._log_run_event(
                 state,
                 "recovery_prepared",
                 run_id=state.get("run_id", ""),
                 turn_id=current_turn_id,
-                strategy_id=str((prepared.get("active_strategy") or {}).get("id") or ""),
-                strategy=str((prepared.get("active_strategy") or {}).get("strategy") or ""),
-                suggested_tool=str((prepared.get("active_strategy") or {}).get("suggested_tool_name") or ""),
+                strategy_id=str((active_strategy or {}).get("id") or ""),
+                strategy=str((active_strategy or {}).get("strategy") or ""),
+                suggested_tool=str((active_strategy or {}).get("suggested_tool_name") or ""),
             )
 
         self._log_run_event(

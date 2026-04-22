@@ -169,9 +169,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                 "turn_id": 1,
                 "active_issue": None,
                 "active_strategy": None,
-                "strategy_queue": [],
-                "attempts_by_strategy": {},
-                "progress_markers": [],
                 "last_successful_evidence": "",
                 "external_blocker": None,
                 "llm_replan_attempted_for": [],
@@ -352,9 +349,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                 "suggested_tool_name": "read_file",
                 "patched_args": {"path": "demo.txt"},
             },
-            "strategy_queue": [],
-            "attempts_by_strategy": {"strategy-read-file": 1},
-            "progress_markers": ["fp-loop-read"],
             "last_successful_evidence": "",
             "external_blocker": None,
             "llm_replan_attempted_for": [],
@@ -1254,9 +1248,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         state["self_correction_retry_count"] = 2
         state["self_correction_retry_turn_id"] = 1
         state["recovery_state"]["active_issue"] = {"summary": "old issue"}
-        state["recovery_state"]["strategy_queue"] = [{"strategy": "llm_replan"}]
-        state["recovery_state"]["attempts_by_strategy"] = {"read_file:fp-2": 2}
-        state["recovery_state"]["progress_markers"] = ["fp-2"]
+        state["recovery_state"]["active_strategy"] = {"strategy": "llm_replan"}
         state["recovery_state"]["llm_replan_attempted_for"] = ["fp-2"]
         state["messages"] = [
             HumanMessage(content="Проверь файл"),
@@ -1272,8 +1264,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["self_correction_retry_turn_id"], 1)
         self.assertEqual(result["self_correction_fingerprint_history"], [])
         self.assertIsNone(result["open_tool_issue"])
-        self.assertEqual(result["recovery_state"]["attempts_by_strategy"], {})
-        self.assertEqual(result["recovery_state"]["progress_markers"], [])
+        self.assertIsNone(result["recovery_state"]["active_strategy"])
         self.assertEqual(result["recovery_state"]["llm_replan_attempted_for"], [])
         self.assertEqual(result["recovery_state"]["last_successful_evidence"], "Success: file contents")
 

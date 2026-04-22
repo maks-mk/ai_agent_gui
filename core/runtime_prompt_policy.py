@@ -33,6 +33,12 @@ class RuntimeExecutionEnvironment:
 
 class RuntimePromptPolicyBuilder:
     REQUEST_USER_INPUT_TOOL_NAME = "request_user_input"
+    TOOL_INTENT_REQUIREMENT_TEXT = (
+        "TOOL INTENT REQUIREMENT:\n"
+        "Before each tool call or tool-call batch, write exactly one short intent sentence in natural language.\n"
+        "This sentence must be in the same assistant message that contains tool_calls.\n"
+        "Never send an empty assistant message when tool_calls are present."
+    )
 
     def __init__(self, *, config: AgentConfig) -> None:
         self.config = config
@@ -106,7 +112,7 @@ class RuntimePromptPolicyBuilder:
             return (
                 "TOOLS:\n"
                 "Tools are available in this runtime. Use tool calls when they help.\n"
-                "Before each tool call, write one brief sentence about what you are doing."
+                f"{self.TOOL_INTENT_REQUIREMENT_TEXT}"
             )
         if len(names) <= 4:
             return (
@@ -114,12 +120,12 @@ class RuntimePromptPolicyBuilder:
                 "Available tools: "
                 + ", ".join(names)
                 + ". Do not invent unavailable tools.\n"
-                "Before each tool call, write one brief sentence about what you are doing."
+                f"{self.TOOL_INTENT_REQUIREMENT_TEXT}"
             )
         return (
             "TOOLS:\n"
             "Tools are available in this runtime for file, shell, web, or system access. Do not invent unavailable tools.\n"
-            "Before each tool call, write one brief sentence about what you are doing."
+            f"{self.TOOL_INTENT_REQUIREMENT_TEXT}"
         )
 
     def _build_request_user_input_policy(self, context: RuntimePromptContext) -> str:

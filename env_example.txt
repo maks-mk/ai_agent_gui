@@ -46,12 +46,10 @@ MAX_LOOPS=50
 # TOOL_LOOP_WINDOW=50
 # Путь к системному промпту (относительно корня проекта)
 PROMPT_PATH=prompt.txt
-# Backing store for durable graph checkpoints: sqlite | memory | postgres
+# Backing store for durable graph checkpoints: sqlite | memory
 CHECKPOINT_BACKEND=sqlite
 # Local durable checkpoint DB used by default for CLI mode
 CHECKPOINT_SQLITE_PATH=.agent_state/checkpoints.sqlite
-# Optional Postgres URL for production-like persistence
-# CHECKPOINT_POSTGRES_URL=postgresql://postgres:postgres@localhost:5432/postgres?sslmode=disable
 # Active session snapshot for automatic resume.
 # Sidebar index (.agent_state/session_index.json) хранится автоматически рядом.
 SESSION_STATE_PATH=.agent_state/session.json
