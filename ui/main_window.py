@@ -1,5 +1,6 @@
 import os
 import sys
+import time
 
 from PySide6.QtCore import QSize, Qt, QTimer
 from PySide6.QtGui import QAction, QActionGroup, QCloseEvent
@@ -87,12 +88,40 @@ class MainWindow(QMainWindow):
         self._composer_height_padding = 16
         self._composer_growth_lines = 5
         self._composer_height_sync_pending = False
+        # --- Новые переменные для плавного таймера ---
+        self._run_start_time: float | None = None
+        self._current_status_label = ""
+        self._current_status_phase = "working"
+        self._last_rendered_elapsed_text = ""
+        
+        self._realtime_timer = QTimer(self)
+        self._realtime_timer.timeout.connect(self._update_realtime_elapsed)
+        
         self._build_ui()
         self._connect_signals()
         self._build_event_dispatch()  # must come after _build_ui
         if auto_initialize:
             self.controller.initialize()
 
+    def _update_realtime_elapsed(self) -> None:
+        if self.current_turn is None or self._run_start_time is None or not self.is_busy:
+            return
+        
+        elapsed = time.time() - self._run_start_time
+        elapsed_text = f"{elapsed:.1f}s"
+        
+        # Чтобы не нагружать UI зря, обновляем только если текст изменился
+        if self._last_rendered_elapsed_text == elapsed_text:
+            return
+            
+        self._last_rendered_elapsed_text = elapsed_text
+        self.current_turn.set_status(
+            self._current_status_label, 
+            meta=elapsed_text, 
+            phase=self._current_status_phase
+        )
+        self.transcript.notify_content_changed()
+    
     def _build_ui(self) -> None:
         self.setWindowTitle(f"AI Agent {AGENT_VERSION}")
         self.resize(1300, 670)
@@ -607,14 +636,22 @@ class MainWindow(QMainWindow):
         self._clear_approval_request()
         self.current_turn = self.transcript.start_turn(
             payload.get("text", ""),
-            attachments=list(payload.get("attachments", []) or []),
+            attachments=list(payload.get("attachments", []) or[]),
         )
         self._summarize_in_progress = False
+        
+        # Запоминаем время и статус
+        self._run_start_time = time.time()
+        self._current_status_label = "Analyzing request"
+        self._current_status_phase = "working"
+        
         if self.current_turn is not None:
-            self.current_turn.set_status("Analyzing request", phase="working")
-            self.transcript.notify_content_changed(force=True)
+            self.current_turn.set_status(self._current_status_label, phase=self._current_status_phase)
+            self.transcript.notify_content_changed()
+            
         self._set_status_visual("Analyzing request…", busy=True)
-
+        self._realtime_timer.start(100)  # Запускаем обновление 10 раз в секунду
+        
     def _on_status_changed(self, payload: dict) -> None:
         label = payload.get("label")
         node = str(payload.get("node", "") or "")
@@ -623,11 +660,27 @@ class MainWindow(QMainWindow):
         if not label:
             return
 
+        self._current_status_label = label
+        self._current_status_phase = phase
+
+        # Синхронизируем локальный отсчет с актуальным временем сервера
+        try:
+            if elapsed_text.endswith("s"):
+                server_elapsed = float(elapsed_text[:-1])
+                self._run_start_time = time.time() - server_elapsed
+        except ValueError:
+            pass
+
         self._set_status_visual(label, busy=node != "approval")
         transcript_changed = False
+        
         if self.current_turn is not None:
-            self.current_turn.set_status(label, meta=elapsed_text, phase=phase)
+            current_elapsed = time.time() - self._run_start_time if self._run_start_time else 0.0
+            self._last_rendered_elapsed_text = f"{current_elapsed:.1f}s"
+            
+            self.current_turn.set_status(label, meta=self._last_rendered_elapsed_text, phase=phase)
             transcript_changed = True
+            
             if node == "summarize":
                 self._summarize_in_progress = True
                 self.current_turn.set_summary_notice("Context is being compressed automatically…", level="info")
@@ -636,13 +689,13 @@ class MainWindow(QMainWindow):
                 self.current_turn.set_summary_notice("Context compressed", level="success")
             if transcript_changed:
                 self.transcript.notify_content_changed()
-
+    
     def _on_assistant_delta(self, payload: dict) -> None:
         if self.current_turn is None:
             return
         self.current_turn.set_assistant_markdown(payload.get("full_text", ""))
         self.transcript.notify_content_changed()
-
+    
     def _on_tool_started(self, payload: dict) -> None:
         if self.current_turn is None:
             return
@@ -708,6 +761,7 @@ class MainWindow(QMainWindow):
         self.transcript.notify_content_changed()
 
     def _on_run_finished(self, payload: dict) -> None:
+        self._realtime_timer.stop() # <-- Остановка
         if self.current_turn is not None:
             self.current_turn.clear_status()
             self.current_turn.complete(payload.get("stats", ""))
@@ -716,6 +770,7 @@ class MainWindow(QMainWindow):
         self._set_status_visual("Ready", success=True)
 
     def _on_run_failed(self, payload: dict) -> None:
+        self._realtime_timer.stop() # <-- Остановка
         self.status_meta.setText("")
         msg = payload.get("message", "Run failed")
         if self.current_turn is not None:
@@ -727,6 +782,7 @@ class MainWindow(QMainWindow):
         self._set_status_visual("Run failed", error=True)
 
     def _on_chat_reset(self, _payload: dict) -> None:
+        self._realtime_timer.stop() # <-- Остановка
         self.composer.reset_history_navigation()
         self.current_turn = None
         self.transcript.clear_transcript()
@@ -986,6 +1042,12 @@ class MainWindow(QMainWindow):
     def _handle_busy_changed(self, busy: bool) -> None:
         self.is_busy = busy
 
+        if not busy:
+            self._realtime_timer.stop()
+        elif self.current_turn is not None and not self._realtime_timer.isActive():
+            # Возобновляем таймер, если снова заняты (например, после подтверждения юзером)
+            self._realtime_timer.start(100)
+            
         # Swap send/stop affordances depending on whether a run is active.
         self.send_button.setVisible(not busy)
         self.stop_action_button.setVisible(busy)
