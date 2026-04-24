@@ -54,6 +54,12 @@ def blend_hex(start_hex: str, end_hex: str, factor: float) -> str:
     return "#{:02X}{:02X}{:02X}".format(*blended)
 
 
+_POPUP_BG = blend_hex(SURFACE_BG, SURFACE_CARD, 0.66)
+_POPUP_BORDER = blend_hex(BORDER, "#FFFFFF", 0.12)
+_POPUP_ITEM_HOVER = blend_hex(SURFACE_ALT, "#FFFFFF", 0.08)
+_POPUP_ITEM_SELECTED = blend_hex(SURFACE_ALT, ACCENT_BLUE_SOFT, 0.28)
+
+
 def _build_theme_palette() -> dict[str, str]:
     transcript_panel_bg = blend_hex(SURFACE_CARD, SURFACE_ALT, 0.18)
     tool_panel_bg = blend_hex(SURFACE_CARD, "#FFFFFF", 0.04)
@@ -1122,17 +1128,18 @@ def build_stylesheet() -> str:
     }}
 
     QToolButton#ComposerMetaChipButton {{
-        background: transparent;
-        border: 1px solid transparent;
-        border-radius: {SOFT_RADIUS_MD}px;
-        padding: 2px 8px;
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
-        font-size: 8.8pt;
+        background: {blend_hex(_COMPOSER_BG, "#FFFFFF", 0.04)};
+        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.08)};
+        border-radius: {SOFT_RADIUS_MD + 6}px;
+        padding: 4px 12px;
+        color: {TEXT_PRIMARY};
+        font-size: 9.4pt;
         font-weight: 500;
     }}
 
     QToolButton#ComposerMetaChipButton:hover {{
-        background: {blend_hex(_COMPOSER_BG, SURFACE_ALT, 0.24)};
+        background: {blend_hex(_COMPOSER_BG, SURFACE_ALT, 0.36)};
+        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.14)};
     }}
 
     QToolButton#ComposerMetaChipButton:disabled {{
@@ -1173,31 +1180,95 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#ComposerMentionPopup {{
-        background: {_COMPOSER_BG};
+        background: transparent;
         border: none;
-        border-radius: {SOFT_RADIUS_MD}px;
+        border-radius: 0px;
+    }}
+
+    QFrame#ComposerMentionCard {{
+        background: {_POPUP_BG};
+        border: 1px solid {blend_hex(_POPUP_BORDER, SURFACE_BG, 0.55)};
+        border-radius: {SOFT_RADIUS_MD + 10}px;
+    }}
+
+    QLabel#ComposerMentionHeader {{
+        background: transparent;
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.3)};
+        font-size: 8.8pt;
+        font-weight: 600;
+        padding: 1px 4px 2px 4px;
     }}
 
     QListWidget#ComposerMentionList {{
         background: transparent;
         border: none;
-        border-radius: {SOFT_RADIUS_MD}px;
-        padding: 2px;
+        border-radius: {SOFT_RADIUS_MD + 6}px;
+        padding: 0px;
         outline: none;
-        font-size: 11.2pt;
+        font-size: 10.2pt;
+        show-decoration-selected: 1;
     }}
 
     QListWidget#ComposerMentionList::item {{
         background: transparent;
-        border-radius: {SOFT_RADIUS_SM}px;
-        padding: 8px 10px;
-        margin: 1px 0px;
-        color: {TEXT_PRIMARY};
+        border: none;
+        padding: 0px;
+        margin: 0px;
     }}
 
-    QListWidget#ComposerMentionList::item:selected {{
-        background: {blend_hex(SURFACE_ALT, ACCENT_BLUE_SOFT, 0.35)};
+    QWidget#ComposerMentionItem {{
+        background: transparent;
+        border: none;
+        border-radius: {SOFT_RADIUS_MD + 4}px;
+    }}
+
+    QWidget#ComposerMentionItem[selected="true"] {{
+        background: {_POPUP_ITEM_SELECTED};
+    }}
+
+    QLabel#ComposerMentionItemTitle {{
+        background: transparent;
         color: {TEXT_PRIMARY};
+        font-size: 10.2pt;
+        font-weight: 600;
+    }}
+
+    QLabel#ComposerMentionItemMeta {{
+        background: transparent;
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.12)};
+        font-size: 8.9pt;
+        font-weight: 500;
+        padding-left: 4px;
+    }}
+
+    QLabel#ComposerMentionItemIcon {{
+        background: transparent;
+        border: none;
+    }}
+
+    QListWidget#ComposerMentionList QScrollBar:vertical {{
+        background: transparent;
+        width: 8px;
+        margin: 4px 0px 4px 6px;
+    }}
+
+    QListWidget#ComposerMentionList QScrollBar::handle:vertical {{
+        background: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.1)};
+        border-radius: 4px;
+        min-height: 28px;
+    }}
+
+    QListWidget#ComposerMentionList QScrollBar::handle:vertical:hover {{
+        background: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.2)};
+    }}
+
+    QListWidget#ComposerMentionList QScrollBar::add-line:vertical,
+    QListWidget#ComposerMentionList QScrollBar::sub-line:vertical,
+    QListWidget#ComposerMentionList QScrollBar::add-page:vertical,
+    QListWidget#ComposerMentionList QScrollBar::sub-page:vertical {{
+        background: transparent;
+        border: none;
+        height: 0px;
     }}
 
     QPushButton#TranscriptJumpButton {{
@@ -1392,6 +1463,32 @@ def build_stylesheet() -> str:
         color: {TEXT_PRIMARY};
         border: none;
         padding: 6px;
+    }}
+
+    QMenu#ComposerPopupMenu {{
+        background: {_POPUP_BG};
+        color: {TEXT_PRIMARY};
+        border: 1px solid {_POPUP_BORDER};
+        border-radius: {SOFT_RADIUS_MD + 8}px;
+        padding: 6px;
+    }}
+
+    QMenu#ComposerPopupMenu::item {{
+        background: transparent;
+        border: none;
+        border-radius: {SOFT_RADIUS_MD + 4}px;
+        padding: 10px 14px;
+        margin: 1px 0px;
+    }}
+
+    QMenu#ComposerPopupMenu::item:selected {{
+        background: {_POPUP_ITEM_SELECTED};
+    }}
+
+    QMenu#ComposerPopupMenu::separator {{
+        height: 1px;
+        background: {blend_hex(BORDER, "#FFFFFF", 0.08)};
+        margin: 6px 8px;
     }}
 
     QMenuBar::item:selected,

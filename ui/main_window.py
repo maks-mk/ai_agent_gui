@@ -2,11 +2,12 @@ import os
 import sys
 
 from PySide6.QtCore import QSize, Qt, QTimer
-from PySide6.QtGui import QAction, QActionGroup, QCloseEvent
+from PySide6.QtGui import QAction, QActionGroup, QColor, QCloseEvent
 from PySide6.QtWidgets import (
     QApplication,
     QFileDialog,
     QFrame,
+    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -351,10 +352,12 @@ class MainWindow(QMainWindow):
         self.attach_button.setAccessibleName("Add attachments")
         self.attach_button.setAccessibleDescription("Add images or Add files")
         self.attach_menu = QMenu(self.attach_button)
+        self.attach_menu.setObjectName("ComposerPopupMenu")
         self.add_image_action = self.attach_menu.addAction(COMPOSER_ADD_IMAGE_LABEL)
         self.insert_file_path_action = self.attach_menu.addAction(COMPOSER_INSERT_FILE_PATH_LABEL)
         self.attach_button.setMenu(self.attach_menu)
         self.attach_button.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        self._apply_popup_shadow(self.attach_menu)
         control_row.addWidget(self.attach_button, 0, Qt.AlignVCenter)
 
         self.model_chip = QToolButton()
@@ -367,9 +370,11 @@ class MainWindow(QMainWindow):
         self.model_chip.setAccessibleName("Model selector")
         self.model_chip.setAccessibleDescription("Select the active model profile")
         self.model_chip_menu = QMenu(self.model_chip)
+        self.model_chip_menu.setObjectName("ComposerPopupMenu")
         self.model_chip.setMenu(self.model_chip_menu)
         self.model_chip_group = QActionGroup(self.model_chip_menu)
         self.model_chip_group.setExclusive(True)
+        self._apply_popup_shadow(self.model_chip_menu)
         control_row.addWidget(self.model_chip, 0, Qt.AlignVCenter)
 
         self.model_image_badge = QLabel("No image input")
@@ -434,6 +439,13 @@ class MainWindow(QMainWindow):
         self.splitter.setSizes([self._sidebar_width, 1000, self._inspector_width])
         layout.addWidget(self.splitter, 1)
         return workspace
+
+    def _apply_popup_shadow(self, popup: QWidget) -> None:
+        shadow = QGraphicsDropShadowEffect(popup)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 10)
+        shadow.setColor(QColor(0, 0, 0, 160))
+        popup.setGraphicsEffect(shadow)
 
     def _connect_signals(self) -> None:
         self.toggle_sidebar_action.triggered.connect(lambda _checked=False: self._toggle_sidebar())

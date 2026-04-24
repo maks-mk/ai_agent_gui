@@ -6,8 +6,20 @@ from pathlib import Path
 from typing import Any
 
 from PySide6.QtCore import QPoint, QMimeData, Qt, Signal
-from PySide6.QtGui import QKeyEvent, QTextCursor
-from PySide6.QtWidgets import QApplication, QFrame, QListWidget, QListWidgetItem, QPlainTextEdit, QVBoxLayout, QWidget
+from PySide6.QtGui import QColor, QKeyEvent, QTextCursor
+from PySide6.QtWidgets import (
+    QApplication,
+    QFrame,
+    QGraphicsDropShadowEffect,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QPlainTextEdit,
+    QSizePolicy,
+    QVBoxLayout,
+    QWidget,
+)
 
 from core.multimodal import can_read_image_file
 from .foundation import (
@@ -15,7 +27,9 @@ from .foundation import (
     COMPOSER_MENTION_MAX_ITEMS,
     COMPOSER_MENTION_POPUP_MAX_WIDTH,
     COMPOSER_MENTION_POPUP_MIN_WIDTH,
+    _fa_icon,
 )
+from ui.theme import ACCENT_BLUE, AMBER_WARNING, SUCCESS_GREEN, TEXT_MUTED
 
 
 class ComposerTextEdit(QPlainTextEdit):
@@ -416,49 +430,82 @@ class _ComposerMentionPopup(QFrame):
         super().__init__(None, window_flags)
         self._owner = owner
         self.setObjectName("ComposerMentionPopup")
-        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setAttribute(Qt.WA_StyledBackground, False)
         self.setAttribute(Qt.WA_ShowWithoutActivating, True)
+        self.setAttribute(Qt.WA_TranslucentBackground, True)
         self.setFrameShape(QFrame.NoFrame)
         self.setMinimumWidth(COMPOSER_MENTION_POPUP_MIN_WIDTH)
         self.setMaximumWidth(COMPOSER_MENTION_POPUP_MAX_WIDTH)
+        self._card = QFrame(self)
+        self._card.setObjectName("ComposerMentionCard")
+        shadow = QGraphicsDropShadowEffect(self._card)
+        shadow.setBlurRadius(28)
+        shadow.setOffset(0, 10)
+        shadow.setColor(QColor(0, 0, 0, 120))
+        self._card.setGraphicsEffect(shadow)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(10, 10, 10, 10)
         layout.setSpacing(0)
+        layout.addWidget(self._card)
+
+        card_layout = QVBoxLayout(self._card)
+        card_layout.setContentsMargins(8, 8, 8, 8)
+        card_layout.setSpacing(4)
+
+        self.header_label = QLabel("Файлы")
+        self.header_label.setObjectName("ComposerMentionHeader")
+        card_layout.addWidget(self.header_label)
 
         self.list_widget = QListWidget()
         self.list_widget.setObjectName("ComposerMentionList")
-        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAsNeeded)
+        self.list_widget.setFrameShape(QFrame.NoFrame)
+        self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list_widget.setTextElideMode(Qt.ElideMiddle)
         self.list_widget.setSelectionMode(QListWidget.SingleSelection)
+        self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.list_widget.setSpacing(1)
         self.list_widget.setFocusPolicy(Qt.NoFocus)
         self.list_widget.itemClicked.connect(self._on_item_clicked)
         self.list_widget.itemActivated.connect(self._on_item_clicked)
-        layout.addWidget(self.list_widget)
+        self.list_widget.currentRowChanged.connect(self._sync_item_states)
+        card_layout.addWidget(self.list_widget)
 
     def set_items(self, rows: list[dict[str, Any]]) -> None:
         self.list_widget.clear()
-        max_text_width = 0
+        max_text_width = self.header_label.fontMetrics().horizontalAdvance(self.header_label.text())
         metrics = self.list_widget.fontMetrics()
         for row in rows:
             relative = str(row["relative"])
-            text = str(row.get("display") or relative)
-            item = QListWidgetItem(text)
+            text = str(row.get("name") or row.get("display") or relative)
+            folder = str(row.get("folder") or "")
+            item = QListWidgetItem()
             item.setData(Qt.UserRole, relative)
             item.setToolTip(relative)
+            widget = _ComposerMentionItemWidget(
+                self._owner,
+                text=text,
+                folder=folder,
+                relative=relative,
+                is_dir=bool(row.get("is_dir")),
+            )
+            item.setSizeHint(widget.sizeHint())
             self.list_widget.addItem(item)
-            max_text_width = max(max_text_width, metrics.horizontalAdvance(text))
+            self.list_widget.setItemWidget(item, widget)
+            folder_width = widget.folder_width_hint()
+            max_text_width = max(max_text_width, metrics.horizontalAdvance(text) + folder_width + 64)
 
         if self.list_widget.count() > 0:
             self.list_widget.setCurrentRow(0)
         row_height = self.list_widget.sizeHintForRow(0) if self.list_widget.count() > 0 else 22
-        visible_count = min(8, max(1, self.list_widget.count()))
-        total_height = visible_count * max(20, row_height) + 8
+        visible_count = min(7, max(1, self.list_widget.count()))
+        total_height = visible_count * max(24, row_height) + max(0, (visible_count - 1) * 2) + 8
         self.list_widget.setFixedHeight(total_height)
-        self.setFixedHeight(total_height + 8)
-        target_width = max_text_width + 70
+        self.setFixedHeight(total_height + self.header_label.sizeHint().height() + 32)
+        target_width = max_text_width + 68
         popup_width = max(COMPOSER_MENTION_POPUP_MIN_WIDTH, min(COMPOSER_MENTION_POPUP_MAX_WIDTH, target_width))
         self.setFixedWidth(popup_width)
+        self._sync_item_states(self.list_widget.currentRow())
 
     def move_selection(self, delta: int) -> None:
         count = self.list_widget.count()
@@ -480,5 +527,82 @@ class _ComposerMentionPopup(QFrame):
         relative = str(item.data(Qt.UserRole) or "")
         if relative:
             self.file_selected.emit(relative)
+
+    def _sync_item_states(self, current_row: int) -> None:
+        for index in range(self.list_widget.count()):
+            item = self.list_widget.item(index)
+            widget = self.list_widget.itemWidget(item)
+            if isinstance(widget, _ComposerMentionItemWidget):
+                widget.set_selected(index == current_row)
+
+
+class _ComposerMentionItemWidget(QWidget):
+    def __init__(self, owner: QWidget, *, text: str, folder: str, relative: str, is_dir: bool) -> None:
+        super().__init__(owner)
+        self.setObjectName("ComposerMentionItem")
+        self._selected = False
+
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(10, 6, 10, 6)
+        layout.setSpacing(8)
+
+        self.icon_label = QLabel()
+        self.icon_label.setObjectName("ComposerMentionItemIcon")
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        self.icon_label.setFixedSize(18, 18)
+        self.icon_label.setPixmap(self._icon_for_entry(owner, relative=relative, is_dir=is_dir).pixmap(14, 14))
+        layout.addWidget(self.icon_label, 0, Qt.AlignVCenter)
+
+        self.title_label = QLabel(text)
+        self.title_label.setObjectName("ComposerMentionItemTitle")
+        self.title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
+        layout.addWidget(self.title_label, 1, Qt.AlignVCenter)
+
+        self.folder_label = QLabel(folder)
+        self.folder_label.setObjectName("ComposerMentionItemMeta")
+        self.folder_label.setVisible(bool(folder))
+        layout.addWidget(self.folder_label, 0, Qt.AlignVCenter)
+
+        self.set_selected(False)
+
+    def set_selected(self, selected: bool) -> None:
+        if self._selected == selected:
+            return
+        self._selected = selected
+        self.setProperty("selected", selected)
+        self.style().unpolish(self)
+        self.style().polish(self)
+        for child in (self.title_label, self.folder_label):
+            child.style().unpolish(child)
+            child.style().polish(child)
+        self.update()
+
+    def folder_width_hint(self) -> int:
+        if not self.folder_label.isVisible():
+            return 0
+        return self.folder_label.fontMetrics().horizontalAdvance(self.folder_label.text()) + 8
+
+    @staticmethod
+    def _icon_for_entry(owner: QWidget, *, relative: str, is_dir: bool):
+        if is_dir:
+            return _fa_icon("fa5s.folder", color=ACCENT_BLUE, size=13)
+
+        name = Path(relative).name.lower()
+        suffix = Path(relative).suffix.lower()
+        if name in {".env", ".env.example"} or suffix in {".env", ".ini", ".cfg", ".conf", ".toml", ".yaml", ".yml"}:
+            return _fa_icon("fa5s.sliders-h", color=AMBER_WARNING, size=13)
+        if suffix in {".py", ".js", ".ts", ".tsx", ".jsx", ".sh", ".ps1", ".bat", ".cmd", ".json", ".xml"}:
+            return _fa_icon("fa5s.file-code", color=SUCCESS_GREEN, size=13)
+        if suffix in {".md", ".txt", ".rst", ".log"}:
+            return _fa_icon("fa5s.file-alt", color=TEXT_MUTED, size=13)
+        if suffix in {".png", ".jpg", ".jpeg", ".webp", ".gif", ".bmp", ".svg"}:
+            return _fa_icon("fa5s.file-image", color=ACCENT_BLUE, size=13)
+        if suffix in {".zip", ".7z", ".tar", ".gz", ".rar"}:
+            return _fa_icon("fa5s.file-archive", color=AMBER_WARNING, size=13)
+        if suffix in {".pdf"}:
+            return _fa_icon("fa5s.file-pdf", color="#E56B6F", size=13)
+        if suffix in {".csv", ".tsv", ".xlsx"}:
+            return _fa_icon("fa5s.file-excel", color=SUCCESS_GREEN, size=13)
+        return _fa_icon("fa5s.file", color=TEXT_MUTED, size=13)
 
 
