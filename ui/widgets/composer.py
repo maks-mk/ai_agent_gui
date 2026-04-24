@@ -2,21 +2,23 @@ from __future__ import annotations
 
 import os
 import re
+import time
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QPoint, QMimeData, Qt, Signal
-from PySide6.QtGui import QColor, QKeyEvent, QTextCursor
+from PySide6.QtCore import QPoint, QMimeData, Qt, QTimer, Signal
+from PySide6.QtGui import QKeyEvent, QPainter, QTextCursor
 from PySide6.QtWidgets import (
     QApplication,
     QFrame,
-    QGraphicsDropShadowEffect,
     QHBoxLayout,
     QLabel,
     QListWidget,
     QListWidgetItem,
     QPlainTextEdit,
     QSizePolicy,
+    QStyle,
+    QStyleOption,
     QVBoxLayout,
     QWidget,
 )
@@ -46,17 +48,19 @@ class ComposerTextEdit(QPlainTextEdit):
         self._file_index: list[dict[str, Any]] = []
         self._file_index_root = ""
         self._file_index_static = False
-        self._mention_popup = _ComposerMentionPopup(self)
-        self._mention_popup.file_selected.connect(self._insert_selected_mention)
+        self._file_index_last_scan_at = 0.0
+        self._mention_popup: _ComposerMentionPopup | None = None
         self.textChanged.connect(self._refresh_mention_popup)
         self.cursorPositionChanged.connect(self._refresh_mention_popup)
         self.set_history_session("")
+        QTimer.singleShot(0, self._warm_file_index)
 
     def set_history_session(self, session_id: str) -> None:
         self._history_session_id = session_id or "__default__"
         self._history_by_session.setdefault(self._history_session_id, [])
         self._reset_history_navigation()
         self._close_mention_popup()
+        QTimer.singleShot(0, self._warm_file_index)
 
     def sync_session_history_from_transcript(self, session_id: str, transcript_payload: dict[str, Any] | None) -> None:
         key = session_id or "__default__"
@@ -120,15 +124,16 @@ class ComposerTextEdit(QPlainTextEdit):
         self._file_index.sort(key=lambda row: row["relative"])
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
-        if self._mention_popup.isVisible():
+        popup = self._mention_popup
+        if popup is not None and popup.isVisible():
             key = event.key()
             if key == Qt.Key_Up:
                 event.accept()
-                self._mention_popup.move_selection(-1)
+                popup.move_selection(-1)
                 return
             if key == Qt.Key_Down:
                 event.accept()
-                self._mention_popup.move_selection(1)
+                popup.move_selection(1)
                 return
             if key in {Qt.Key_Return, Qt.Key_Enter} and not (event.modifiers() & Qt.ShiftModifier):
                 event.accept()
@@ -201,8 +206,8 @@ class ComposerTextEdit(QPlainTextEdit):
         return text
     
     def focusOutEvent(self, event) -> None:  # type: ignore[override]
-        self._close_mention_popup()
         super().focusOutEvent(event)
+        QTimer.singleShot(0, self._close_mention_popup_if_inactive)
 
     def mouseReleaseEvent(self, event) -> None:  # type: ignore[override]
         super().mouseReleaseEvent(event)
@@ -263,11 +268,13 @@ class ComposerTextEdit(QPlainTextEdit):
             self._close_mention_popup()
             return
 
-        self._mention_popup.set_items(matches)
+        popup = self._ensure_mention_popup()
+        popup.ensure_host()
+        popup.set_items(matches)
         self._position_mention_popup()
-        if not self._mention_popup.isVisible():
-            self._mention_popup.show()
-        self._mention_popup.raise_()
+        if not popup.isVisible():
+            popup.show()
+        popup.raise_()
 
     def _current_mention_token(self) -> dict[str, int | str] | None:
         text = self.toPlainText()
@@ -296,7 +303,12 @@ class ComposerTextEdit(QPlainTextEdit):
             return
         root = Path.cwd()
         root_str = str(root)
-        if not force_refresh and self._file_index_root == root_str:
+        should_rescan = (
+            force_refresh
+            or self._file_index_root != root_str
+            or not self._file_index
+        )
+        if not should_rescan:
             return
 
         rows: dict[str, dict[str, Any]] = {}
@@ -310,6 +322,7 @@ class ComposerTextEdit(QPlainTextEdit):
                 self._add_index_row(rows, self._build_file_index_row(root, full_path))
         self._file_index = sorted(rows.values(), key=lambda row: row["relative"])
         self._file_index_root = root_str
+        self._file_index_last_scan_at = time.monotonic()
 
     @staticmethod
     def _add_index_row(rows: dict[str, dict[str, Any]], row: dict[str, Any]) -> None:
@@ -338,10 +351,19 @@ class ComposerTextEdit(QPlainTextEdit):
         }
 
     def _filter_mention_candidates(self, query_lower: str) -> list[dict[str, Any]]:
-        self._ensure_file_index(force_refresh=True)
+        self._ensure_file_index()
         if not self._file_index:
             return []
 
+        matches = self._rank_mention_candidates(query_lower)
+        if matches or self._file_index_static:
+            return matches
+
+        # Files can appear after startup; do one refresh on cache miss.
+        self._ensure_file_index(force_refresh=True)
+        return self._rank_mention_candidates(query_lower)
+
+    def _rank_mention_candidates(self, query_lower: str) -> list[dict[str, Any]]:
         if not query_lower:
             return sorted(
                 self._file_index,
@@ -381,20 +403,32 @@ class ComposerTextEdit(QPlainTextEdit):
         ranked.sort(key=lambda item: (item[0], item[1], item[2], item[3], item[4]["relative"]))
         return [item[4] for item in ranked[:COMPOSER_MENTION_MAX_ITEMS]]
 
+    def _warm_file_index(self) -> None:
+        if self._file_index_static:
+            return
+        if time.monotonic() - self._file_index_last_scan_at < 3.0 and self._file_index:
+            return
+        self._ensure_file_index()
+
     def _position_mention_popup(self) -> None:
+        popup = self._mention_popup
+        if popup is None:
+            return
         anchor = self.cursorRect().bottomLeft() + QPoint(0, 6)
-        global_pos = self.mapToGlobal(anchor)
-        popup_size = self._mention_popup.sizeHint()
-        screen = self.screen() or QApplication.primaryScreen()
-        if screen is not None:
-            bounds = screen.availableGeometry()
-            max_x = max(bounds.left() + 8, bounds.right() - popup_size.width() - 8)
-            max_y = max(bounds.top() + 8, bounds.bottom() - popup_size.height() - 8)
-            global_pos.setX(max(bounds.left() + 8, min(global_pos.x(), max_x)))
-            global_pos.setY(max(bounds.top() + 8, min(global_pos.y(), max_y)))
-        self._mention_popup.move(global_pos)
+        popup_parent = popup.parentWidget() or self.window()
+        local_pos = self.mapTo(popup_parent, anchor)
+        popup_size = popup.sizeHint()
+        bounds = popup_parent.rect()
+        max_x = max(8, bounds.width() - popup_size.width() - 8)
+        max_y = max(8, bounds.height() - popup_size.height() - 8)
+        local_pos.setX(max(8, min(local_pos.x(), max_x)))
+        local_pos.setY(max(8, min(local_pos.y(), max_y)))
+        popup.move(local_pos)
 
     def _accept_current_mention(self) -> None:
+        if self._mention_popup is None:
+            self._close_mention_popup()
+            return
         selected = self._mention_popup.current_relative_path()
         if not selected:
             self._close_mention_popup()
@@ -417,47 +451,63 @@ class ComposerTextEdit(QPlainTextEdit):
         self._close_mention_popup()
 
     def _close_mention_popup(self) -> None:
-        self._mention_popup.hide()
+        if self._mention_popup is not None:
+            self._mention_popup.hide()
+
+    def _close_mention_popup_if_inactive(self) -> None:
+        popup = self._mention_popup
+        if popup is None or not popup.isVisible():
+            return
+        focus_widget = QApplication.focusWidget()
+        if self.hasFocus():
+            return
+        if focus_widget is not None and popup.isAncestorOf(focus_widget):
+            return
+        if popup.underMouse():
+            return
+        self._close_mention_popup()
+
+    def _popup_host_widget(self) -> QWidget:
+        host = self.window()
+        if host is None or host is self:
+            return self.parentWidget() or self
+        central_widget_getter = getattr(host, "centralWidget", None)
+        if callable(central_widget_getter):
+            central = central_widget_getter()
+            if isinstance(central, QWidget):
+                return central
+        return host
+
+    def _ensure_mention_popup(self) -> "_ComposerMentionPopup":
+        if self._mention_popup is None:
+            self._mention_popup = _ComposerMentionPopup(self, host=self._popup_host_widget())
+            self._mention_popup.file_selected.connect(self._insert_selected_mention)
+        return self._mention_popup
 
 
 class _ComposerMentionPopup(QFrame):
     file_selected = Signal(str)
+    DISPLAY_TEXT_ROLE = int(Qt.UserRole) + 1
 
-    def __init__(self, owner: QWidget) -> None:
-        window_flags = Qt.Tool | Qt.FramelessWindowHint
-        if hasattr(Qt, "WindowDoesNotAcceptFocus"):
-            window_flags |= Qt.WindowDoesNotAcceptFocus
-        super().__init__(None, window_flags)
+    def __init__(self, owner: QWidget, *, host: QWidget) -> None:
+        popup_parent = host
+        super().__init__(popup_parent)
         self._owner = owner
         self.setObjectName("ComposerMentionPopup")
-        self.setAttribute(Qt.WA_StyledBackground, False)
-        self.setAttribute(Qt.WA_ShowWithoutActivating, True)
-        self.setAttribute(Qt.WA_TranslucentBackground, True)
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self.setFrameShape(QFrame.NoFrame)
         self.setMinimumWidth(COMPOSER_MENTION_POPUP_MIN_WIDTH)
         self.setMaximumWidth(COMPOSER_MENTION_POPUP_MAX_WIDTH)
-        self._card = QFrame(self)
-        self._card.setObjectName("ComposerMentionCard")
-        shadow = QGraphicsDropShadowEffect(self._card)
-        shadow.setBlurRadius(28)
-        shadow.setOffset(0, 10)
-        shadow.setColor(QColor(0, 0, 0, 120))
-        self._card.setGraphicsEffect(shadow)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(10, 10, 10, 10)
-        layout.setSpacing(0)
-        layout.addWidget(self._card)
+        layout.setContentsMargins(8, 8, 8, 8)
+        layout.setSpacing(4)
 
-        card_layout = QVBoxLayout(self._card)
-        card_layout.setContentsMargins(8, 8, 8, 8)
-        card_layout.setSpacing(4)
-
-        self.header_label = QLabel("Файлы")
+        self.header_label = QLabel("Файлы", self)
         self.header_label.setObjectName("ComposerMentionHeader")
-        card_layout.addWidget(self.header_label)
+        layout.addWidget(self.header_label)
 
-        self.list_widget = QListWidget()
+        self.list_widget = QListWidget(self)
         self.list_widget.setObjectName("ComposerMentionList")
         self.list_widget.setFrameShape(QFrame.NoFrame)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
@@ -469,7 +519,21 @@ class _ComposerMentionPopup(QFrame):
         self.list_widget.itemClicked.connect(self._on_item_clicked)
         self.list_widget.itemActivated.connect(self._on_item_clicked)
         self.list_widget.currentRowChanged.connect(self._sync_item_states)
-        card_layout.addWidget(self.list_widget)
+        layout.addWidget(self.list_widget)
+
+    def ensure_host(self) -> None:
+        host = self._owner.window()
+        if host is None or host is self._owner:
+            host = self._owner.parentWidget() or self._owner
+        central_widget_getter = getattr(host, "centralWidget", None)
+        if callable(central_widget_getter):
+            central = central_widget_getter()
+            if isinstance(central, QWidget):
+                host = central
+        if self.parentWidget() is host:
+            return
+        self.hide()
+        self.setParent(host)
 
     def set_items(self, rows: list[dict[str, Any]]) -> None:
         self.list_widget.clear()
@@ -477,11 +541,13 @@ class _ComposerMentionPopup(QFrame):
         metrics = self.list_widget.fontMetrics()
         for row in rows:
             relative = str(row["relative"])
-            text = str(row.get("name") or row.get("display") or relative)
+            display_text = str(row.get("display") or relative)
+            text = str(row.get("name") or display_text or relative)
             folder = str(row.get("folder") or "")
             item = QListWidgetItem()
+            item.setData(Qt.DisplayRole, "")
+            item.setData(self.DISPLAY_TEXT_ROLE, display_text)
             item.setData(Qt.UserRole, relative)
-            item.setToolTip(relative)
             widget = _ComposerMentionItemWidget(
                 self._owner,
                 text=text,
@@ -501,7 +567,7 @@ class _ComposerMentionPopup(QFrame):
         visible_count = min(7, max(1, self.list_widget.count()))
         total_height = visible_count * max(24, row_height) + max(0, (visible_count - 1) * 2) + 8
         self.list_widget.setFixedHeight(total_height)
-        self.setFixedHeight(total_height + self.header_label.sizeHint().height() + 32)
+        self.setFixedHeight(total_height + self.header_label.sizeHint().height() + 24)
         target_width = max_text_width + 68
         popup_width = max(COMPOSER_MENTION_POPUP_MIN_WIDTH, min(COMPOSER_MENTION_POPUP_MAX_WIDTH, target_width))
         self.setFixedWidth(popup_width)
@@ -540,30 +606,38 @@ class _ComposerMentionItemWidget(QWidget):
     def __init__(self, owner: QWidget, *, text: str, folder: str, relative: str, is_dir: bool) -> None:
         super().__init__(owner)
         self.setObjectName("ComposerMentionItem")
+        self.setAttribute(Qt.WA_StyledBackground, True)
         self._selected = False
 
         layout = QHBoxLayout(self)
         layout.setContentsMargins(10, 6, 10, 6)
         layout.setSpacing(8)
 
-        self.icon_label = QLabel()
+        self.icon_label = QLabel(self)
         self.icon_label.setObjectName("ComposerMentionItemIcon")
         self.icon_label.setAlignment(Qt.AlignCenter)
         self.icon_label.setFixedSize(18, 18)
         self.icon_label.setPixmap(self._icon_for_entry(owner, relative=relative, is_dir=is_dir).pixmap(14, 14))
         layout.addWidget(self.icon_label, 0, Qt.AlignVCenter)
 
-        self.title_label = QLabel(text)
+        self.title_label = QLabel(text, self)
         self.title_label.setObjectName("ComposerMentionItemTitle")
         self.title_label.setSizePolicy(QSizePolicy.Expanding, QSizePolicy.Preferred)
         layout.addWidget(self.title_label, 1, Qt.AlignVCenter)
 
-        self.folder_label = QLabel(folder)
+        self.folder_label = QLabel(folder, self)
         self.folder_label.setObjectName("ComposerMentionItemMeta")
         self.folder_label.setVisible(bool(folder))
         layout.addWidget(self.folder_label, 0, Qt.AlignVCenter)
 
         self.set_selected(False)
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        option = QStyleOption()
+        option.initFrom(self)
+        painter = QPainter(self)
+        self.style().drawPrimitive(QStyle.PE_Widget, option, painter, self)
+        super().paintEvent(event)
 
     def set_selected(self, selected: bool) -> None:
         if self._selected == selected:

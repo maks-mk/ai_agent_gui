@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QEvent, QMimeData, QObject, Qt, Signal
 from PySide6.QtGui import QImage, QKeyEvent, QTextCursor, QTextFormat
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QFrame, QPushButton, QSizePolicy, QToolBar
+from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QFrame, QPushButton, QSizePolicy, QToolBar, QWidget
 
 import main as agent_cli
 from core.model_profiles import normalize_profiles_payload
@@ -18,6 +18,7 @@ from core.tool_policy import ToolMetadata
 from ui.runtime import build_runtime_snapshot, summarize_approval_request
 from ui.streaming import StreamEvent
 from ui.theme import AMBER_WARNING, BORDER, ERROR_RED, SURFACE_BG, SURFACE_CARD, TEXT_MUTED
+from ui.widgets.composer import _ComposerMentionItemWidget
 from ui.widgets.foundation import AutoTextBrowser, CodeBlockWidget, CopySafePlainTextEdit, TRANSCRIPT_MAX_WIDTH
 from ui.widgets.messages import AssistantMessageWidget
 
@@ -482,6 +483,33 @@ class GuiUxTests(unittest.TestCase):
         self.assertIn(self.window.composer.format_file_reference(file_path), self.window.composer.toPlainText())
         self.assertEqual(self.window.draft_image_attachments, [])
 
+    def test_insert_file_paths_attaches_images_for_image_capable_model(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        image_path = self._make_test_image_file("picked.png")
+
+        with mock.patch.object(agent_cli.QFileDialog, "getOpenFileNames", return_value=([image_path], "")):
+            self.window._insert_file_paths()
+
+        self.assertEqual(self.window.composer.toPlainText(), "")
+        self.assertEqual(len(self.window.draft_image_attachments), 1)
+        self.assertEqual(self.window.draft_image_attachments[0]["file_name"], "picked.png")
+        self.assertFalse(self.window.composer_attachments_strip.isHidden())
+
+    def test_insert_file_paths_falls_back_to_text_when_image_input_is_disabled(self):
+        payload = self._snapshot_payload()
+        payload["model_capabilities"] = {"image_input_supported": False}
+        payload["model_profiles"]["profiles"][0]["supports_image_input"] = False
+        self.window._handle_initialized(payload)
+        image_path = self._make_test_image_file("fallback.png")
+
+        with mock.patch.object(agent_cli.QFileDialog, "getOpenFileNames", return_value=([image_path], "")):
+            self.window._insert_file_paths()
+
+        self.assertIn(self.window.composer.format_file_reference(image_path), self.window.composer.toPlainText())
+        self.assertEqual(self.window.draft_image_attachments, [])
+        self.assertFalse(self.window.composer_notice_label.isHidden())
+        self.assertIn("does not support image input", self.window.composer_notice_label.text())
+
     def test_composer_paste_single_line_text_drops_trailing_newline(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window.composer.setPlainText("Открой ")
@@ -640,6 +668,8 @@ class GuiUxTests(unittest.TestCase):
 
     def test_mention_popup_selects_file_and_has_priority_over_submit(self):
         self.window._handle_initialized(self._snapshot_payload())
+        self.window.show()
+        self._process_events()
         self.window.composer.set_file_index_for_testing(
             ["main.py", "manual/main_notes.md", "core/gui_widgets.py"]
         )
@@ -647,10 +677,11 @@ class GuiUxTests(unittest.TestCase):
         self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
 
         self._press_composer_key(Qt.Key_I, "i")
+        self.window.composer._refresh_mention_popup()
         self.assertTrue(self.window.composer._mention_popup.isVisible())
 
-        self._press_composer_key(Qt.Key_Down)
-        self._press_composer_key(Qt.Key_Return, "\r")
+        self.window.composer._mention_popup.move_selection(1)
+        self.window.composer._accept_current_mention()
 
         self.assertEqual(self.window.composer.toPlainText(), "manual/main_notes.md")
         self.assertFalse(self.window.composer._mention_popup.isVisible())
@@ -658,6 +689,8 @@ class GuiUxTests(unittest.TestCase):
 
     def test_mention_popup_opens_on_at_character_input(self):
         self.window._handle_initialized(self._snapshot_payload())
+        self.window.show()
+        self._process_events()
         self.window.composer.set_file_index_for_testing(["main.py"])
         at_key = Qt.Key_At if hasattr(Qt, "Key_At") else Qt.Key_A
 
@@ -667,6 +700,8 @@ class GuiUxTests(unittest.TestCase):
 
     def test_mention_popup_shows_root_files_first_and_is_wider(self):
         self.window._handle_initialized(self._snapshot_payload())
+        self.window.show()
+        self._process_events()
         self.window.composer.set_file_index_for_testing(
             ["sub/main.py", "root.py", "nested/deep/file.txt"]
         )
@@ -677,10 +712,44 @@ class GuiUxTests(unittest.TestCase):
         self.assertTrue(self.window.composer._mention_popup.isVisible())
         self.assertEqual(self.window.composer._mention_popup.current_relative_path(), "root.py")
         self.assertGreaterEqual(self.window.composer._mention_popup.width(), 560)
-        self.assertIn("/", self.window.composer._mention_popup.list_widget.item(1).text())
+        first_item = self.window.composer._mention_popup.list_widget.item(0)
+        first_widget = self.window.composer._mention_popup.list_widget.itemWidget(first_item)
+        self.assertEqual(first_item.toolTip(), "")
+        self.assertIsNotNone(first_widget)
+        self.assertTrue(bool(first_widget.property("selected")))
+        self.assertIn(
+            "/",
+            str(
+                self.window.composer._mention_popup.list_widget.item(1).data(
+                    self.window.composer._mention_popup.DISPLAY_TEXT_ROLE
+                )
+                or ""
+            ),
+        )
+
+    def test_mention_item_widget_children_are_not_created_as_top_level_windows(self):
+        owner = QWidget()
+        self.addCleanup(owner.deleteLater)
+        widget = _ComposerMentionItemWidget(
+            owner,
+            text="theme.py",
+            folder="ui",
+            relative="ui/theme.py",
+            is_dir=False,
+        )
+        self.addCleanup(widget.deleteLater)
+
+        self.assertIs(widget.icon_label.parentWidget(), widget)
+        self.assertIs(widget.title_label.parentWidget(), widget)
+        self.assertIs(widget.folder_label.parentWidget(), widget)
+        self.assertFalse(widget.icon_label.isWindow())
+        self.assertFalse(widget.title_label.isWindow())
+        self.assertFalse(widget.folder_label.isWindow())
 
     def test_mention_popup_includes_directories_from_indexed_files(self):
         self.window._handle_initialized(self._snapshot_payload())
+        self.window.show()
+        self._process_events()
         self.window.composer.set_file_index_for_testing(
             ["docs/readme.md", "docs/nested/info.txt", "main.py"]
         )
@@ -690,7 +759,12 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertTrue(self.window.composer._mention_popup.isVisible())
         items = [
-            self.window.composer._mention_popup.list_widget.item(index).text()
+            str(
+                self.window.composer._mention_popup.list_widget.item(index).data(
+                    self.window.composer._mention_popup.DISPLAY_TEXT_ROLE
+                )
+                or ""
+            )
             for index in range(self.window.composer._mention_popup.list_widget.count())
         ]
         self.assertIn("docs/", items)
@@ -698,6 +772,8 @@ class GuiUxTests(unittest.TestCase):
 
     def test_mention_popup_refresh_sees_files_created_after_startup(self):
         self.window._handle_initialized(self._snapshot_payload())
+        self.window.show()
+        self._process_events()
         temp_root = Path.cwd() / ".tmp_tests" / f"composer-mention-{time.time_ns()}"
         temp_root.mkdir(parents=True, exist_ok=True)
         self.addCleanup(lambda: temp_root.exists() and shutil.rmtree(temp_root, ignore_errors=True))
@@ -706,7 +782,10 @@ class GuiUxTests(unittest.TestCase):
             self.window.composer.setPlainText("@late")
             self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
             self.window.composer._refresh_mention_popup()
-            self.assertFalse(self.window.composer._mention_popup.isVisible())
+            self.assertTrue(
+                self.window.composer._mention_popup is None
+                or not self.window.composer._mention_popup.isVisible()
+            )
 
             late_dir = temp_root / "late-dir"
             late_dir.mkdir()
@@ -717,7 +796,12 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertTrue(self.window.composer._mention_popup.isVisible())
         items = [
-            self.window.composer._mention_popup.list_widget.item(index).text()
+            str(
+                self.window.composer._mention_popup.list_widget.item(index).data(
+                    self.window.composer._mention_popup.DISPLAY_TEXT_ROLE
+                )
+                or ""
+            )
             for index in range(self.window.composer._mention_popup.list_widget.count())
         ]
         self.assertIn("late-dir/", items)
@@ -725,6 +809,8 @@ class GuiUxTests(unittest.TestCase):
 
     def test_mention_popup_closes_on_escape_no_matches_and_cursor_change(self):
         self.window._handle_initialized(self._snapshot_payload())
+        self.window.show()
+        self._process_events()
         self.window.composer.set_file_index_for_testing(["main.py"])
         self.window.composer.setPlainText("@ma")
         self.window.composer.moveCursor(QTextCursor.MoveOperation.End)

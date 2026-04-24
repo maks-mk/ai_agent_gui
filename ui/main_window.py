@@ -26,6 +26,7 @@ from PySide6.QtWidgets import (
 from core.constants import AGENT_VERSION
 from core.multimodal import (
     DEFAULT_MODEL_CAPABILITIES,
+    can_read_image_file,
     import_image_attachment_from_file,
     import_image_attachment_from_qimage,
     normalize_image_attachments,
@@ -326,7 +327,7 @@ class MainWindow(QMainWindow):
         pill_layout.addWidget(self.composer_notice_label)
 
         self.composer = ComposerTextEdit()
-        self.composer.setPlaceholderText("Ask the agent, attach images, or @-Add files…")
+        self.composer.setPlaceholderText("Ask the agent, Attach images, or @ -Add files…")
         self.composer.setAccessibleName("Composer")
         self.composer.setAccessibleDescription("Write a request for the agent")
         line_spacing = max(14, self.composer.fontMetrics().lineSpacing())
@@ -987,19 +988,41 @@ class MainWindow(QMainWindow):
         if not file_paths:
             return
 
+        image_paths: list[str] = []
+        text_paths: list[str] = []
+        for raw_path in file_paths:
+            path = str(raw_path or "").strip()
+            if not path:
+                continue
+            if can_read_image_file(path):
+                image_paths.append(path)
+            else:
+                text_paths.append(path)
+
+        if image_paths and self._active_model_supports_images():
+            self._import_image_files(image_paths)
+        elif image_paths:
+            text_paths.extend(image_paths)
+            self._show_composer_notice(
+                "Current model does not support image input. Inserted image file paths as text references instead.",
+                level="warning",
+            )
+
         current_text = self.composer.toPlainText()
-        if current_text and not current_text.endswith(" "):
-            current_text += " "
+        if text_paths:
+            if current_text and not current_text.endswith(" "):
+                current_text += " "
 
-        for path in file_paths:
-            current_text += f"{self.composer.format_file_reference(path)} "
+            for path in text_paths:
+                current_text += f"{self.composer.format_file_reference(path)} "
 
-        self.composer.setPlainText(current_text)
-        # Move cursor to end
-        from PySide6.QtGui import QTextCursor
-        cursor = self.composer.textCursor()
-        cursor.movePosition(QTextCursor.MoveOperation.End)
-        self.composer.setTextCursor(cursor)
+            self.composer.setPlainText(current_text)
+            # Move cursor to end
+            from PySide6.QtGui import QTextCursor
+
+            cursor = self.composer.textCursor()
+            cursor.movePosition(QTextCursor.MoveOperation.End)
+            self.composer.setTextCursor(cursor)
         self.composer.setFocus()
 
     def _toggle_sidebar(self) -> None:

@@ -1180,12 +1180,6 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#ComposerMentionPopup {{
-        background: transparent;
-        border: none;
-        border-radius: 0px;
-    }}
-
-    QFrame#ComposerMentionCard {{
         background: {_POPUP_BG};
         border: 1px solid {blend_hex(_POPUP_BORDER, SURFACE_BG, 0.55)};
         border-radius: {SOFT_RADIUS_MD + 10}px;
@@ -1214,6 +1208,7 @@ def build_stylesheet() -> str:
         border: none;
         padding: 0px;
         margin: 0px;
+        color: transparent;
     }}
 
     QWidget#ComposerMentionItem {{
@@ -1223,7 +1218,16 @@ def build_stylesheet() -> str:
     }}
 
     QWidget#ComposerMentionItem[selected="true"] {{
-        background: {_POPUP_ITEM_SELECTED};
+        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.2)};
+        border: 1px solid {blend_hex(TEXT_PRIMARY, SURFACE_ALT, 0.78)};
+    }}
+
+    QWidget#ComposerMentionItem[selected="true"] QLabel#ComposerMentionItemTitle {{
+        color: {blend_hex(TEXT_PRIMARY, "#FFFFFF", 0.16)};
+    }}
+
+    QWidget#ComposerMentionItem[selected="true"] QLabel#ComposerMentionItemMeta {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
     }}
 
     QLabel#ComposerMentionItemTitle {{
