@@ -21,6 +21,12 @@
 
 Текущая точка входа находится в [`main.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/main.py), который проксирует запуск в [`ui/main_window.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/ui/main_window.py). Сборка и маршрутизация графа агента находятся в [`agent.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/agent.py).
 
+После последнего рефакторинга внутренняя структура стала более модульной:
+
+- orchestration узлов LangGraph вынесена в [`core/node_orchestrators.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/core/node_orchestrators.py)
+- runtime GUI разделён на payload/builders, session coordination и worker lifecycle через [`ui/runtime_payloads.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/ui/runtime_payloads.py), [`ui/runtime_session.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/ui/runtime_session.py) и [`ui/runtime_worker.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/ui/runtime_worker.py)
+- state-heavy логика окна разгружена в [`ui/main_window_state.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/ui/main_window_state.py)
+
 ## Runtime Flow
 
 Актуальный граф в [`agent.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/agent.py):
@@ -60,6 +66,12 @@ recovery -> update_step | END
 - переключатель активной модели и окно настроек профилей
 - info popup с вкладками runtime, tools и help
 - переключение проекта, которое создаёт новый чат-контекст для выбранной папки
+
+Особенности composer:
+
+- локальные файлы можно вставлять через `Add files…`, drag-and-drop или clipboard paste
+- `@`-mention popup показывает файлы и директории из текущего workspace
+- список для `@` пересканируется динамически, поэтому новые файлы и папки, появившиеся после запуска приложения, тоже доступны без перезапуска
 
 Горячие клавиши:
 
@@ -142,6 +154,12 @@ python main.py
 - [`tools/filesystem_impl/`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/tools/filesystem_impl) низкоуровневая реализация filesystem-операций
 - [`ui/`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/ui) Qt runtime bridge, главное окно, виджеты и streaming-представление
 - [`tests/`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/tests) тесты runtime, tooling, policy, model profiles и GUI
+
+Внутри `ui/` сейчас полезно знать такие узлы ответственности:
+
+- [`ui/runtime.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/ui/runtime.py) совместимый facade-слой для runtime API
+- [`ui/widgets/composer.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/ui/widgets/composer.py) история ввода, paste/drag-and-drop и `@`-mentions
+- [`ui/main_window_state.py`](/D:/py_projects/simple_ai_agent/agent+stategraph/v0.62.3b_gui/ui/main_window_state.py) event routing, composer state и статусный таймер
 
 ## Конфигурация
 
@@ -289,6 +307,12 @@ Prompt-слои в текущем коде:
 Запуск тестов:
 
 ```powershell
+venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
+```
+
+Если в dev-окружении установлен `pytest`, можно запускать и через него:
+
+```powershell
 venv\Scripts\python.exe -m pytest
 ```
 
@@ -300,6 +324,7 @@ venv\Scripts\python.exe -m pytest
 - session storage и checkpoints
 - model profile management
 - GUI-поведения и layout
+- composer UX: clipboard paste, drag-and-drop, image attachments и `@`-mentions
 
 ## Требования И Примечания
 
