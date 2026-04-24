@@ -310,32 +310,38 @@ def build_stylesheet() -> str:
     }}
 
     QCheckBox#ModelProfileEnabledSwitch {{
-        background: transparent;
-        spacing: 0px;
+        background: #D4D4D4;
+        border-radius: 9px;
         padding: 0px;
+        spacing: 0px;
+    }}
+
+    QCheckBox#ModelProfileEnabledSwitch:hover {{
+        background: #C5C5C5;
     }}
 
     QCheckBox#ModelProfileEnabledSwitch::indicator {{
-        width: 26px;
+        width: 14px;
         height: 14px;
         border-radius: 7px;
-        background: {blend_hex(SURFACE_ALT, "#000000", 0.08)};
-        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.08)};
+        background: #1A1A1A;
+        border: none;
     }}
 
-    QCheckBox#ModelProfileEnabledSwitch::indicator:hover {{
-        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.04)};
+    /* Выключенное состояние (сдвигаем кружок влево) */
+    QCheckBox#ModelProfileEnabledSwitch::indicator:unchecked {{
+        subcontrol-origin: margin;
+        subcontrol-position: left center;
+        margin-left: 2px;
     }}
 
+    /* Включенное состояние (сдвигаем кружок вправо) */
     QCheckBox#ModelProfileEnabledSwitch::indicator:checked {{
-        background: {blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.28)};
-        border: 1px solid {blend_hex(SUCCESS_GREEN, "#FFFFFF", 0.18)};
+        subcontrol-origin: margin;
+        subcontrol-position: right center;
+        margin-right: 2px;
     }}
-
-    QCheckBox#ModelProfileEnabledSwitch::indicator:checked:hover {{
-        background: {blend_hex(SUCCESS_GREEN, "#FFFFFF", 0.16)};
-    }}
-
+    
     QCheckBox#ModelSupportsImagesCheckbox {{
         background: transparent;
         border: none;
