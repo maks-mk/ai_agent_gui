@@ -39,10 +39,10 @@ class ModelSettingsDialog(QDialog):
     def __init__(self, payload: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("ModelSettingsDialog")
-        self.setWindowTitle("Model Settings")
+        self.setWindowTitle("Model Profiles")
         self.setModal(True)
-        self.resize(960, 560)
-        self.setMinimumSize(860, 500)
+        self.resize(1020, 620)
+        self.setMinimumSize(900, 540)
 
         normalized = normalize_profiles_payload(payload or {})
         self._profiles: list[dict[str, Any]] = [dict(item) for item in normalized.get("profiles", [])]
@@ -55,33 +55,51 @@ class ModelSettingsDialog(QDialog):
         self._name_manual_flags = self._compute_initial_name_manual_flags()
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(16, 14, 16, 14)
-        root.setSpacing(10)
+        root.setContentsMargins(18, 18, 18, 18)
+        root.setSpacing(12)
 
-        header_row = QHBoxLayout()
-        header_row.setContentsMargins(0, 0, 0, 0)
-        header_row.setSpacing(8)
+        hero_card = QFrame()
+        hero_card.setObjectName("ModelSettingsHeroCard")
+        hero_layout = QHBoxLayout(hero_card)
+        hero_layout.setContentsMargins(18, 16, 18, 16)
+        hero_layout.setSpacing(16)
+
+        hero_copy = QVBoxLayout()
+        hero_copy.setContentsMargins(0, 0, 0, 0)
+        hero_copy.setSpacing(6)
 
         header_title = QLabel("Model Profiles")
         header_title.setObjectName("ModelSettingsTitle")
-        header_row.addWidget(header_title, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        hero_copy.addWidget(header_title, 0, Qt.AlignLeft | Qt.AlignTop)
 
-        self.profile_count_chip = QLabel("")
-        self.profile_count_chip.setObjectName("ModelSettingsChip")
-        header_row.addWidget(self.profile_count_chip, 0, Qt.AlignLeft | Qt.AlignVCenter)
-        header_row.addStretch(1)
-        root.addLayout(header_row)
-
-        header_hint = QLabel("Manage provider, model, and API credentials. The active profile is used for new runs.")
+        header_hint = QLabel(
+            "Keep providers tidy, switch the active profile for new runs, and tune image support without losing your place."
+        )
         header_hint.setObjectName("ModelSettingsSubtitle")
         header_hint.setWordWrap(True)
-        root.addWidget(header_hint)
+        hero_copy.addWidget(header_hint)
 
         active_name = str(self._active_profile or "").strip() or "none"
         self.active_profile_label = QLabel(f"Active now: {active_name}")
         self.active_profile_label.setObjectName("ModelSettingsMeta")
         self.active_profile_label.setWordWrap(True)
-        root.addWidget(self.active_profile_label)
+        hero_copy.addWidget(self.active_profile_label)
+        hero_layout.addLayout(hero_copy, 1)
+
+        hero_stats = QVBoxLayout()
+        hero_stats.setContentsMargins(0, 0, 0, 0)
+        hero_stats.setSpacing(8)
+
+        self.profile_count_chip = QLabel("")
+        self.profile_count_chip.setObjectName("ModelSettingsChip")
+        hero_stats.addWidget(self.profile_count_chip, 0, Qt.AlignRight)
+
+        self.left_meta_chip = QLabel("")
+        self.left_meta_chip.setObjectName("ModelSettingsChip")
+        hero_stats.addWidget(self.left_meta_chip, 0, Qt.AlignRight)
+        hero_stats.addStretch(1)
+        hero_layout.addLayout(hero_stats, 0)
+        root.addWidget(hero_card)
 
         self.body_splitter = QSplitter(Qt.Horizontal)
         self.body_splitter.setChildrenCollapsible(False)
@@ -96,23 +114,19 @@ class ModelSettingsDialog(QDialog):
         left_header = QHBoxLayout()
         left_header.setContentsMargins(0, 0, 0, 0)
         left_header.setSpacing(6)
-        left_label = QLabel("Profiles")
+        left_label = QLabel("Library")
         left_label.setObjectName("SectionTitle")
         left_header.addWidget(left_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
-
-        self.left_meta_chip = QLabel("")
-        self.left_meta_chip.setObjectName("ModelSettingsChip")
-        left_header.addWidget(self.left_meta_chip, 0, Qt.AlignLeft | Qt.AlignVCenter)
         left_header.addStretch(1)
         left.addLayout(left_header)
 
         self.search_edit = QLineEdit()
         self.search_edit.setObjectName("ModelSettingsSearchField")
-        self.search_edit.setPlaceholderText("Search profiles...")
+        self.search_edit.setPlaceholderText("Search by name, provider, or model")
         self.search_edit.setClearButtonEnabled(True)
         self.search_edit.setAccessibleName("Profile search")
         self.search_edit.setAccessibleDescription("Filter profiles by name, provider, or model")
-        self.search_edit.addAction(_fa_icon("fa5s.search", color=TEXT_MUTED, size=12), QLineEdit.TrailingPosition)
+        self.search_edit.addAction(_fa_icon("fa5s.search", color=TEXT_MUTED, size=12), QLineEdit.LeadingPosition)
         left.addWidget(self.search_edit)
 
         self.profile_list = QListWidget()
@@ -125,17 +139,17 @@ class ModelSettingsDialog(QDialog):
 
         left_buttons = QHBoxLayout()
         left_buttons.setSpacing(6)
-        self.add_button = QPushButton("Add Profile")
+        self.add_button = QPushButton("New Profile")
         self.add_button.setObjectName("SettingsAddButton")
         self.add_button.setIcon(_fa_icon("fa5s.plus", color=TEXT_PRIMARY, size=11))
-        self.delete_button = QPushButton("Delete Profile")
+        self.delete_button = QPushButton("Remove")
         self.delete_button.setObjectName("SettingsDeleteButton")
-        self.delete_button.setIcon(_fa_icon("fa5s.trash", color=TEXT_PRIMARY, size=11))
+        self.delete_button.setIcon(_fa_icon("fa5s.trash", color="#F08F8F", size=11))
         left_buttons.addWidget(self.add_button)
         left_buttons.addWidget(self.delete_button)
         left.addLayout(left_buttons)
 
-        left_hint = QLabel("Tip: leave Name empty to auto-generate it from the model name.")
+        left_hint = QLabel("Tip: leave Name empty and it will be generated from the model automatically.")
         left_hint.setObjectName("ModelSettingsMeta")
         left_hint.setWordWrap(True)
         left.addWidget(left_hint)
@@ -149,7 +163,7 @@ class ModelSettingsDialog(QDialog):
         right_header = QHBoxLayout()
         right_header.setContentsMargins(0, 0, 0, 0)
         right_header.setSpacing(6)
-        right_label = QLabel("Profile Details")
+        right_label = QLabel("Editor")
         right_label.setObjectName("SectionTitle")
         right_header.addWidget(right_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
 
@@ -165,7 +179,7 @@ class ModelSettingsDialog(QDialog):
         right_header.addWidget(self.duplicate_button, 0, Qt.AlignRight | Qt.AlignVCenter)
         right.addLayout(right_header)
 
-        self.form_hint = QLabel("Select a profile and edit fields on the right.")
+        self.form_hint = QLabel("Select a profile to review credentials, model settings, and image support.")
         self.form_hint.setObjectName("ModelSettingsMeta")
         self.form_hint.setWordWrap(True)
         right.addWidget(self.form_hint)
@@ -192,6 +206,17 @@ class ModelSettingsDialog(QDialog):
         summary_layout.addWidget(self.summary_model, 1)
         summary_layout.addWidget(self.summary_images)
         right.addWidget(self.summary_card)
+
+        editor_scroll = QScrollArea()
+        editor_scroll.setObjectName("ModelSettingsScrollArea")
+        editor_scroll.setWidgetResizable(True)
+        editor_scroll.setFrameShape(QFrame.NoFrame)
+
+        editor_content = QWidget()
+        editor_content.setObjectName("ModelSettingsEditorContent")
+        editor_layout = QVBoxLayout(editor_content)
+        editor_layout.setContentsMargins(0, 0, 0, 0)
+        editor_layout.setSpacing(10)
 
         form_frame = QFrame()
         form_frame.setObjectName("ModelSettingsFormCard")
@@ -289,7 +314,27 @@ class ModelSettingsDialog(QDialog):
         form_layout.addRow(api_key_label, api_key_row)
         form_layout.addRow(base_url_label, self.base_url_edit)
         form_layout.addRow(images_label, images_row)
-        right.addWidget(form_frame, 1)
+        editor_layout.addWidget(form_frame)
+
+        helper_card = QFrame()
+        helper_card.setObjectName("ModelSettingsHelperCard")
+        helper_layout = QVBoxLayout(helper_card)
+        helper_layout.setContentsMargins(12, 10, 12, 10)
+        helper_layout.setSpacing(4)
+        helper_title = QLabel("Editing notes")
+        helper_title.setObjectName("ModelSettingsHelperTitle")
+        helper_body = QLabel(
+            "Only enabled profiles can become active. Toggling a model keeps your current place in the list and preserves the editor state."
+        )
+        helper_body.setObjectName("ModelSettingsHintText")
+        helper_body.setWordWrap(True)
+        helper_layout.addWidget(helper_title)
+        helper_layout.addWidget(helper_body)
+        editor_layout.addWidget(helper_card)
+        editor_layout.addStretch(1)
+
+        editor_scroll.setWidget(editor_content)
+        right.addWidget(editor_scroll, 1)
 
         left_container.setMinimumWidth(320)
         right_container.setMinimumWidth(430)
@@ -360,13 +405,29 @@ class ModelSettingsDialog(QDialog):
         self.save_state_label.setText(text)
         self.save_state_label.setVisible(bool(text))
 
+    def _profile_id_for_row(self, row: int) -> str:
+        if row < 0 or row >= len(self._profiles):
+            return ""
+        return str(self._profiles[row].get("id") or "").strip()
+
+    def _row_for_profile_id(self, profile_id: str) -> int:
+        target_id = str(profile_id or "").strip()
+        if not target_id:
+            return -1
+        for idx, profile in enumerate(self._profiles):
+            if str(profile.get("id") or "").strip() == target_id:
+                return idx
+        return -1
+
     def _refresh_profile_counts(self) -> None:
         total = len(self._profiles)
         enabled = sum(1 for profile in self._profiles if bool(profile.get("enabled", True)))
         self.profile_count_chip.setText(f"{total} total")
         self.left_meta_chip.setText(f"{enabled} enabled")
         active_name = str(self._active_profile or "").strip() or "none"
-        self.active_profile_label.setText(f"Active now: <span style='color:#10B981;font-weight:600'>{active_name}</span>")
+        self.active_profile_label.setText(
+            f"Active now: <span style='color:#D5D9DF;font-weight:700'>{active_name}</span>"
+        )
 
     def _apply_profile_filter(self, value: str) -> None:
         self._filter_text = str(value or "").strip().lower()
@@ -476,6 +537,13 @@ class ModelSettingsDialog(QDialog):
         title_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
         first_row.addWidget(title_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
 
+        provider = str(profile.get("provider") or "").strip()
+        if provider:
+            provider_label = QLabel(provider)
+            provider_label.setObjectName("ModelProfileItemBadge")
+            provider_label.setProperty("badgeVariant", "provider")
+            first_row.addWidget(provider_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+
         if is_active:
             active_label = QLabel("Active")
             active_label.setObjectName("ModelProfileItemBadge")
@@ -490,7 +558,6 @@ class ModelSettingsDialog(QDialog):
         first_row.addStretch(1)
         text_column.addLayout(first_row)
 
-        provider = str(profile.get("provider") or "").strip()
         model_name = str(profile.get("model") or "").strip()
         details = " · ".join(part for part in (provider, model_name) if part)
         details_label = QLabel(details)
@@ -511,7 +578,7 @@ class ModelSettingsDialog(QDialog):
         enabled_switch.setCursor(Qt.PointingHandCursor)
         enabled_switch.setToolTip("Temporarily enable or disable this model")
         enabled_switch.setFocusPolicy(Qt.NoFocus)
-        enabled_switch.setFixedSize(QSize(30, 18))
+        enabled_switch.setFixedSize(QSize(34, 20))
         enabled_switch.pressed.connect(lambda target_row=row: self.profile_list.setCurrentRow(target_row))
         enabled_switch.toggled.connect(lambda checked, target_row=row: self._toggle_profile_enabled(target_row, checked))
         layout.addWidget(enabled_switch, 0, Qt.AlignRight | Qt.AlignVCenter)
@@ -523,7 +590,13 @@ class ModelSettingsDialog(QDialog):
         container.adjustSize()
         return container
 
-    def _refresh_profile_list(self, preferred_row: int | None = None) -> None:
+    def _refresh_profile_list(
+        self,
+        preferred_row: int | None = None,
+        *,
+        preferred_profile_id: str = "",
+        restore_scroll_value: int | None = None,
+    ) -> None:
         self.profile_list.blockSignals(True)
         self.profile_list.clear()
         for row, profile in enumerate(self._profiles):
@@ -556,11 +629,19 @@ class ModelSettingsDialog(QDialog):
             self.duplicate_button.setEnabled(False)
             return
 
-        row = preferred_row if preferred_row is not None else self._preferred_row_for_open()
+        row = preferred_row
+        if preferred_profile_id:
+            resolved_row = self._row_for_profile_id(preferred_profile_id)
+            if resolved_row >= 0:
+                row = resolved_row
+        if row is None:
+            row = self._preferred_row_for_open()
         row = max(0, min(row, len(self._profiles) - 1))
         self.profile_list.setCurrentRow(row)
         self._apply_profile_filter(self.search_edit.text())
         self._refresh_profile_item_states()
+        if restore_scroll_value is not None:
+            self.profile_list.verticalScrollBar().setValue(restore_scroll_value)
 
     def _preferred_row_for_open(self) -> int:
         active_id = str(self._active_profile or "").strip()
@@ -656,6 +737,8 @@ class ModelSettingsDialog(QDialog):
         if row < 0 or row >= len(self._profiles):
             return
         self._sync_current_profile_from_form(self._selected_row)
+        preferred_profile_id = self._profile_id_for_row(row)
+        scroll_value = self.profile_list.verticalScrollBar().value()
         if isinstance(state, bool):
             is_enabled = bool(state)
         elif isinstance(state, int):
@@ -665,7 +748,11 @@ class ModelSettingsDialog(QDialog):
         self._profiles[row]["enabled"] = is_enabled
         self._reconcile_active_profile()
         self._set_save_state("")
-        self._refresh_profile_list(preferred_row=row)
+        self._refresh_profile_list(
+            preferred_row=row,
+            preferred_profile_id=preferred_profile_id,
+            restore_scroll_value=scroll_value,
+        )
         self._refresh_profile_counts()
 
     def _suggest_unique_id(self, model_text: str, *, row: int) -> str:
@@ -835,51 +922,100 @@ class ApprovalDialog(QDialog):
     def __init__(self, payload: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.choice: tuple[bool, bool] = (False, False)
-        self.setWindowTitle("Confirmation Needed")
+        self.setObjectName("ApprovalDialog")
+        self.setWindowTitle("Approval required")
         self.setModal(True)
-        self.resize(470, 320)
-        self.setMinimumSize(420, 280)
+        self.resize(680, 460)
+        self.setMinimumSize(560, 360)
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(12, 12, 12, 12)
-        layout.setSpacing(8)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(12)
 
-        title = QLabel("Protected action requires confirmation")
-        title.setStyleSheet("font-weight: 600; font-size: 13pt;")
-        layout.addWidget(title)
+        summary = payload.get("summary", {}) if isinstance(payload, dict) else {}
+        risk_level = str(summary.get("risk_level", "unknown") or "unknown")
+        impacts = [str(item).strip() for item in list(summary.get("impacts", []) or []) if str(item).strip()]
+        tools = list(payload.get("tools", []) or [])
+        default_approve = bool(summary.get("default_approve"))
 
-        summary = payload.get("summary", {})
-        impacts = ", ".join(summary.get("impacts", [])) or "local state"
+        hero_card = QFrame()
+        hero_card.setObjectName("ApprovalRequestCard")
+        hero_layout = QVBoxLayout(hero_card)
+        hero_layout.setContentsMargins(16, 14, 16, 14)
+        hero_layout.setSpacing(8)
+
+        title_row = QHBoxLayout()
+        title_row.setContentsMargins(0, 0, 0, 0)
+        title_row.setSpacing(8)
+
+        title = QLabel("Protected action review")
+        title.setObjectName("ApprovalCardTitle")
+        title_row.addWidget(title)
+
+        self.dialog_risk_badge = QLabel(risk_level.title())
+        self.dialog_risk_badge.setObjectName("ApprovalRiskBadge")
+        self.dialog_risk_badge.setProperty("riskLevel", risk_level)
+        style = self.dialog_risk_badge.style()
+        if style is not None:
+            style.unpolish(self.dialog_risk_badge)
+            style.polish(self.dialog_risk_badge)
+        title_row.addWidget(self.dialog_risk_badge, 0, Qt.AlignVCenter)
+        title_row.addStretch(1)
+        hero_layout.addLayout(title_row)
+
         summary_label = QLabel(
-            f"Risk: {summary.get('risk_level', 'unknown')} • Impacts: {impacts} • "
-            f"Default: {'approve' if summary.get('default_approve') else 'deny'}"
+            f"Please confirm before the agent continues. {len(tools)} protected action(s) requested. "
+            f"Default policy: {'approve' if default_approve else 'deny'}."
         )
-        summary_label.setStyleSheet(f"color: {TEXT_MUTED};")
+        summary_label.setObjectName("ApprovalCardSummary")
         summary_label.setWordWrap(True)
-        layout.addWidget(summary_label)
+        hero_layout.addWidget(summary_label)
+
+        impacts_label = QLabel(f"Impacts: {', '.join(impacts)}" if impacts else "Impacts: local state")
+        impacts_label.setObjectName("ApprovalCardImpacts")
+        impacts_label.setWordWrap(True)
+        hero_layout.addWidget(impacts_label)
+        layout.addWidget(hero_card)
 
         scroll = QScrollArea()
+        scroll.setObjectName("ApprovalDialogScroll")
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         container = QWidget()
         container_layout = QVBoxLayout(container)
         container_layout.setContentsMargins(0, 0, 0, 0)
         container_layout.setSpacing(10)
-        for tool in payload.get("tools", []):
+        for tool in tools:
             card = QFrame()
-            card.setObjectName("ApprovalCard")
+            card.setObjectName("ApprovalToolCard")
             card_layout = QVBoxLayout(card)
-            card_layout.setContentsMargins(10, 10, 10, 10)
-            card_layout.setSpacing(6)
-            name_label = QLabel(tool.get("name", "tool"))
-            name_label.setStyleSheet("font-weight: 600;")
+            card_layout.setContentsMargins(12, 12, 12, 12)
+            card_layout.setSpacing(8)
+            display_name = str(tool.get("display") or tool.get("name") or "tool").strip() or "tool"
+            name_label = QLabel(display_name)
+            name_label.setObjectName("ApprovalDialogToolTitle")
             card_layout.addWidget(name_label)
+
+            metadata = tool.get("policy", {}) if isinstance(tool.get("policy"), dict) else {}
+            tool_meta = []
+            if metadata.get("mutating"):
+                tool_meta.append("mutating")
+            if metadata.get("destructive"):
+                tool_meta.append("destructive")
+            if metadata.get("requires_approval"):
+                tool_meta.append("approval")
+            if tool_meta:
+                meta_label = QLabel(" · ".join(tool_meta))
+                meta_label.setObjectName("ApprovalCardImpacts")
+                card_layout.addWidget(meta_label)
+
             args_view = QPlainTextEdit()
-            args_view.setObjectName("CodeView")
+            args_view.setObjectName("ApprovalArgsView")
             args_view.setReadOnly(True)
             args_view.setFont(_make_mono_font())
             args_view.setPlainText(json.dumps(tool.get("args", {}), ensure_ascii=False, indent=2))
-            args_view.setFixedHeight(78)
-            card_layout.addWidget(CollapsibleSection("Arguments", args_view, expanded=False))
+            args_view.setFixedHeight(108)
+            card_layout.addWidget(CollapsibleSection("Request details", args_view, expanded=False))
             container_layout.addWidget(card)
         container_layout.addStretch(1)
         scroll.setWidget(container)
@@ -888,9 +1024,10 @@ class ApprovalDialog(QDialog):
         buttons = QDialogButtonBox()
         approve_button = QPushButton(_fa_icon("fa5s.check", color="white", size=12), "Approve")
         approve_button.setObjectName("PrimaryButton")
+        always_button = QPushButton("Always for this session")
+        always_button.setObjectName("SecondaryButton")
         deny_button = QPushButton(_fa_icon("fa5s.times", color="white", size=12), "Deny")
         deny_button.setObjectName("DangerButton")
-        always_button = QPushButton("Always for this session")
         buttons.addButton(approve_button, QDialogButtonBox.AcceptRole)
         buttons.addButton(always_button, QDialogButtonBox.ActionRole)
         buttons.addButton(deny_button, QDialogButtonBox.RejectRole)

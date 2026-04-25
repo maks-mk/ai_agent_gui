@@ -93,6 +93,31 @@ def build_stylesheet() -> str:
     tool_toggle_hover_text = palette["tool_toggle_hover_text"]
     tool_call_idle = palette["tool_call_idle"]
     tool_call_hover = palette["tool_call_hover"]
+    model_dialog_bg = blend_hex(SURFACE_BG, "#FFFFFF", 0.03)
+    model_dialog_card = blend_hex(SURFACE_CARD, "#FFFFFF", 0.03)
+    model_dialog_card_alt = blend_hex(SURFACE_CARD, SURFACE_ALT, 0.28)
+    model_dialog_soft = blend_hex(SURFACE_ALT, "#FFFFFF", 0.04)
+    model_dialog_border = blend_hex(BORDER, "#FFFFFF", 0.10)
+    model_dialog_text = TEXT_PRIMARY
+    model_dialog_muted = blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)
+    model_dialog_selected = blend_hex(SURFACE_ALT, "#5B8DEF", 0.18)
+    model_dialog_selected_border = blend_hex("#5B8DEF", "#FFFFFF", 0.14)
+    model_dialog_disabled = blend_hex(SURFACE_BG, SURFACE_ALT, 0.46)
+    model_dialog_active_bg = blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.82)
+    model_dialog_active_text = blend_hex(SUCCESS_GREEN, TEXT_PRIMARY, 0.18)
+    model_dialog_provider_bg = blend_hex(SURFACE_ALT, "#92A4BC", 0.20)
+    model_dialog_provider_text = blend_hex("#92A4BC", TEXT_PRIMARY, 0.22)
+    model_dialog_chip_bg = blend_hex(SURFACE_ALT, "#FFFFFF", 0.05)
+    model_dialog_field_bg = blend_hex(SURFACE_CARD, "#FFFFFF", 0.05)
+    model_dialog_field_border = blend_hex(BORDER, "#FFFFFF", 0.09)
+    model_dialog_switch_off = blend_hex(SURFACE_ALT, "#FFFFFF", 0.10)
+    model_dialog_switch_on = blend_hex("#5B8DEF", SURFACE_ALT, 0.20)
+    model_dialog_switch_thumb = "#F3F4F6"
+    approval_dialog_bg = blend_hex(SURFACE_BG, "#FFFFFF", 0.02)
+    approval_dialog_card = blend_hex(SURFACE_CARD, "#FFFFFF", 0.03)
+    approval_dialog_border = blend_hex(BORDER, "#FFFFFF", 0.10)
+    approval_dialog_soft = blend_hex(SURFACE_ALT, "#FFFFFF", 0.05)
+    approval_dialog_code = blend_hex(CODE_BG, "#FFFFFF", 0.02)
     return f"""
     QWidget {{
         background: {SURFACE_BG};
@@ -120,9 +145,15 @@ def build_stylesheet() -> str:
     
     QFrame#ApprovalCard,
     QFrame#ApprovalRequestCard {{
-        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.02)};
-        border: none;
-        border-radius: {SOFT_RADIUS_MD}px;
+        background: {approval_dialog_card};
+        border: 1px solid {approval_dialog_border};
+        border-radius: {SOFT_RADIUS_MD + 2}px;
+    }}
+
+    QFrame#ApprovalToolCard {{
+        background: {approval_dialog_soft};
+        border: 1px solid {approval_dialog_border};
+        border-radius: {SOFT_RADIUS_MD + 2}px;
     }}
 
     QLabel#TopStatusChip {{
@@ -189,63 +220,88 @@ def build_stylesheet() -> str:
     }}
 
     QDialog#ModelSettingsDialog {{
-        background: {SURFACE_BG};
+        background: {model_dialog_bg};
         border: none;
     }}
 
+    QDialog#ModelSettingsDialog QWidget {{
+        background: transparent;
+        color: {model_dialog_text};
+    }}
+
+    QDialog#ModelSettingsDialog QLabel {{
+        background: transparent;
+    }}
+
+    QFrame#ModelSettingsHeroCard {{
+        background: {model_dialog_card};
+        border: 1px solid {model_dialog_border};
+        border-radius: {SOFT_RADIUS_MD + 8}px;
+    }}
+
     QLabel#ModelSettingsTitle {{
-        color: {TEXT_PRIMARY};
-        font-weight: 750;
-        font-size: 15pt;
+        color: {model_dialog_text};
+        font-weight: 760;
+        font-size: 16pt;
         padding-left: 1px;
     }}
 
     QLabel#ModelSettingsSubtitle {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.28)};
+        color: {model_dialog_muted};
         font-size: 10.1pt;
         padding-left: 1px;
         padding-bottom: 2px;
     }}
 
     QLabel#ModelSettingsMeta {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.26)};
+        color: {model_dialog_muted};
         font-size: 9.2pt;
         padding-left: 1px;
+        background: transparent;
     }}
 
     QLabel#ModelSettingsChip {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
-        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.05)};
-        border: none;
+        color: {model_dialog_text};
+        background: {model_dialog_chip_bg};
+        border: 1px solid {model_dialog_border};
         border-radius: {SOFT_RADIUS_MD + 6}px;
         padding: 5px 11px;
         font-size: 8.8pt;
-        font-weight: 600;
+        font-weight: 700;
     }}
 
     QFrame#ModelSettingsPane {{
-        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.015)};
-        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.08)};
-        border-radius: {SOFT_RADIUS_MD + 4}px;
+        background: {model_dialog_card_alt};
+        border: 1px solid {model_dialog_border};
+        border-radius: {SOFT_RADIUS_MD + 6}px;
     }}
 
-    QFrame#ModelSettingsFormCard {{
-        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.04)};
-        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.08)};
+    QFrame#ModelSettingsFormCard,
+    QFrame#ModelSettingsSummaryCard,
+    QFrame#ModelSettingsHelperCard {{
+        background: {model_dialog_card};
+        border: 1px solid {model_dialog_border};
         border-radius: {SOFT_RADIUS_MD + 4}px;
-    }}
-
-    QFrame#ModelSettingsSummaryCard {{
-        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.055)};
-        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.08)};
-        border-radius: {SOFT_RADIUS_MD + 2}px;
     }}
 
     QLabel#ModelSettingsSummaryLabel {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.4)};
+        color: {model_dialog_muted};
         background: transparent;
         font-size: 9pt;
-        font-weight: 500;
+        font-weight: 600;
+    }}
+
+    QLabel#ModelSettingsHelperTitle {{
+        color: {model_dialog_text};
+        background: transparent;
+        font-size: 9.6pt;
+        font-weight: 700;
+    }}
+
+    QScrollArea#ModelSettingsScrollArea,
+    QWidget#ModelSettingsEditorContent {{
+        background: transparent;
+        border: none;
     }}
 
     QListWidget#ModelProfileList {{
@@ -257,18 +313,18 @@ def build_stylesheet() -> str:
     }}
 
     QLineEdit#ModelSettingsSearchField {{
-        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.06)};
-        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.08)};
+        background: {model_dialog_field_bg};
+        border: 1px solid {model_dialog_field_border};
         border-radius: {SOFT_RADIUS_MD + 4}px;
-        min-height: 34px;
+        min-height: 36px;
         padding: 4px 12px;
-        color: {TEXT_PRIMARY};
-        selection-background-color: {blend_hex(ACCENT_BLUE_SOFT, ACCENT_BLUE, 0.28)};
+        color: {model_dialog_text};
+        selection-background-color: {model_dialog_selected};
     }}
 
     QLineEdit#ModelSettingsSearchField:focus {{
-        border: 1px solid {blend_hex(SUCCESS_GREEN, "#FFFFFF", 0.18)};
-        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.075)};
+        border: 1px solid {model_dialog_selected_border};
+        background: {model_dialog_field_bg};
     }}
 
     QListWidget#ModelProfileList::item {{
@@ -277,94 +333,98 @@ def build_stylesheet() -> str:
         border-radius: {SOFT_RADIUS_MD}px;
         padding: 7px 4px;
         margin: 3px 0px;
-        color: {TEXT_PRIMARY};
+        color: {model_dialog_text};
     }}
 
     QListWidget#ModelProfileList::item:selected {{
         background: transparent;
-        color: {TEXT_PRIMARY};
+        color: {model_dialog_text};
     }}
 
     QWidget#ModelProfileRowCard {{
-        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.045)};
-        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.08)};
-        border-radius: {SOFT_RADIUS_MD + 4}px;
+        background: {model_dialog_card};
+        border: 1px solid {model_dialog_border};
+        border-radius: {SOFT_RADIUS_MD + 6}px;
     }}
 
     QWidget#ModelProfileRowCard[selectedProfile="true"] {{
-        background: {blend_hex(SURFACE_CARD, SUCCESS_GREEN, 0.09)};
-        border: 1px solid {blend_hex(SUCCESS_GREEN, "#FFFFFF", 0.12)};
+        background: {model_dialog_selected};
+        border: 1px solid {model_dialog_selected_border};
     }}
 
     QWidget#ModelProfileRowCard[disabledProfile="true"] {{
-        background: {blend_hex(SURFACE_CARD, "#000000", 0.08)};
-        border: 1px solid {blend_hex(BORDER, "#000000", 0.08)};
+        background: {model_dialog_disabled};
+        border: 1px solid {model_dialog_border};
     }}
 
     QLabel#ModelProfileItemTitle {{
-        color: {TEXT_PRIMARY};
+        color: {model_dialog_text};
         font-size: 10.8pt;
-        font-weight: 650;
+        font-weight: 700;
         background: transparent;
         padding: 0px;
     }}
 
-    QLabel#ModelProfileItemActive {{
-        color: {SUCCESS_GREEN};
-        font-size: 9.1pt;
-        font-weight: 600;
-        background: transparent;
-    }}
-
     QLabel#ModelProfileItemMeta {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.24)};
+        color: {model_dialog_muted};
         font-size: 9.2pt;
         background: transparent;
         padding: 0px;
     }}
 
     QLabel#ModelProfileItemBadge {{
-        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.05)};
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.34)};
-        border: none;
+        background: {model_dialog_soft};
+        color: {model_dialog_muted};
+        border: 1px solid {model_dialog_border};
         border-radius: {SOFT_RADIUS_MD + 6}px;
         padding: 2px 8px;
-        font-size: 8.3pt;
+        font-size: 8.2pt;
         font-weight: 700;
     }}
 
     QLabel#ModelProfileItemBadge[badgeVariant="active"] {{
-        background: {blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.76)};
-        color: {blend_hex(SUCCESS_GREEN, TEXT_PRIMARY, 0.18)};
+        background: {model_dialog_active_bg};
+        color: {model_dialog_active_text};
+        border: 1px solid {blend_hex(model_dialog_active_bg, model_dialog_active_text, 0.18)};
+    }}
+
+    QLabel#ModelProfileItemBadge[badgeVariant="provider"] {{
+        background: {model_dialog_provider_bg};
+        color: {model_dialog_provider_text};
+        border: 1px solid {blend_hex(model_dialog_provider_bg, model_dialog_provider_text, 0.16)};
     }}
 
     QCheckBox#ModelProfileEnabledSwitch {{
-        background: #D4D4D4;
-        border-radius: 9px;
+        background: {model_dialog_switch_off};
+        border-radius: 10px;
+        border: 1px solid {blend_hex(model_dialog_switch_off, "#8A94A3", 0.32)};
         padding: 0px;
         spacing: 0px;
     }}
 
     QCheckBox#ModelProfileEnabledSwitch:hover {{
-        background: #C5C5C5;
+        background: {blend_hex(model_dialog_switch_off, "#FFFFFF", 0.14)};
+    }}
+
+    QCheckBox#ModelProfileEnabledSwitch:checked {{
+        background: {model_dialog_switch_on};
+        border: 1px solid {blend_hex(model_dialog_switch_on, "#1D4ED8", 0.18)};
     }}
 
     QCheckBox#ModelProfileEnabledSwitch::indicator {{
         width: 14px;
         height: 14px;
         border-radius: 7px;
-        background: #1A1A1A;
-        border: none;
+        background: {model_dialog_switch_thumb};
+        border: 1px solid {blend_hex(model_dialog_switch_thumb, "#94A3B8", 0.24)};
     }}
 
-    /* Выключенное состояние (сдвигаем кружок влево) */
     QCheckBox#ModelProfileEnabledSwitch::indicator:unchecked {{
         subcontrol-origin: margin;
         subcontrol-position: left center;
         margin-left: 2px;
     }}
 
-    /* Включенное состояние (сдвигаем кружок вправо) */
     QCheckBox#ModelProfileEnabledSwitch::indicator:checked {{
         subcontrol-origin: margin;
         subcontrol-position: right center;
@@ -376,29 +436,29 @@ def build_stylesheet() -> str:
         border: none;
         padding: 0px;
         spacing: 6px;
-        color: {TEXT_PRIMARY};
+        color: {model_dialog_text};
     }}
 
     QDialog#ModelSettingsDialog QLineEdit,
     QDialog#ModelSettingsDialog QComboBox {{
-        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.05)};
-        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.07)};
+        background: {model_dialog_field_bg};
+        border: 1px solid {model_dialog_field_border};
         border-radius: {SOFT_RADIUS_MD + 2}px;
-        min-height: 32px;
+        min-height: 34px;
         padding: 4px 10px;
-        color: {TEXT_PRIMARY};
-        selection-background-color: {blend_hex(ACCENT_BLUE_SOFT, ACCENT_BLUE, 0.28)};
+        color: {model_dialog_text};
+        selection-background-color: {model_dialog_selected};
     }}
 
     QDialog#ModelSettingsDialog QLineEdit:focus,
     QDialog#ModelSettingsDialog QComboBox:focus {{
-        border: 1px solid {blend_hex(SUCCESS_GREEN, "#FFFFFF", 0.18)};
+        border: 1px solid {model_dialog_selected_border};
     }}
 
     QDialog#ModelSettingsDialog QLineEdit:disabled,
     QDialog#ModelSettingsDialog QComboBox:disabled {{
-        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.02)};
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.22)};
+        background: {model_dialog_soft};
+        color: {blend_hex(model_dialog_muted, model_dialog_text, 0.18)};
     }}
 
     QDialog#ModelSettingsDialog QComboBox::drop-down {{
@@ -408,49 +468,52 @@ def build_stylesheet() -> str:
     }}
 
     QDialog#ModelSettingsDialog QComboBox QAbstractItemView {{
-        background: {SURFACE_CARD};
-        border: none;
-        selection-background-color: {blend_hex(ACCENT_BLUE_SOFT, ACCENT_BLUE, 0.28)};
-        color: {TEXT_PRIMARY};
+        background: {model_dialog_card};
+        border: 1px solid {model_dialog_border};
+        selection-background-color: {model_dialog_selected};
+        color: {model_dialog_text};
     }}
 
     QLabel#ModelSettingsFieldLabel {{
-        background: {blend_hex(SURFACE_CARD, "#000000", 0.22)};
-        color: {TEXT_PRIMARY};
-        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.06)};
-        border-radius: {SOFT_RADIUS_MD + 2}px;
-        min-height: 34px;
-        padding: 4px 10px;
+        background: transparent;
+        color: {model_dialog_text};
+        border: none;
+        min-height: 22px;
+        padding: 0px 2px 2px 0px;
         font-size: 9.8pt;
-        font-weight: 600;
+        font-weight: 700;
     }}
 
     QPushButton#SettingsAddButton,
     QPushButton#SettingsDeleteButton {{
         min-height: 38px;
         font-size: 9.8pt;
-        font-weight: 600;
+        font-weight: 700;
+        border-radius: {SOFT_RADIUS_MD + 4}px;
+        border: 1px solid {model_dialog_field_border};
     }}
 
     QPushButton#SettingsAddButton {{
-        background: {blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.32)};
-        color: {TEXT_PRIMARY};
+        background: {model_dialog_selected};
+        color: {model_dialog_text};
     }}
 
     QPushButton#SettingsAddButton:hover {{
-        background: {blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.24)};
+        background: {blend_hex(model_dialog_selected, "#FFFFFF", 0.18)};
     }}
 
     QPushButton#SettingsDeleteButton {{
-        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.04)};
+        background: {model_dialog_card};
+        color: {blend_hex(ERROR_RED, model_dialog_text, 0.2)};
+        border: 1px solid {blend_hex(ERROR_RED, model_dialog_border, 0.75)};
     }}
 
     QPushButton#ModelSettingsInlineButton,
     QToolButton#ModelSettingsInlineToolButton {{
-        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.04)};
-        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.07)};
+        background: {model_dialog_card};
+        border: 1px solid {model_dialog_field_border};
         border-radius: {SOFT_RADIUS_MD + 2}px;
-        color: {TEXT_PRIMARY};
+        color: {model_dialog_text};
     }}
 
     QPushButton#ModelSettingsInlineButton {{
@@ -469,7 +532,7 @@ def build_stylesheet() -> str:
     }}
 
     QLabel#ModelSettingsHintText {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.24)};
+        color: {model_dialog_muted};
         background: transparent;
         font-size: 8.8pt;
         padding-left: 2px;
@@ -480,8 +543,56 @@ def build_stylesheet() -> str:
     }}
 
     QDialog#ModelSettingsDialog QDialogButtonBox {{
-        border-top: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.06)};
-        padding-top: 8px;
+        border-top: 1px solid {model_dialog_border};
+        padding-top: 10px;
+    }}
+
+    QDialog#ModelSettingsDialog QPushButton#PrimaryButton {{
+        background: {blend_hex("#5B8DEF", SURFACE_ALT, 0.12)};
+        color: {TEXT_PRIMARY};
+        border: 1px solid {blend_hex("#5B8DEF", "#FFFFFF", 0.10)};
+        border-radius: {SOFT_RADIUS_MD + 4}px;
+        font-weight: 700;
+        padding: 4px 14px;
+    }}
+
+    QDialog#ModelSettingsDialog QPushButton#PrimaryButton:hover {{
+        background: {blend_hex("#5B8DEF", SURFACE_ALT, 0.20)};
+    }}
+
+    QDialog#ModelSettingsDialog QPushButton {{
+        color: {model_dialog_text};
+    }}
+
+    QDialog#ApprovalDialog {{
+        background: {approval_dialog_bg};
+        border: none;
+    }}
+
+    QDialog#ApprovalDialog QWidget,
+    QDialog#ApprovalDialog QLabel {{
+        background: transparent;
+        color: {TEXT_PRIMARY};
+    }}
+
+    QDialog#ApprovalDialog QScrollArea {{
+        background: transparent;
+        border: none;
+    }}
+
+    QDialog#ApprovalDialog QDialogButtonBox {{
+        border-top: 1px solid {approval_dialog_border};
+        padding-top: 10px;
+    }}
+
+    QFrame#ApprovalRequestCard QWidget,
+    QFrame#ApprovalRequestCard QLabel {{
+        background: transparent;
+    }}
+
+    QFrame#ApprovalRequestCard QScrollArea {{
+        background: transparent;
+        border: none;
     }}
 
     QWidget#TranscriptContainer {{
@@ -602,19 +713,19 @@ def build_stylesheet() -> str:
 
     QLabel#ApprovalCardTitle {{
         color: {TEXT_PRIMARY};
-        font-size: 10.4pt;
+        font-size: 10.8pt;
         font-weight: 700;
         background: transparent;
     }}
 
     QLabel#ApprovalCardSummary {{
-        color: {TEXT_PRIMARY};
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.42)};
         font-size: 9.7pt;
         background: transparent;
     }}
 
     QLabel#ApprovalCardImpacts {{
-        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.36)};
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.28)};
         font-size: 8.9pt;
         background: transparent;
     }}
@@ -646,16 +757,64 @@ def build_stylesheet() -> str:
     }}
 
     QFrame#ApprovalToolCard {{
-        background: {blend_hex(SURFACE_CARD, "#FFFFFF", 0.04)};
-        border: none;
-        border-radius: {SOFT_RADIUS_MD}px;
+        background: {approval_dialog_soft};
+        border: 1px solid {approval_dialog_border};
+        border-radius: {SOFT_RADIUS_MD + 2}px;
     }}
 
     QLabel#ApprovalToolTitle {{
         color: {TEXT_PRIMARY};
-        font-family: "{MONO_FONT_FAMILY}";
-        font-size: 9pt;
+        font-size: 9.7pt;
+        font-weight: 700;
+        background: transparent;
+    }}
+
+    QFrame#ApprovalRequestCard QPushButton#PrimaryButton,
+    QDialog#ApprovalDialog QPushButton#PrimaryButton {{
+        min-height: 34px;
+        padding: 4px 14px;
+        border-radius: {SOFT_RADIUS_MD + 2}px;
+        background: {blend_hex("#5B8DEF", SURFACE_ALT, 0.14)};
+        color: {TEXT_PRIMARY};
+        border: 1px solid {blend_hex("#5B8DEF", "#FFFFFF", 0.10)};
+        font-weight: 700;
+    }}
+
+    QFrame#ApprovalRequestCard QPushButton#PrimaryButton:hover,
+    QDialog#ApprovalDialog QPushButton#PrimaryButton:hover {{
+        background: {blend_hex("#5B8DEF", SURFACE_ALT, 0.22)};
+    }}
+
+    QFrame#ApprovalRequestCard QPushButton#SecondaryButton,
+    QDialog#ApprovalDialog QPushButton#SecondaryButton {{
+        min-height: 34px;
+        padding: 4px 14px;
+        border-radius: {SOFT_RADIUS_MD + 2}px;
+        background: {approval_dialog_soft};
+        color: {TEXT_PRIMARY};
+        border: 1px solid {approval_dialog_border};
         font-weight: 600;
+    }}
+
+    QFrame#ApprovalRequestCard QPushButton#DangerButton,
+    QDialog#ApprovalDialog QPushButton#DangerButton {{
+        min-height: 34px;
+        padding: 4px 14px;
+        border-radius: {SOFT_RADIUS_MD + 2}px;
+        background: {blend_hex(ERROR_RED, SURFACE_ALT, 0.78)};
+        color: {TEXT_PRIMARY};
+        border: 1px solid {blend_hex(ERROR_RED, "#FFFFFF", 0.08)};
+        font-weight: 700;
+    }}
+
+    QPlainTextEdit#ApprovalArgsView,
+    QPlainTextEdit#InlineCodeView {{
+        background: {approval_dialog_code};
+        color: {CODE_TEXT};
+        border: 1px solid {approval_dialog_border};
+        border-radius: {SOFT_RADIUS_MD + 2}px;
+        padding: 8px;
+        selection-background-color: {blend_hex("#5B8DEF", SURFACE_ALT, 0.20)};
     }}
 
     QLabel#MutedText,
