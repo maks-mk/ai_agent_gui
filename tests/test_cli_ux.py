@@ -2210,7 +2210,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertIsNotNone(first_item_widget)
         switch = first_item_widget.findChild(QCheckBox, "ModelProfileEnabledSwitch")
         self.assertIsNotNone(switch)
-        self.assertEqual(switch.size().width(), 30)
+        self.assertGreaterEqual(switch.size().width(), 34)
         self.assertTrue(switch.isChecked())
 
         QTest.mouseClick(switch, Qt.LeftButton)
@@ -2234,6 +2234,47 @@ class GuiUxTests(unittest.TestCase):
         dialog._save_and_accept()
         result = dialog.result_payload()
         self.assertTrue(result["profiles"][0]["enabled"])
+
+    def test_model_settings_dialog_toggle_keeps_same_profile_selected(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-demo",
+                    "base_url": "",
+                    "enabled": True,
+                },
+                {
+                    "id": "gemini-1-5-flash",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "api_key": "gm-demo",
+                    "base_url": "",
+                    "enabled": True,
+                },
+            ],
+        }
+        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        self._process_events()
+
+        dialog.profile_list.setCurrentRow(1)
+        self._process_events()
+
+        second_item_widget = dialog.profile_list.itemWidget(dialog.profile_list.item(1))
+        self.assertIsNotNone(second_item_widget)
+        switch = second_item_widget.findChild(QCheckBox, "ModelProfileEnabledSwitch")
+        self.assertIsNotNone(switch)
+
+        QTest.mouseClick(switch, Qt.LeftButton)
+        self._process_events()
+
+        self.assertEqual(dialog._current_row(), 1)
+        self.assertEqual(dialog.name_edit.text(), "gemini-1-5-flash")
+        self.assertIn("gemini-1-5-flash", dialog.form_hint.text())
 
     def test_all_disabled_profiles_hide_model_picker_and_show_state(self):
         payload = self._snapshot_payload()

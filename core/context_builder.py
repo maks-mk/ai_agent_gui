@@ -69,10 +69,11 @@ class ContextBuilder:
     ) -> List[BaseMessage]:
         sanitized_messages = self.sanitize_messages(messages, state=state)
         full_context: List[BaseMessage] = [
-            self._build_system_message(
-                summary,
-            )
+            self._build_base_system_message()
         ]
+        # Memory goes early: it's context ballast, must not override operational rules
+        if summary:
+            full_context.append(SystemMessage(content=f"<memory>\n{summary}\n</memory>"))
         full_context.extend(
             self._runtime_policy_builder.build_messages(
                 RuntimePromptContext(
@@ -391,16 +392,10 @@ class ContextBuilder:
             )
         )
 
-    def _build_system_message(
-        self,
-        summary: str,
-    ) -> SystemMessage:
+    def _build_base_system_message(self) -> SystemMessage:
         raw_prompt = self._prompt_loader()
 
         prompt = raw_prompt.replace("{{current_date}}", datetime.now().strftime("%Y-%m-%d"))
         prompt = prompt.replace("{{cwd}}", str(Path.cwd()))
-
-        if summary:
-            prompt += f"\n\n<memory>\n{summary}\n</memory>"
 
         return SystemMessage(content=prompt)
