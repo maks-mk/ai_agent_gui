@@ -1,5 +1,6 @@
 import logging
 import os
+import re
 import sys
 from pathlib import Path
 from typing import List, Optional
@@ -18,6 +19,91 @@ class NoisyLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
         message = record.getMessage()
         return not any(phrase in message for phrase in self.BLOCKED_PHRASES)
+
+
+class SensitiveDataFilter(logging.Filter):
+    SENSITIVE_FIELD_NAMES = frozenset(
+        {
+            "api_key",
+            "openai_api_key",
+            "gemini_api_key",
+            "tavily_api_key",
+            "authorization",
+            "access_token",
+            "refresh_token",
+            "token",
+            "secret",
+            "password",
+        }
+    )
+    _STRING_PATTERNS = (
+        re.compile(
+            r"(?i)\b(?P<label>(?:openai|gemini|tavily)?_?api[_ -]?key|authorization|access[_ -]?token|refresh[_ -]?token|password|secret|token)\b(?P<separator>\s*[:=]\s*)(?P<quote>['\"]?)(?P<value>(?!Bearer\b)[^\s,'\"}\]]+)(?P=quote)"
+        ),
+        re.compile(r"(?i)(?P<label>\bBearer\s+)(?P<value>[A-Za-z0-9._\-]+)"),
+        re.compile(r"(?i)(?P<label>[?&](?:api_key|key|token)=)(?P<value>[^&\s]+)"),
+        re.compile(r"(?P<value>sk-[A-Za-z0-9_-]{6,})"),
+        re.compile(r"(?P<value>AIza[0-9A-Za-z\-_]{12,})"),
+    )
+    _RESERVED_RECORD_ATTRS = frozenset(logging.makeLogRecord({}).__dict__.keys())
+
+    def filter(self, record: logging.LogRecord) -> bool:
+        record.msg = self._sanitize_value(record.msg)
+        if record.args:
+            record.args = self._sanitize_value(record.args)
+        for key, value in list(record.__dict__.items()):
+            if key in self._RESERVED_RECORD_ATTRS:
+                continue
+            record.__dict__[key] = self._sanitize_value(value, key_hint=key)
+        return True
+
+    @classmethod
+    def _sanitize_value(cls, value, *, key_hint: str = ""):
+        normalized_key = str(key_hint or "").strip().lower()
+        if isinstance(value, str):
+            if normalized_key in cls.SENSITIVE_FIELD_NAMES:
+                return cls._mask_secret(value)
+            return cls._sanitize_string(value)
+        if isinstance(value, dict):
+            return {
+                item_key: cls._sanitize_value(item_value, key_hint=str(item_key))
+                for item_key, item_value in value.items()
+            }
+        if isinstance(value, tuple):
+            return tuple(cls._sanitize_value(item) for item in value)
+        if isinstance(value, list):
+            return [cls._sanitize_value(item) for item in value]
+        if isinstance(value, set):
+            return {cls._sanitize_value(item) for item in value}
+        return value
+
+    @classmethod
+    def _sanitize_string(cls, value: str) -> str:
+        sanitized = str(value or "")
+        for pattern in cls._STRING_PATTERNS:
+            sanitized = pattern.sub(cls._replace_match, sanitized)
+        return sanitized
+
+    @classmethod
+    def _replace_match(cls, match: re.Match[str]) -> str:
+        groups = match.groupdict()
+        value = groups.get("value", "")
+        masked = cls._mask_secret(value)
+        if "label" in groups and "separator" in groups:
+            quote = groups.get("quote", "")
+            return f"{groups['label']}{groups['separator']}{quote}{masked}{quote}"
+        if "label" in groups:
+            return f"{groups['label']}{masked}"
+        return masked
+
+    @staticmethod
+    def _mask_secret(value: str) -> str:
+        secret = str(value or "").strip()
+        if not secret:
+            return secret
+        if len(secret) <= 4:
+            return "****"
+        return f"{secret[:4]}...<redacted>"
 
 
 def _coerce_log_level(level: int | str | None) -> int:
@@ -69,7 +155,9 @@ def setup_logging(level: int | str | None = None, log_file: str | Path | None = 
     logging.basicConfig(level=level, handlers=handlers, force=True)
 
     noise_filter = NoisyLogFilter()
+    sensitive_filter = SensitiveDataFilter()
     for handler in handlers:
+        handler.addFilter(sensitive_filter)
         handler.addFilter(noise_filter)
 
     _suppress_library_logs(level)

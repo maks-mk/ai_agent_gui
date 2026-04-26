@@ -11,6 +11,7 @@ Apply changes DIRECTLY to files using provided tools. Do NOT output code in chat
 If exact file paths are not provided, locate them with tools.
 Read relevant files before editing. Match existing style and architecture. Never silently diverge.
 Make the smallest correct change. Do not refactor beyond the task.
+IMPORTANT: Try to preserve the original code and the logic of the original code as much as possible.
 After edits, run targeted tests, lint, or other verification when available. If verification fails, attempt one fix before responding.
 
 Tools & Debugging

@@ -607,10 +607,15 @@ def build_stylesheet() -> str:
 
     QFrame#TranscriptRow,
     QFrame#ToolRow,
+    QFrame#ToolGroupFrame,
     QFrame#FlatNoticeRow,
     QFrame#InlineStatusRow {{
         background: transparent;
         border: none;
+    }}
+
+    QWidget#ToolGroupContainer {{
+        background: transparent;
     }}
 
     QLabel#SectionTitle {{
@@ -1475,6 +1480,29 @@ def build_stylesheet() -> str:
     }}
 
     QPushButton#ToolCallButton:checked {{
+        background: transparent;
+        color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.08)};
+        border: none;
+    }}
+
+    QPushButton#ToolGroupHeaderButton {{
+        background: transparent;
+        border: none;
+        border-radius: {SOFT_RADIUS_SM}px;
+        padding: 2px 0px;
+        color: {tool_toggle_text};
+        font-size: 10.2pt;
+        font-weight: 600;
+        text-align: left;
+    }}
+
+    QPushButton#ToolGroupHeaderButton:hover {{
+        background: transparent;
+        color: {tool_toggle_hover_text};
+        border: none;
+    }}
+
+    QPushButton#ToolGroupHeaderButton:checked {{
         background: transparent;
         color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.08)};
         border: none;

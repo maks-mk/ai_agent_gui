@@ -14,6 +14,7 @@ from .messages import (
 from .panels import InfoPopupDialog, InspectorPanelWidget, OverviewPanelWidget, ToolsPanelWidget
 from .sidebar import SessionItemDelegate, SessionListModel, SessionSidebarWidget
 from .tools import CliExecWidget, ToolCardWidget
+from .tool_group import ToolGroupWidget
 from .transcript import ChatTranscriptWidget, ConversationTurnWidget
 
 __all__ = [
@@ -36,6 +37,7 @@ __all__ = [
     "SessionSidebarWidget",
     "StatusIndicatorWidget",
     "ToolCardWidget",
+    "ToolGroupWidget",
     "ToolsPanelWidget",
     "TRANSCRIPT_MAX_WIDTH",
     "UserChoiceCardWidget",

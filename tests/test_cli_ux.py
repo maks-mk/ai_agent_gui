@@ -21,6 +21,7 @@ from ui.theme import AMBER_WARNING, BORDER, ERROR_RED, SURFACE_BG, SURFACE_CARD,
 from ui.widgets.composer import _ComposerMentionItemWidget
 from ui.widgets.foundation import AutoTextBrowser, CodeBlockWidget, CopySafePlainTextEdit, TRANSCRIPT_MAX_WIDTH
 from ui.widgets.messages import AssistantMessageWidget
+from ui.widgets.tool_group import ToolGroupWidget
 
 
 class FakeTool:
@@ -289,6 +290,22 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(self.controller.start_calls, [{"text": "Собери summary", "attachments": []}])
         self.assertEqual(self.window.composer.toPlainText(), "")
+
+    def test_submit_request_sanitizes_and_truncates_input_before_runtime(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        raw_text = "  start\x00" + ("x" * 10_050)
+        self.window.composer.setPlainText(raw_text)
+
+        self.window._submit_request()
+
+        self.assertEqual(len(self.controller.start_calls), 1)
+        payload = self.controller.start_calls[0]
+        self.assertEqual(len(payload["text"]), 10_000)
+        self.assertNotIn("\x00", payload["text"])
+        self.assertTrue(payload["text"].startswith("start"))
+        self.assertFalse(self.window.composer_notice_label.isHidden())
+        self.assertIn("Removed unsupported control characters", self.window.composer_notice_label.text())
+        self.assertIn("truncated to 10000 characters", self.window.composer_notice_label.text())
 
     def test_send_button_keeps_visible_disabled_icon_until_input_exists(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -995,7 +1012,7 @@ class GuiUxTests(unittest.TestCase):
         )
 
         self.assertIsNotNone(self.window.current_turn)
-        self.assertEqual(self.window.current_turn.block_kinds(), ["user", "assistant", "tool", "assistant"])
+        self.assertEqual(self.window.current_turn.block_kinds(), ["user", "assistant", "tool_group", "assistant"])
         self.assertEqual(len(self.window.current_turn.assistant_segments), 2)
         self.assertIn("Ответ", self.window.current_turn.assistant_segments[0].markdown())
         self.assertIn("Готово", self.window.current_turn.assistant_segments[1].markdown())
@@ -1006,6 +1023,9 @@ class GuiUxTests(unittest.TestCase):
             if label.text() in {"Agent", "You"}
         ]
         self.assertEqual(transcript_text_labels, [])
+        self.assertIsInstance(self.window.current_turn.tool_group, ToolGroupWidget)
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Выполнено (1 инструментов)")
+        self.assertTrue(self.window.current_turn.tool_group.container.isHidden())
         tool_card = self.window.current_turn.tool_cards["call-1"]
         self.assertEqual(tool_card.frameShape(), QFrame.NoFrame)
         self.assertEqual(tool_card.tool_button.text(), "edit_file(demo.txt)")
@@ -1026,6 +1046,9 @@ class GuiUxTests(unittest.TestCase):
         self.assertTrue(all(bool(sel.format.property(QTextFormat.FullWidthSelection)) for sel in full_width_selections))
         selection_colors = {sel.format.background().color().name().lower() for sel in full_width_selections}
         self.assertEqual(selection_colors, {"#1e3425", "#472b2b"})
+        self.window.current_turn.tool_group.header_btn.click()
+        self._process_events()
+        self.assertFalse(self.window.current_turn.tool_group.container.isHidden())
         tool_card.tool_button.click()
         self._process_events()
         self.assertTrue(tool_card.tool_button.isChecked())
@@ -1386,6 +1409,10 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         restored_turn = self.window.transcript.layout.itemAt(0).widget()
+        self.assertEqual(restored_turn.block_kinds(), ["user", "tool_group"])
+        self.assertIsInstance(restored_turn.tool_group, ToolGroupWidget)
+        self.assertTrue(restored_turn.tool_group.container.isHidden())
+        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Выполнено (1 инструментов)")
         tool_card = restored_turn.tool_cards["call-cli-restored"]
         self.assertFalse(tool_card.tool_button.isChecked())
         self.assertIsNotNone(tool_card.cli_exec_widget)
@@ -1513,6 +1540,50 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(tool_card.subtitle_label.toolTip(), "read_file(index.html)")
         self.assertEqual(tool_card.phase_badge.text(), "✓")
         self.assertNotEqual(tool_card.phase_badge.text(), "Running")
+
+    def test_restored_turn_keeps_separate_tool_groups_between_assistant_blocks(self):
+        payload = self._snapshot_payload()
+        payload["transcript"] = {
+            "summary_notice": "",
+            "turns": [
+                {
+                    "user_text": "multi-step",
+                    "blocks": [
+                        {
+                            "type": "tool",
+                            "payload": {
+                                "tool_id": "call-read",
+                                "name": "read_file",
+                                "args": {"path": "a.txt"},
+                                "display": "Reading a.txt",
+                                "content": "ok",
+                            },
+                        },
+                        {"type": "assistant", "markdown": "Need another step."},
+                        {
+                            "type": "tool",
+                            "payload": {
+                                "tool_id": "call-edit",
+                                "name": "edit_file",
+                                "args": {"path": "a.txt"},
+                                "display": "Editing a.txt",
+                                "content": "ok",
+                            },
+                        },
+                    ],
+                }
+            ],
+        }
+
+        self.window._handle_initialized(payload)
+        self._process_events()
+
+        restored_turn = self.window.transcript.layout.itemAt(0).widget()
+        self.assertEqual(restored_turn.block_kinds(), ["user", "tool_group", "assistant", "tool_group"])
+        groups = restored_turn.findChildren(ToolGroupWidget)
+        self.assertEqual(len(groups), 2)
+        self.assertTrue(all(group.container.isHidden() for group in groups))
+        self.assertEqual([group.header_btn.text() for group in groups], ["Выполнено (1 инструментов)", "Выполнено (1 инструментов)"])
 
     def test_tool_error_output_is_collapsed_by_default(self):
         self.window._handle_initialized(self._snapshot_payload())

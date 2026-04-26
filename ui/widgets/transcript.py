@@ -7,6 +7,7 @@ from PySide6.QtWidgets import QHBoxLayout, QPushButton, QScrollArea, QSizePolicy
 
 from .foundation import TRANSCRIPT_MAX_WIDTH, _fa_icon
 from .messages import AssistantMessageWidget, NoticeWidget, RunStatsWidget, StatusIndicatorWidget, UserMessageWidget
+from .tool_group import ToolGroupWidget
 from .tools import ToolCardWidget
 
 
@@ -25,6 +26,7 @@ class ConversationTurnWidget(QWidget):
         self._timeline: list[tuple[str, QWidget]] = []
         self.assistant_segments: list[AssistantMessageWidget] = []
         self.tool_cards: dict[str, ToolCardWidget] = {}
+        self.tool_group: ToolGroupWidget | None = None
         self.status_widget: StatusIndicatorWidget | None = None
         self.summary_notice_widget: NoticeWidget | None = None
         self._append_block("user", UserMessageWidget(user_text, attachments=list(attachments or []), parent=self))
@@ -38,7 +40,7 @@ class ConversationTurnWidget(QWidget):
         return index
 
     def _append_block(self, kind: str, widget: QWidget) -> QWidget:
-        if kind in {"assistant", "tool", "notice", "stats"}:
+        if kind in {"assistant", "tool", "tool_group", "notice", "stats"}:
             self.clear_summary_notice()
         self._layout.addWidget(widget)
         self._timeline.append((kind, widget))
@@ -108,6 +110,9 @@ class ConversationTurnWidget(QWidget):
             self._assistant_markdown = ""
             return
 
+        if self.tool_group is not None and (not self._timeline or self._timeline[-1][0] != "assistant"):
+            self.tool_group.collapse()
+
         segment = self._ensure_assistant_segment()
         if not self._assistant_markdown:
             segment.set_markdown(markdown)
@@ -124,6 +129,8 @@ class ConversationTurnWidget(QWidget):
         self._append_block("notice", NoticeWidget(message, level=level, parent=self))
 
     def add_assistant_message(self, markdown: str) -> AssistantMessageWidget:
+        if self.tool_group is not None and (not self._timeline or self._timeline[-1][0] != "assistant"):
+            self.tool_group.collapse()
         segment = AssistantMessageWidget(parent=self)
         segment.set_markdown(markdown)
         self.assistant_segments.append(segment)
@@ -135,9 +142,12 @@ class ConversationTurnWidget(QWidget):
         tool_id = payload.get("tool_id", "")
         card = self.tool_cards.get(tool_id)
         if card is None:
+            if self.tool_group is None or not self._timeline or self._timeline[-1][0] != "tool_group":
+                self.tool_group = ToolGroupWidget(parent=self)
+                self._append_block("tool_group", self.tool_group)
             card = ToolCardWidget(payload, parent=self)
             self.tool_cards[tool_id] = card
-            self._append_block("tool", card)
+            self.tool_group.add_tool(card)
         card.update_started_payload(payload)
         return card
 
@@ -168,6 +178,9 @@ class ConversationTurnWidget(QWidget):
         )
 
     def complete(self, stats: str) -> None:
+        if self.tool_group is not None:
+            self.tool_group.collapse()
+            self.tool_group = None
         self._append_block("stats", RunStatsWidget(stats, parent=self))
 
     def restore_blocks(self, blocks: list[dict[str, Any]]) -> None:
@@ -189,6 +202,8 @@ class ConversationTurnWidget(QWidget):
                 stats = str(block.get("stats", "") or "").strip()
                 if stats:
                     self.complete(stats)
+        if self.tool_group is not None:
+            self.tool_group.collapse()
 
     def block_kinds(self) -> list[str]:
         return [kind for kind, _widget in self._timeline]

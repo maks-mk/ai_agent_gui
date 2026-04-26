@@ -26,6 +26,11 @@
 - orchestration узлов LangGraph вынесена в `core/node_orchestrators.py`
 - runtime GUI разделён на payload/builders, session coordination и worker lifecycle через `ui/runtime_payloads.py`, `ui/runtime_session.py` и `ui/runtime_worker.py`
 - state-heavy логика окна разгружена в `ui/main_window_state.py`
+- основной `MainWindow` перенесён в `ui/window_components/main_window.py`
+- построение меню и top bar вынесено в `ui/window_components/menu_builder.py`
+- построение workspace/composer/inspector вынесено в `ui/window_components/workspace_builder.py`
+- sidebar и inspector UI-координация вынесены в `ui/window_components/sidebar_controller.py` и `ui/window_components/inspector_controller.py`
+- `ui/main_window.py` сохранён как совместимый facade для внешних импортов
 
 ## Runtime Flow
 
@@ -72,6 +77,8 @@ recovery -> update_step | END
 - локальные файлы можно вставлять через `Add files…`, drag-and-drop или clipboard paste
 - `@`-mention popup показывает файлы и директории из текущего workspace
 - список для `@` пересканируется динамически, поэтому новые файлы и папки, появившиеся после запуска приложения, тоже доступны без перезапуска
+- перед отправкой текст нормализуется: `\r\n` приводится к `\n`, неподдерживаемые control-символы удаляются
+- длина одного текстового запроса ограничена `10000` символами, а при усечении composer показывает inline-warning
 
 Горячие клавиши:
 
@@ -104,6 +111,7 @@ recovery -> update_step | END
 - tool errors могут переводить выполнение в recovery, а не игнорироваться
 - self-correction ограничен параметром `SELF_CORRECTION_RETRY_LIMIT`
 - количество фоновых процессов ограничено `MAX_BACKGROUND_PROCESSES`
+- runtime logging редактирует API keys, bearer tokens и query tokens через `SensitiveDataFilter` в `core/logging_config.py`
 
 `request_user_input` обрабатывается отдельно:
 
@@ -158,6 +166,8 @@ python main.py
 Внутри `ui/` сейчас полезно знать такие узлы ответственности:
 
 - `ui/runtime.py` совместимый facade-слой для runtime API
+- `ui/main_window.py` совместимый facade-слой для публичного окна приложения
+- `ui/window_components/` builders и UI controllers для `MainWindow`
 - `ui/widgets/composer.py` история ввода, paste/drag-and-drop и `@`-mentions
 - `ui/main_window_state.py` event routing, composer state и статусный таймер
 
