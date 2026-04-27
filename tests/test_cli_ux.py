@@ -1511,9 +1511,9 @@ class GuiUxTests(unittest.TestCase):
         tool_card.tool_button.click()
         self._process_events()
         self.assertIn("error[access_denied]", tool_card.args_view.toPlainText().lower())
-        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Running...")
-        self.assertTrue(self.window.current_turn.tool_group.error_icon_label.isHidden())
-        self.assertTrue(self.window.current_turn.tool_group.error_count_label.isHidden())
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Completed (1 tools) ·")
+        self.assertFalse(self.window.current_turn.tool_group.error_icon_label.isHidden())
+        self.assertEqual(self.window.current_turn.tool_group.error_count_label.text(), "1")
 
     def test_restored_error_tool_group_does_not_crash_and_shows_error_count(self):
         payload = self._snapshot_payload()
@@ -1591,7 +1591,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertFalse(tool_card.tool_button.isChecked())
         self.assertTrue(tool_card.args_container.isHidden())
         self.assertFalse(self.window.current_turn.tool_group.container.isHidden())
-        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Running...")
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Completed (1 tools)")
 
     def test_finished_tool_group_stays_open_until_assistant_text_even_after_manual_expand(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1635,7 +1635,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Running...")
+        self.assertEqual(group.header_btn.text(), "Completed (1 tools)")
 
         self.window._handle_event(
             StreamEvent(
@@ -1672,7 +1672,7 @@ class GuiUxTests(unittest.TestCase):
 
         group = self.window.current_turn.tool_group
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Running...")
+        self.assertEqual(group.header_btn.text(), "Completed (1 tools)")
 
         self.window._handle_event(
             StreamEvent("approval_resolved", {"approved": True, "always": False, "auto": False})
@@ -1681,7 +1681,7 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group", "notice"])
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Running...")
+        self.assertEqual(group.header_btn.text(), "Completed (1 tools)")
 
     def test_run_finished_keeps_completed_tool_group_open_without_assistant_text(self):
         self.window._handle_initialized(self._snapshot_payload())
