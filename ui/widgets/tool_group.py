@@ -16,6 +16,7 @@ class ToolGroupWidget(QFrame):
         self._tools: list[ToolCardWidget] = []
         self._collapsed = False
         self._completed = False
+        self._completion_announced = False
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 4)
@@ -71,6 +72,7 @@ class ToolGroupWidget(QFrame):
         self.inner.addWidget(card)
         if self._completed:
             self._completed = False
+            self._completion_announced = False
             self.expand()
         else:
             self._sync_header()
@@ -81,14 +83,21 @@ class ToolGroupWidget(QFrame):
 
     def refresh_completion(self, *, auto_collapse: bool = False) -> None:
         self._completed = bool(self._tools) and all(self._tool_is_finished(tool) for tool in self._tools)
+        if not self._completed:
+            self._completion_announced = False
         if self._completed and auto_collapse:
+            self._completion_announced = True
             self._collapsed = True
             self.container.hide()
             self.header_btn.setChecked(False)
+        elif self._completed and self._collapsed:
+            self._completion_announced = True
         self._sync_header()
 
     def collapse(self) -> None:
-        self._completed = True
+        self._completed = bool(self._tools) and all(self._tool_is_finished(tool) for tool in self._tools)
+        if self._completed:
+            self._completion_announced = True
         if self._collapsed:
             self._sync_header()
             return
@@ -106,11 +115,13 @@ class ToolGroupWidget(QFrame):
     def _toggle(self, checked: bool = False) -> None:
         self._collapsed = not checked
         self.container.setVisible(checked)
+        if self._collapsed and self._completed:
+            self._completion_announced = True
         self._sync_header()
 
     def _sync_header(self) -> None:
         expanded = not self._collapsed
-        if self._completed:
+        if self._completion_announced:
             total = len(self._tools)
             errors = sum(1 for tool in self._tools if tool.payload.get("is_error", False))
             self.error_icon_label.setVisible(errors > 0)

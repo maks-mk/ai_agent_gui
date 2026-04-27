@@ -64,16 +64,16 @@ class ModelLoadState(str, Enum):
 
 def _fetch_error_message(error: FetchError) -> str:
     if isinstance(error, AuthError):
-        return "Invalid API key. Check the key and try again."
+        return "Неверный API Key. Проверьте ключ."
     if isinstance(error, RateLimitError):
-        return "Rate limit reached. Please wait and try again."
+        return "Превышен лимит запросов. Подождите."
     if isinstance(error, ServerError):
-        return "Server error. Please try again later."
+        return "Ошибка сервера. Попробуйте позже."
     if isinstance(error, NetworkError):
-        return "No connection. Check your network and try again."
+        return "Нет соединения. Проверьте сеть."
     if isinstance(error, EmptyResultError):
-        return "No models are available for this key."
-    return "Unable to load models."
+        return "Нет доступных моделей для этого ключа."
+    return "Не удалось загрузить модели."
 
 
 class ModelFetchWorker(QThread):
@@ -101,7 +101,7 @@ class ModelFetchWorker(QThread):
             self.failed.emit(self._request_id, _fetch_error_message(error))
             return
         except Exception:
-            self.failed.emit(self._request_id, "Unable to load models.")
+            self.failed.emit(self._request_id, "Не удалось загрузить модели.")
             return
         self.fetched.emit(self._request_id, result)
 
@@ -111,7 +111,7 @@ class ApiKeyRotationDialog(QDialog):
         super().__init__(parent)
         self.setObjectName("ApiKeyRotationDialog")
         self.setAttribute(Qt.WA_StyledBackground, True)
-        self.setWindowTitle("API Key Rotation")
+        self.setWindowTitle("Ротация API-ключей")
         self.setModal(True)
         self.resize(560, 420)
         self.setMinimumSize(460, 340)
@@ -141,16 +141,16 @@ class ApiKeyRotationDialog(QDialog):
         hero_copy.setContentsMargins(0, 0, 0, 0)
         hero_copy.setSpacing(6)
 
-        title = QLabel("API Key Rotation")
+        title = QLabel("Ротация API-ключей")
         title.setObjectName("ModelSettingsTitle")
         hero_copy.addWidget(title, 0, Qt.AlignLeft | Qt.AlignTop)
 
-        subtitle = QLabel("Add one API key per line.")
+        subtitle = QLabel("Добавьте по одному API-ключу на строку.")
         subtitle.setObjectName("ModelSettingsSubtitle")
         subtitle.setWordWrap(True)
         hero_copy.addWidget(subtitle)
 
-        helper = QLabel("Blank lines are ignored, surrounding spaces are trimmed, and duplicates are merged.")
+        helper = QLabel("Пустые строки будут пропущены, пробелы по краям удалены, дубликаты объединены.")
         helper.setObjectName("ModelSettingsHintText")
         helper.setWordWrap(True)
         hero_copy.addWidget(helper)
@@ -173,7 +173,7 @@ class ApiKeyRotationDialog(QDialog):
         pane_layout.setContentsMargins(14, 14, 14, 14)
         pane_layout.setSpacing(8)
 
-        editor_label = QLabel("Key Pool")
+        editor_label = QLabel("Пул ключей")
         editor_label.setObjectName("SectionTitle")
         pane_layout.addWidget(editor_label)
 
@@ -186,7 +186,7 @@ class ApiKeyRotationDialog(QDialog):
         self.editor.textChanged.connect(self._update_key_count)
         pane_layout.addWidget(self.editor, 1)
 
-        footer = QLabel("Saving in this window applies the changes to the current profile immediately.")
+        footer = QLabel("Сохранение в этом окне сразу применяет изменения к текущему профилю.")
         footer.setObjectName("ModelSettingsMeta")
         footer.setWordWrap(True)
         pane_layout.addWidget(footer)
@@ -228,7 +228,7 @@ class ModelSettingsDialog(QDialog):
         self.setObjectName("ModelSettingsDialog")
         self.setWindowTitle("Model Profiles")
         self.setModal(True)
-        self.resize(1020, 680)
+        self.resize(1020, 620)
         self.setMinimumSize(900, 540)
 
         normalized = normalize_profiles_payload(payload or {})
@@ -436,12 +436,14 @@ class ModelSettingsDialog(QDialog):
         self.provider_combo.setAccessibleName("Provider")
 
         self.model_combo = QComboBox()
+        self.model_combo.setObjectName("ModelSettingsModelCombo")
         self.model_combo.setAccessibleName("Model")
         self.model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
         self.model_combo.setEditable(False)
+        self.model_combo.setMaxVisibleItems(14)
 
         self.model_text_edit = QLineEdit()
-        self.model_text_edit.setPlaceholderText("Enter a model name manually")
+        self.model_text_edit.setPlaceholderText("Введите название модели вручную")
         self.model_text_edit.setClearButtonEnabled(True)
         self.model_text_edit.setAccessibleName("Model")
         self.model_edit = self.model_text_edit
@@ -449,8 +451,16 @@ class ModelSettingsDialog(QDialog):
         self.model_reload_button = QToolButton()
         self.model_reload_button.setObjectName("ModelSettingsInlineToolButton")
         self.model_reload_button.setIcon(_fa_icon("fa5s.redo-alt", color=TEXT_MUTED, size=12))
-        self.model_reload_button.setToolTip("Retry loading")
+        self.model_reload_button.setToolTip("Повторить загрузку")
         self.model_reload_button.setAccessibleName("Retry model loading")
+        self.model_reload_button.setCursor(Qt.PointingHandCursor)
+
+        self.model_popup_button = QToolButton()
+        self.model_popup_button.setObjectName("ModelSettingsInlineToolButton")
+        self.model_popup_button.setIcon(_fa_icon("fa5s.caret-down", color=TEXT_MUTED, size=11))
+        self.model_popup_button.setToolTip("Показать список моделей")
+        self.model_popup_button.setAccessibleName("Show model list")
+        self.model_popup_button.setCursor(Qt.PointingHandCursor)
 
         self.model_loading_label = QLabel("")
         self.model_loading_label.setObjectName("ModelSettingsHintText")
@@ -510,6 +520,7 @@ class ModelSettingsDialog(QDialog):
         model_row_layout.setSpacing(6)
         model_row_layout.addWidget(self.model_combo, 1)
         model_row_layout.addWidget(self.model_text_edit, 1)
+        model_row_layout.addWidget(self.model_popup_button, 0, Qt.AlignVCenter)
         model_row_layout.addWidget(self.model_reload_button, 0, Qt.AlignVCenter)
 
         model_field = QWidget()
@@ -610,6 +621,7 @@ class ModelSettingsDialog(QDialog):
         self.api_key_copy_button.clicked.connect(self._copy_api_key)
         self.api_key_rotation_button.clicked.connect(self._edit_api_key_rotation)
         self.base_url_edit.textChanged.connect(self._on_base_url_changed)
+        self.model_popup_button.clicked.connect(self._show_model_popup)
         self.model_reload_button.clicked.connect(self._reload_models)
         self.supports_images_checkbox.checkStateChanged.connect(self._on_form_changed)
 
@@ -673,17 +685,17 @@ class ModelSettingsDialog(QDialog):
         show_combo = state in {ModelLoadState.LOADING, ModelLoadState.LOADED, ModelLoadState.ERROR}
         show_text = not show_combo
         status_text = str(message or "").strip()
+        has_fetch_inputs = self._current_fetch_inputs() is not None
 
         self.model_combo.setVisible(show_combo)
         self.model_text_edit.setVisible(show_text)
-        self.model_combo.setEditable(is_openai and state == ModelLoadState.LOADED)
-        self.model_combo.setEnabled(self._form_enabled and state == ModelLoadState.LOADED)
+        self.model_combo.setEditable(is_openai and state in {ModelLoadState.LOADED, ModelLoadState.FALLBACK})
+        self.model_combo.setEnabled(self._form_enabled and state in {ModelLoadState.LOADED, ModelLoadState.FALLBACK})
         self.model_text_edit.setEnabled(self._form_enabled and state == ModelLoadState.FALLBACK)
-        self.model_reload_button.setVisible(
-            self._form_enabled
-            and (state == ModelLoadState.ERROR or (state == ModelLoadState.FALLBACK and is_openai))
-        )
-        self.model_reload_button.setEnabled(self._form_enabled)
+        self.model_popup_button.setVisible(self._form_enabled and show_combo)
+        self.model_popup_button.setEnabled(self._form_enabled and state == ModelLoadState.LOADED and self.model_combo.count() > 0)
+        self.model_reload_button.setVisible(self._form_enabled)
+        self.model_reload_button.setEnabled(self._form_enabled and has_fetch_inputs and state != ModelLoadState.LOADING)
         self.model_loading_label.setText(status_text)
         self.model_loading_label.setVisible(bool(status_text))
         if hasattr(self, "model_field_label"):
@@ -705,6 +717,12 @@ class ModelSettingsDialog(QDialog):
             if index >= 0:
                 self.model_combo.setCurrentIndex(index)
         self.model_combo.blockSignals(False)
+
+    def _show_model_popup(self) -> None:
+        if not self.model_combo.isVisible() or not self.model_combo.isEnabled() or self.model_combo.count() <= 0:
+            return
+        self.model_combo.setFocus(Qt.OtherFocusReason)
+        self.model_combo.showPopup()
 
     def _get_current_model_value(self) -> str:
         if self._model_state == ModelLoadState.LOADED:
@@ -759,6 +777,16 @@ class ModelSettingsDialog(QDialog):
             return
         self.supports_images_checkbox.setChecked(bool(entry.supports_image_input))
 
+    def _sync_image_support_after_model_load(self, model_id: str) -> None:
+        current_row = self._current_row()
+        if 0 <= current_row < len(self._profiles):
+            profile = self._profiles[current_row]
+            profile_model = str(profile.get("model") or "").strip()
+            if profile_model and profile_model == str(model_id or "").strip():
+                self.supports_images_checkbox.setChecked(bool(profile.get("supports_image_input")))
+                return
+        self._apply_entry_image_support(model_id)
+
     def _apply_loaded_models(self, entries: list[ModelEntry]) -> None:
         provider = self._normalized_provider()
         current_value = self._get_current_model_value()
@@ -782,16 +810,15 @@ class ModelSettingsDialog(QDialog):
                 self.model_combo.setEditText(selected_model)
         self.model_combo.blockSignals(False)
 
+        self._set_current_model_widgets_text(selected_model)
         if not selected_model and provider == "openai":
             self._set_model_state(
-                ModelLoadState.FALLBACK,
-                message="The model list is empty. Enter a model name manually.",
+                ModelLoadState.LOADED,
+                message="Список моделей пуст. Введите название модели вручную.",
             )
-            return
-
-        self._set_current_model_widgets_text(selected_model)
-        self._set_model_state(ModelLoadState.LOADED)
-        self._apply_entry_image_support(selected_model)
+        else:
+            self._set_model_state(ModelLoadState.LOADED)
+        self._sync_image_support_after_model_load(selected_model)
         self._on_form_changed()
 
     def _start_fetch(self) -> None:
@@ -809,8 +836,8 @@ class ModelSettingsDialog(QDialog):
 
         self._fetch_request_id += 1
         request_id = self._fetch_request_id
-        self._set_combo_placeholder("Loading models…")
-        self._set_model_state(ModelLoadState.LOADING, message="Loading…")
+        self._set_combo_placeholder("Загрузка моделей…")
+        self._set_model_state(ModelLoadState.LOADING, message="Загрузка…")
 
         worker = ModelFetchWorker(request_id, fetcher, api_key, base_url, parent=self)
         self._model_workers.append(worker)
@@ -838,7 +865,7 @@ class ModelSettingsDialog(QDialog):
         if self._normalized_provider() == "openai":
             self._set_model_state(ModelLoadState.FALLBACK, message=message)
             return
-        self._set_combo_placeholder(current_value or "Models unavailable")
+        self._set_combo_placeholder(current_value or "Модели недоступны")
         self._set_model_state(ModelLoadState.ERROR, message=message)
 
     def _reload_models(self) -> None:

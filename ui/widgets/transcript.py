@@ -182,9 +182,6 @@ class ConversationTurnWidget(QWidget):
         if card is None:
             card = self.start_tool(payload)
         card.finish(payload, collapse_delay_ms=collapse_delay_ms)
-        group = self._tool_group_for_card(card)
-        if group is not None:
-            group.refresh_completion(auto_collapse=False)
 
     def append_tool_output(self, payload: dict[str, Any]) -> None:
         tool_id = str(payload.get("tool_id", "") or "").strip()
@@ -206,8 +203,6 @@ class ConversationTurnWidget(QWidget):
         )
 
     def complete(self, stats: str) -> None:
-        if self.tool_group is not None:
-            self.tool_group.refresh_completion(auto_collapse=False)
         self._append_block("stats", RunStatsWidget(stats, parent=self))
 
     def restore_blocks(self, blocks: list[dict[str, Any]]) -> None:

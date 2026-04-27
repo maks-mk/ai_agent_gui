@@ -13,6 +13,7 @@ from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QDialog, QLabel, QFrame, QPushButton, QSizePolicy, QToolBar, QWidget
 
 import main as agent_cli
+from core.model_fetcher import ModelEntry
 from core.model_profiles import normalize_profiles_payload
 from core.tool_policy import ToolMetadata
 from ui.runtime import build_runtime_snapshot, summarize_approval_request
@@ -1511,9 +1512,9 @@ class GuiUxTests(unittest.TestCase):
         tool_card.tool_button.click()
         self._process_events()
         self.assertIn("error[access_denied]", tool_card.args_view.toPlainText().lower())
-        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Completed (1 tools) ·")
-        self.assertFalse(self.window.current_turn.tool_group.error_icon_label.isHidden())
-        self.assertEqual(self.window.current_turn.tool_group.error_count_label.text(), "1")
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Running...")
+        self.assertTrue(self.window.current_turn.tool_group.error_icon_label.isHidden())
+        self.assertEqual(self.window.current_turn.tool_group.error_count_label.text(), "")
 
     def test_restored_error_tool_group_does_not_crash_and_shows_error_count(self):
         payload = self._snapshot_payload()
@@ -1591,7 +1592,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertFalse(tool_card.tool_button.isChecked())
         self.assertTrue(tool_card.args_container.isHidden())
         self.assertFalse(self.window.current_turn.tool_group.container.isHidden())
-        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Completed (1 tools)")
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Running...")
 
     def test_finished_tool_group_stays_open_until_assistant_text_even_after_manual_expand(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1635,7 +1636,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Completed (1 tools)")
+        self.assertEqual(group.header_btn.text(), "Running...")
 
         self.window._handle_event(
             StreamEvent(
@@ -1672,7 +1673,7 @@ class GuiUxTests(unittest.TestCase):
 
         group = self.window.current_turn.tool_group
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Completed (1 tools)")
+        self.assertEqual(group.header_btn.text(), "Running...")
 
         self.window._handle_event(
             StreamEvent("approval_resolved", {"approved": True, "always": False, "auto": False})
@@ -1681,7 +1682,7 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group", "notice"])
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Completed (1 tools)")
+        self.assertEqual(group.header_btn.text(), "Running...")
 
     def test_run_finished_keeps_completed_tool_group_open_without_assistant_text(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1704,7 +1705,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertIsNotNone(group)
         self.assertFalse(group.container.isHidden())
         self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group", "stats"])
-        self.assertEqual(group.header_btn.text(), "Completed (1 tools)")
+        self.assertEqual(group.header_btn.text(), "Running...")
 
     def test_assistant_comment_after_tool_group_does_not_repeat_previous_prefix(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -2388,21 +2389,59 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(dialog.name_edit.text(), "gpt-oss-120b")
 
     def test_model_settings_dialog_saves_manual_image_support_checkbox(self):
-        dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
-        self.addCleanup(dialog.close)
-        dialog._add_profile()
-        self._process_events()
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
+            self.addCleanup(dialog.close)
+            dialog._add_profile()
+            self._process_events()
 
-        dialog.provider_combo.setCurrentText("gemini")
-        dialog.model_edit.setText("gemini-2.5-pro")
-        dialog.api_key_edit.setText("gm-demo")
-        dialog.supports_images_checkbox.setChecked(True)
-        self._process_events()
+            dialog.provider_combo.setCurrentText("gemini")
+            dialog.model_edit.setText("gemini-2.5-pro")
+            dialog.api_key_edit.setText("gm-demo")
+            dialog.supports_images_checkbox.setChecked(True)
+            self._process_events()
 
-        dialog._save_and_accept()
-        result = dialog.result_payload()
+            dialog._save_and_accept()
+            result = dialog.result_payload()
 
-        self.assertTrue(result["profiles"][0]["supports_image_input"])
+            self.assertTrue(result["profiles"][0]["supports_image_input"])
+
+    def test_model_settings_dialog_keeps_image_support_checkbox_checked_after_save_for_loaded_openai_model(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-demo",
+                    "base_url": "https://api.openai.com/v1",
+                    "supports_image_input": False,
+                    "enabled": True,
+                }
+            ],
+        }
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+            self.addCleanup(dialog.close)
+            dialog.show()
+            self._process_events()
+
+            entries = [ModelEntry(id="gpt-4o", family="", supports_image_input=False)]
+            dialog._apply_loaded_models(entries)
+            self._process_events()
+
+            dialog.supports_images_checkbox.setChecked(True)
+            self._process_events()
+
+            dialog._save_and_accept()
+            self._process_events()
+
+            dialog._apply_loaded_models(entries)
+            self._process_events()
+
+            self.assertTrue(dialog.result_payload()["profiles"][0]["supports_image_input"])
+            self.assertTrue(dialog.supports_images_checkbox.isChecked())
 
     def test_api_key_rotation_dialog_uses_monospace_editor_font(self):
         dialog = widget_dialogs.ApiKeyRotationDialog(["sk-primary", "sk-secondary"], self.window)
@@ -2721,28 +2760,166 @@ class GuiUxTests(unittest.TestCase):
                 }
             ],
         }
-        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
-        self.addCleanup(dialog.close)
-        self._process_events()
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+            self.addCleanup(dialog.close)
+            self._process_events()
 
-        self.assertTrue(dialog.base_url_edit.isEnabled())
-        self.assertIn("api.openai.com", dialog.base_url_edit.placeholderText())
+            self.assertTrue(dialog.base_url_edit.isEnabled())
+            self.assertIn("api.openai.com", dialog.base_url_edit.placeholderText())
 
     def test_model_settings_dialog_clears_base_url_for_gemini_on_save(self):
-        dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
+            self.addCleanup(dialog.close)
+            dialog._add_profile()
+            self._process_events()
+            dialog.provider_combo.setCurrentText("gemini")
+            dialog.model_edit.setText("gemini-1.5-flash")
+            dialog.api_key_edit.setText("gm-demo")
+            dialog.base_url_edit.setText("https://ignored.example")
+            self._process_events()
+
+            dialog._save_and_accept()
+            result = dialog.result_payload()
+            self.assertEqual(result["profiles"][0]["provider"], "gemini")
+            self.assertEqual(result["profiles"][0]["base_url"], "")
+
+    def test_model_settings_dialog_openai_loaded_state_shows_popup_and_reload_buttons(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-demo",
+                    "base_url": "https://api.openai.com/v1",
+                }
+            ],
+        }
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
         self.addCleanup(dialog.close)
-        dialog._add_profile()
-        self._process_events()
-        dialog.provider_combo.setCurrentText("gemini")
-        dialog.model_edit.setText("gemini-1.5-flash")
-        dialog.api_key_edit.setText("gm-demo")
-        dialog.base_url_edit.setText("https://ignored.example")
+        dialog.show()
         self._process_events()
 
-        dialog._save_and_accept()
-        result = dialog.result_payload()
-        self.assertEqual(result["profiles"][0]["provider"], "gemini")
-        self.assertEqual(result["profiles"][0]["base_url"], "")
+        dialog._invalidate_pending_fetches()
+        dialog._apply_loaded_models(
+            [
+                ModelEntry(id="gpt-4o", family="", supports_image_input=False),
+                ModelEntry(id="gpt-4.1", family="", supports_image_input=False),
+            ]
+        )
+        self._process_events()
+
+        self.assertTrue(dialog.model_combo.isVisible())
+        self.assertTrue(dialog.model_popup_button.isVisible())
+        self.assertTrue(dialog.model_popup_button.isEnabled())
+        self.assertTrue(dialog.model_reload_button.isVisible())
+        self.assertTrue(dialog.model_reload_button.isEnabled())
+
+    def test_model_settings_dialog_openai_popup_button_opens_model_list(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-demo",
+                    "base_url": "https://api.openai.com/v1",
+                }
+            ],
+        }
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        dialog.show()
+        self._process_events()
+
+        dialog._invalidate_pending_fetches()
+        dialog._apply_loaded_models(
+            [
+                ModelEntry(id="gpt-4o", family="", supports_image_input=False),
+                ModelEntry(id="gpt-4.1", family="", supports_image_input=False),
+            ]
+        )
+        self._process_events()
+
+        dialog._show_model_popup()
+        self._process_events()
+
+        self.assertTrue(dialog.model_combo.view().isVisible())
+        dialog.model_combo.hidePopup()
+
+    def test_model_settings_dialog_gemini_loaded_state_shows_popup_and_reload_buttons(self):
+        payload = {
+            "active_profile": "gemini-2.5-pro",
+            "profiles": [
+                {
+                    "id": "gemini-2.5-pro",
+                    "provider": "gemini",
+                    "model": "gemini-2.5-pro",
+                    "api_key": "gm-demo",
+                    "base_url": "",
+                }
+            ],
+        }
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        dialog.show()
+        self._process_events()
+
+        dialog._invalidate_pending_fetches()
+        dialog._apply_loaded_models(
+            [
+                ModelEntry(id="gemini-2.5-pro", family="gemini", supports_image_input=True),
+                ModelEntry(id="gemini-2.5-flash", family="gemini", supports_image_input=True),
+            ]
+        )
+        self._process_events()
+
+        self.assertTrue(dialog.model_combo.isVisible())
+        self.assertTrue(dialog.model_popup_button.isVisible())
+        self.assertTrue(dialog.model_popup_button.isEnabled())
+        self.assertTrue(dialog.model_reload_button.isVisible())
+        self.assertTrue(dialog.model_reload_button.isEnabled())
+
+    def test_model_settings_dialog_gemini_popup_button_opens_model_list(self):
+        payload = {
+            "active_profile": "gemini-2.5-pro",
+            "profiles": [
+                {
+                    "id": "gemini-2.5-pro",
+                    "provider": "gemini",
+                    "model": "gemini-2.5-pro",
+                    "api_key": "gm-demo",
+                    "base_url": "",
+                }
+            ],
+        }
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        dialog.show()
+        self._process_events()
+
+        dialog._invalidate_pending_fetches()
+        dialog._apply_loaded_models(
+            [
+                ModelEntry(id="gemini-2.5-pro", family="gemini", supports_image_input=True),
+                ModelEntry(id="gemini-2.5-flash", family="gemini", supports_image_input=True),
+            ]
+        )
+        self._process_events()
+
+        dialog._show_model_popup()
+        self._process_events()
+
+        self.assertTrue(dialog.model_combo.view().isVisible())
+        dialog.model_combo.hidePopup()
 
     def test_composer_expands_to_max_height_then_uses_internal_scroll(self):
         self.window._handle_initialized(self._snapshot_payload())

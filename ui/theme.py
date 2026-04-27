@@ -492,11 +492,78 @@ def build_stylesheet() -> str:
         padding-right: 2px;
     }}
 
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo {{
+        padding-right: 10px;
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo::drop-down {{
+        border: none;
+        width: 0px;
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo::down-arrow {{
+        image: none;
+        width: 0px;
+        height: 0px;
+    }}
+
     QDialog#ModelSettingsDialog QComboBox QAbstractItemView {{
         background: {model_dialog_card};
         border: 1px solid {model_dialog_border};
         selection-background-color: {model_dialog_selected};
         color: {model_dialog_text};
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView {{
+        background: {blend_hex(model_dialog_card, model_dialog_field_bg, 0.20)};
+        border: 1px solid {blend_hex(model_dialog_selected_border, model_dialog_border, 0.35)};
+        border-radius: {SOFT_RADIUS_MD + 4}px;
+        padding: 6px 4px;
+        outline: 0px;
+        selection-background-color: {blend_hex(model_dialog_selected, model_dialog_field_bg, 0.14)};
+        selection-color: {model_dialog_text};
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView::item {{
+        min-height: 26px;
+        padding: 4px 10px;
+        margin: 1px 4px;
+        border-radius: {SOFT_RADIUS_SM}px;
+        background: transparent;
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView::item:selected {{
+        background: {blend_hex(model_dialog_selected, model_dialog_field_bg, 0.18)};
+        color: {TEXT_PRIMARY};
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView::item:hover {{
+        background: {blend_hex(model_dialog_selected, model_dialog_field_bg, 0.10)};
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView QScrollBar:vertical {{
+        background: transparent;
+        width: 8px;
+        margin: 4px 2px 4px 6px;
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView QScrollBar::handle:vertical {{
+        background: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.14)};
+        border-radius: 4px;
+        min-height: 28px;
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView QScrollBar::handle:vertical:hover {{
+        background: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.24)};
+    }}
+
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView QScrollBar::add-line:vertical,
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView QScrollBar::sub-line:vertical,
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView QScrollBar::add-page:vertical,
+    QDialog#ModelSettingsDialog QComboBox#ModelSettingsModelCombo QAbstractItemView QScrollBar::sub-page:vertical {{
+        background: transparent;
+        border: none;
+        height: 0px;
     }}
 
     QLabel#ModelSettingsFieldLabel {{
@@ -554,6 +621,22 @@ def build_stylesheet() -> str:
         min-height: 32px;
         max-height: 32px;
         padding: 0px;
+    }}
+
+    QPushButton#ModelSettingsInlineButton:hover,
+    QToolButton#ModelSettingsInlineToolButton:hover {{
+        background: {blend_hex(model_dialog_selected, model_dialog_card, 0.14)};
+        border: 1px solid {blend_hex(model_dialog_selected_border, model_dialog_field_border, 0.42)};
+    }}
+
+    QPushButton#ModelSettingsInlineButton:pressed,
+    QToolButton#ModelSettingsInlineToolButton:pressed {{
+        background: {blend_hex(model_dialog_selected, model_dialog_card, 0.22)};
+    }}
+
+    QToolButton#ModelSettingsInlineToolButton:disabled {{
+        background: {blend_hex(model_dialog_soft, model_dialog_card, 0.35)};
+        border: 1px solid {blend_hex(model_dialog_field_border, model_dialog_card, 0.35)};
     }}
 
     QLabel#ModelSettingsHintText {{
