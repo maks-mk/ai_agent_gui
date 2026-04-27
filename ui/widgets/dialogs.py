@@ -43,9 +43,15 @@ from core.model_fetcher import (
     RateLimitError,
     ServerError,
 )
-from core.model_profiles import ALLOWED_PROVIDERS, generate_profile_id, normalize_profiles_payload, sanitize_profile_id
+from core.model_profiles import (
+    ALLOWED_PROVIDERS,
+    generate_profile_id,
+    normalize_api_key_list,
+    normalize_profiles_payload,
+    sanitize_profile_id,
+)
 from ui.theme import TEXT_MUTED, TEXT_PRIMARY
-from .foundation import CollapsibleSection, _fa_icon, _make_mono_font
+from .foundation import CollapsibleSection, CopySafePlainTextEdit, _fa_icon, _make_mono_font
 
 
 class ModelLoadState(str, Enum):
@@ -58,16 +64,16 @@ class ModelLoadState(str, Enum):
 
 def _fetch_error_message(error: FetchError) -> str:
     if isinstance(error, AuthError):
-        return "Неверный API Key. Проверьте ключ."
+        return "Invalid API key. Check the key and try again."
     if isinstance(error, RateLimitError):
-        return "Превышен лимит запросов. Подождите."
+        return "Rate limit reached. Please wait and try again."
     if isinstance(error, ServerError):
-        return "Ошибка сервера. Попробуйте позже."
+        return "Server error. Please try again later."
     if isinstance(error, NetworkError):
-        return "Нет соединения. Проверьте сеть."
+        return "No connection. Check your network and try again."
     if isinstance(error, EmptyResultError):
-        return "Нет доступных моделей для этого ключа."
-    return "Не удалось загрузить модели."
+        return "No models are available for this key."
+    return "Unable to load models."
 
 
 class ModelFetchWorker(QThread):
@@ -95,9 +101,123 @@ class ModelFetchWorker(QThread):
             self.failed.emit(self._request_id, _fetch_error_message(error))
             return
         except Exception:
-            self.failed.emit(self._request_id, "Не удалось загрузить модели.")
+            self.failed.emit(self._request_id, "Unable to load models.")
             return
         self.fetched.emit(self._request_id, result)
+
+
+class ApiKeyRotationDialog(QDialog):
+    def __init__(self, api_keys: list[str], parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.setObjectName("ApiKeyRotationDialog")
+        self.setAttribute(Qt.WA_StyledBackground, True)
+        self.setWindowTitle("API Key Rotation")
+        self.setModal(True)
+        self.resize(560, 420)
+        self.setMinimumSize(460, 340)
+        self._api_keys = list(api_keys or [])
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(0)
+
+        surface = QFrame()
+        surface.setObjectName("ApiKeyRotationSurface")
+        surface.setAttribute(Qt.WA_StyledBackground, True)
+        layout.addWidget(surface)
+
+        surface_layout = QVBoxLayout(surface)
+        surface_layout.setContentsMargins(18, 18, 18, 18)
+        surface_layout.setSpacing(12)
+
+        hero_card = QFrame()
+        hero_card.setObjectName("ModelSettingsHeroCard")
+        hero_card.setAttribute(Qt.WA_StyledBackground, True)
+        hero_layout = QHBoxLayout(hero_card)
+        hero_layout.setContentsMargins(18, 16, 18, 16)
+        hero_layout.setSpacing(16)
+
+        hero_copy = QVBoxLayout()
+        hero_copy.setContentsMargins(0, 0, 0, 0)
+        hero_copy.setSpacing(6)
+
+        title = QLabel("API Key Rotation")
+        title.setObjectName("ModelSettingsTitle")
+        hero_copy.addWidget(title, 0, Qt.AlignLeft | Qt.AlignTop)
+
+        subtitle = QLabel("Add one API key per line.")
+        subtitle.setObjectName("ModelSettingsSubtitle")
+        subtitle.setWordWrap(True)
+        hero_copy.addWidget(subtitle)
+
+        helper = QLabel("Blank lines are ignored, surrounding spaces are trimmed, and duplicates are merged.")
+        helper.setObjectName("ModelSettingsHintText")
+        helper.setWordWrap(True)
+        hero_copy.addWidget(helper)
+        hero_layout.addLayout(hero_copy, 1)
+
+        hero_stats = QVBoxLayout()
+        hero_stats.setContentsMargins(0, 0, 0, 0)
+        hero_stats.setSpacing(8)
+        self.key_count_chip = QLabel("")
+        self.key_count_chip.setObjectName("ModelSettingsChip")
+        hero_stats.addWidget(self.key_count_chip, 0, Qt.AlignRight)
+        hero_stats.addStretch(1)
+        hero_layout.addLayout(hero_stats, 0)
+        surface_layout.addWidget(hero_card)
+
+        pane = QFrame()
+        pane.setObjectName("ModelSettingsPane")
+        pane.setAttribute(Qt.WA_StyledBackground, True)
+        pane_layout = QVBoxLayout(pane)
+        pane_layout.setContentsMargins(14, 14, 14, 14)
+        pane_layout.setSpacing(8)
+
+        editor_label = QLabel("Key Pool")
+        editor_label.setObjectName("SectionTitle")
+        pane_layout.addWidget(editor_label)
+
+        self.editor = CopySafePlainTextEdit()
+        self.editor.setPlaceholderText("sk-key-1\nsk-key-2\ngm-key-3")
+        self.editor.setObjectName("InlineCodeView")
+        self.editor.setFont(_make_mono_font(10))
+        self.editor.setLineWrapMode(QPlainTextEdit.NoWrap)
+        self.editor.setPlainText("\n".join(self._api_keys))
+        self.editor.textChanged.connect(self._update_key_count)
+        pane_layout.addWidget(self.editor, 1)
+
+        footer = QLabel("Saving in this window applies the changes to the current profile immediately.")
+        footer.setObjectName("ModelSettingsMeta")
+        footer.setWordWrap(True)
+        pane_layout.addWidget(footer)
+        surface_layout.addWidget(pane, 1)
+
+        buttons = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Cancel)
+        buttons.setObjectName("ModelSettingsActions")
+        save_button = buttons.button(QDialogButtonBox.StandardButton.Save)
+        if save_button is not None:
+            save_button.setObjectName("PrimaryButton")
+            save_button.setIcon(_fa_icon("fa5s.save", color="#FFFFFF", size=11))
+            save_button.setMinimumHeight(30)
+        cancel_button = buttons.button(QDialogButtonBox.StandardButton.Cancel)
+        if cancel_button is not None:
+            cancel_button.setObjectName("SecondaryButton")
+            cancel_button.setMinimumHeight(30)
+        buttons.accepted.connect(self._accept)
+        buttons.rejected.connect(self.reject)
+        surface_layout.addWidget(buttons)
+        self._update_key_count()
+
+    def api_keys(self) -> list[str]:
+        return list(self._api_keys)
+
+    def _update_key_count(self) -> None:
+        key_count = len(normalize_api_key_list(self.editor.toPlainText()))
+        self.key_count_chip.setText(f"{key_count} key(s)")
+
+    def _accept(self) -> None:
+        self._api_keys = normalize_api_key_list(self.editor.toPlainText())
+        self.accept()
 
 
 class ModelSettingsDialog(QDialog):
@@ -108,7 +228,7 @@ class ModelSettingsDialog(QDialog):
         self.setObjectName("ModelSettingsDialog")
         self.setWindowTitle("Model Profiles")
         self.setModal(True)
-        self.resize(1020, 620)
+        self.resize(1020, 680)
         self.setMinimumSize(900, 540)
 
         normalized = normalize_profiles_payload(payload or {})
@@ -321,14 +441,15 @@ class ModelSettingsDialog(QDialog):
         self.model_combo.setEditable(False)
 
         self.model_text_edit = QLineEdit()
-        self.model_text_edit.setPlaceholderText("Введите название модели вручную")
+        self.model_text_edit.setPlaceholderText("Enter a model name manually")
         self.model_text_edit.setClearButtonEnabled(True)
         self.model_text_edit.setAccessibleName("Model")
+        self.model_edit = self.model_text_edit
 
         self.model_reload_button = QToolButton()
         self.model_reload_button.setObjectName("ModelSettingsInlineToolButton")
         self.model_reload_button.setIcon(_fa_icon("fa5s.redo-alt", color=TEXT_MUTED, size=12))
-        self.model_reload_button.setToolTip("Повторить загрузку")
+        self.model_reload_button.setToolTip("Retry loading")
         self.model_reload_button.setAccessibleName("Retry model loading")
 
         self.model_loading_label = QLabel("")
@@ -352,6 +473,12 @@ class ModelSettingsDialog(QDialog):
         self.api_key_copy_button.setToolTip("Copy API key")
         self.api_key_copy_button.setAccessibleName("Copy API key")
 
+        self.api_key_rotation_button = QToolButton()
+        self.api_key_rotation_button.setObjectName("ModelSettingsInlineToolButton")
+        self.api_key_rotation_button.setIcon(_fa_icon("fa5s.sync-alt", color=TEXT_MUTED, size=12))
+        self.api_key_rotation_button.setToolTip("Configure API key rotation")
+        self.api_key_rotation_button.setAccessibleName("Configure API key rotation")
+
         self.base_url_edit = QLineEdit()
         self.base_url_edit.setPlaceholderText("https://api.openai.com/v1")
         self.base_url_edit.setClearButtonEnabled(True)
@@ -374,6 +501,7 @@ class ModelSettingsDialog(QDialog):
         api_key_layout.addWidget(self.api_key_edit, 1)
         api_key_layout.addWidget(self.api_key_reveal_button, 0, Qt.AlignVCenter)
         api_key_layout.addWidget(self.api_key_copy_button, 0, Qt.AlignVCenter)
+        api_key_layout.addWidget(self.api_key_rotation_button, 0, Qt.AlignVCenter)
 
         model_row = QWidget()
         model_row.setObjectName("ModelSettingsFieldRow")
@@ -480,6 +608,7 @@ class ModelSettingsDialog(QDialog):
         self.api_key_edit.textChanged.connect(self._on_api_key_changed)
         self.api_key_reveal_button.clicked.connect(self._toggle_api_key_visibility)
         self.api_key_copy_button.clicked.connect(self._copy_api_key)
+        self.api_key_rotation_button.clicked.connect(self._edit_api_key_rotation)
         self.base_url_edit.textChanged.connect(self._on_base_url_changed)
         self.model_reload_button.clicked.connect(self._reload_models)
         self.supports_images_checkbox.checkStateChanged.connect(self._on_form_changed)
@@ -504,6 +633,7 @@ class ModelSettingsDialog(QDialog):
             self.name_edit,
             self.provider_combo,
             self.api_key_edit,
+            self.api_key_rotation_button,
             self.base_url_edit,
             self.supports_images_checkbox,
         ):
@@ -655,7 +785,7 @@ class ModelSettingsDialog(QDialog):
         if not selected_model and provider == "openai":
             self._set_model_state(
                 ModelLoadState.FALLBACK,
-                message="Список моделей пуст. Введите название модели вручную.",
+                message="The model list is empty. Enter a model name manually.",
             )
             return
 
@@ -679,8 +809,8 @@ class ModelSettingsDialog(QDialog):
 
         self._fetch_request_id += 1
         request_id = self._fetch_request_id
-        self._set_combo_placeholder("Загрузка моделей…")
-        self._set_model_state(ModelLoadState.LOADING, message="Загрузка…")
+        self._set_combo_placeholder("Loading models…")
+        self._set_model_state(ModelLoadState.LOADING, message="Loading…")
 
         worker = ModelFetchWorker(request_id, fetcher, api_key, base_url, parent=self)
         self._model_workers.append(worker)
@@ -708,7 +838,7 @@ class ModelSettingsDialog(QDialog):
         if self._normalized_provider() == "openai":
             self._set_model_state(ModelLoadState.FALLBACK, message=message)
             return
-        self._set_combo_placeholder(current_value or "Модели недоступны")
+        self._set_combo_placeholder(current_value or "Models unavailable")
         self._set_model_state(ModelLoadState.ERROR, message=message)
 
     def _reload_models(self) -> None:
@@ -852,6 +982,55 @@ class ModelSettingsDialog(QDialog):
     def _copy_api_key(self) -> None:
         QApplication.clipboard().setText(self.api_key_edit.text())
         self._set_save_state("API key copied to clipboard.")
+
+    def _profile_api_keys(self, row: int) -> list[str]:
+        if row < 0 or row >= len(self._profiles):
+            return []
+        profile = self._profiles[row]
+        return normalize_api_key_list(profile.get("api_keys"), fallback=profile.get("api_key"))
+
+    def _apply_api_key_rotation_to_profile(self, row: int, api_keys: list[str]) -> None:
+        if row < 0 or row >= len(self._profiles):
+            return
+        cleaned_keys = normalize_api_key_list(api_keys)
+        profile = dict(self._profiles[row])
+        current_key = str(profile.get("api_key") or "").strip()
+        if cleaned_keys and current_key in cleaned_keys:
+            api_key_index = cleaned_keys.index(current_key)
+        else:
+            api_key_index = 0
+        active_api_key = cleaned_keys[api_key_index] if cleaned_keys else ""
+        profile["api_keys"] = cleaned_keys
+        profile["api_key_index"] = api_key_index
+        profile["invalid_api_keys"] = []
+        profile["api_key"] = active_api_key
+        self._profiles[row] = profile
+
+    def _edit_api_key_rotation(self) -> None:
+        row = self._current_row()
+        if row < 0 or row >= len(self._profiles):
+            return
+        self._sync_current_profile_from_form(row)
+        dialog = ApiKeyRotationDialog(self._profile_api_keys(row), self)
+        if dialog.exec() != QDialog.Accepted:
+            return
+        self._apply_api_key_rotation_to_profile(row, dialog.api_keys())
+        self._loading_form = True
+        self.api_key_edit.setText(str(self._profiles[row].get("api_key") or ""))
+        self._loading_form = False
+        self._on_api_key_changed(self.api_key_edit.text())
+        key_count = len(self._profiles[row].get("api_keys") or [])
+        if self._persist_profiles(
+            f"Rotation pool saved ({key_count} key(s))."
+            if key_count
+            else "Rotation pool cleared and saved."
+        ):
+            return
+        self._set_save_state(
+            f"Rotation pool updated ({key_count} key(s)). Finish required fields and press Save to persist."
+            if key_count
+            else "Rotation pool cleared. Finish required fields and press Save to persist."
+        )
 
     def _build_profile_item_widget(self, profile: dict[str, Any], row: int) -> QWidget:
         container = QWidget()
@@ -1055,14 +1234,47 @@ class ModelSettingsDialog(QDialog):
             return
         provider = self._normalized_provider()
         base_url = str(self.base_url_edit.text() or "").strip() if provider == "openai" else ""
+        existing_profile = dict(self._profiles[target_row])
+        current_api_key = str(self.api_key_edit.text() or "").strip()
+        existing_api_keys = normalize_api_key_list(
+            existing_profile.get("api_keys"),
+            fallback=existing_profile.get("api_key"),
+        )
+        if existing_api_keys:
+            try:
+                existing_index = int(existing_profile.get("api_key_index") or 0)
+            except (TypeError, ValueError):
+                existing_index = 0
+            existing_index = max(0, min(existing_index, len(existing_api_keys) - 1))
+        else:
+            existing_index = 0
+        if current_api_key:
+            if existing_api_keys:
+                existing_api_keys[existing_index] = current_api_key
+            else:
+                existing_api_keys = [current_api_key]
+        elif existing_api_keys:
+            existing_api_keys.pop(existing_index)
+            existing_index = min(existing_index, max(0, len(existing_api_keys) - 1))
+        api_keys = normalize_api_key_list(existing_api_keys)
+        if current_api_key and current_api_key in api_keys:
+            api_key_index = api_keys.index(current_api_key)
+        elif api_keys:
+            api_key_index = min(existing_index, len(api_keys) - 1)
+            current_api_key = api_keys[api_key_index]
+        else:
+            api_key_index = 0
         self._profiles[target_row] = {
             "id": str(self.name_edit.text() or "").strip(),
             "provider": provider,
             "model": self._get_current_model_value(),
-            "api_key": str(self.api_key_edit.text() or "").strip(),
+            "api_key": current_api_key,
+            "api_keys": api_keys,
+            "api_key_index": api_key_index,
+            "invalid_api_keys": [],
             "base_url": base_url,
             "supports_image_input": self.supports_images_checkbox.isChecked(),
-            "enabled": bool(self._profiles[target_row].get("enabled", True)),
+            "enabled": bool(existing_profile.get("enabled", True)),
         }
         item = self.profile_list.item(target_row)
         if item is not None:
@@ -1187,6 +1399,9 @@ class ModelSettingsDialog(QDialog):
                 "provider": "openai",
                 "model": "",
                 "api_key": "",
+                "api_keys": [],
+                "api_key_index": 0,
+                "invalid_api_keys": [],
                 "base_url": "",
                 "supports_image_input": False,
                 "enabled": True,
@@ -1256,6 +1471,9 @@ class ModelSettingsDialog(QDialog):
                     "provider": provider,
                     "model": model_name,
                     "api_key": str(profile.get("api_key") or "").strip(),
+                    "api_keys": list(profile.get("api_keys") or []),
+                    "api_key_index": int(profile.get("api_key_index") or 0),
+                    "invalid_api_keys": list(profile.get("invalid_api_keys") or []),
                     "base_url": str(profile.get("base_url") or "").strip(),
                     "supports_image_input": bool(profile.get("supports_image_input")),
                     "enabled": bool(profile.get("enabled", True)),
@@ -1268,10 +1486,10 @@ class ModelSettingsDialog(QDialog):
             active = enabled_ids[0] if enabled_ids else ""
         return {"active_profile": active or None, "profiles": profiles}
 
-    def _save_and_accept(self) -> None:
+    def _persist_profiles(self, message: str) -> bool:
         validated = self._validated_payload()
         if validated is None:
-            return
+            return False
         self._result_payload = normalize_profiles_payload(validated)
         self._profiles = [dict(item) for item in self._result_payload.get("profiles", [])]
         self._active_profile = str(self._result_payload.get("active_profile") or "").strip()
@@ -1280,8 +1498,12 @@ class ModelSettingsDialog(QDialog):
         preferred_row = current_row if current_row >= 0 else self._preferred_row_for_open()
         self._refresh_profile_list(preferred_row=preferred_row)
         self._refresh_profile_counts()
-        self._set_save_state("Saved. You can keep this window open and continue editing.")
+        self._set_save_state(str(message or "").strip())
         self.profiles_saved.emit(dict(self._result_payload))
+        return True
+
+    def _save_and_accept(self) -> None:
+        self._persist_profiles("Saved. You can keep this window open and continue editing.")
 
 
 class ApprovalDialog(QDialog):

@@ -251,8 +251,9 @@ class RuntimeSessionCoordinator:
         model_name = str(profile.get("model") or "").strip()
         api_key = str(profile.get("api_key") or "").strip()
         base_url = str(profile.get("base_url") or "").strip()
+        profile_id = str(profile.get("id") or "").strip()
 
-        overrides: dict[str, Any] = {"provider": provider}
+        overrides: dict[str, Any] = {"provider": provider, "active_model_profile_id": profile_id or None}
         if provider == "openai":
             overrides["openai_model"] = model_name
             overrides["openai_api_key"] = SecretStr(api_key) if api_key else None
@@ -269,6 +270,8 @@ class RuntimeSessionCoordinator:
         if active_profile is None:
             return base
         overrides = self.config_overrides_for_profile(active_profile)
+        if getattr(self.worker, "profile_store", None) is not None:
+            overrides["model_profile_config_path"] = self.worker.profile_store.path
         base_values.update(overrides)
         return self.worker.config.__class__(**base_values)
 

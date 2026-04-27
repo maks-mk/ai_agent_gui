@@ -152,7 +152,7 @@ def _normalize_simple_latex_inline(text: str) -> str:
 def _rewrite_local_file_links(text: str) -> str:
     """Convert Markdown local-file links to inline code to prevent Rich URL-encoding.
 
-    [имя.md](имя.md)          →  `имя.md`
+    [filename.md](filename.md)          →  `filename.md`
     [label](path/to/file.py)  →  `path/to/file.py` (label)
     """
     def _replace(m: re.Match) -> str:

@@ -118,13 +118,13 @@ class ToolGroupWidget(QFrame):
             self.error_count_label.setVisible(errors > 0)
             if errors > 0:
                 self.header_btn.setIcon(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=9))
-                self.header_btn.setText(f"Выполнено ({total} инструментов) ·")
+                self.header_btn.setText(f"Completed ({total} tools) ·")
             else:
                 self.header_btn.setIcon(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=9))
-                self.header_btn.setText(f"Выполнено ({total} инструментов)")
+                self.header_btn.setText(f"Completed ({total} tools)")
             return
         self.error_icon_label.setVisible(False)
         self.error_count_label.setVisible(False)
         self.error_count_label.clear()
         self.header_btn.setIcon(_fa_icon("fa5s.caret-down" if expanded else "fa5s.caret-right", color=TEXT_MUTED, size=9))
-        self.header_btn.setText("Выполняется...")
+        self.header_btn.setText("Running...")

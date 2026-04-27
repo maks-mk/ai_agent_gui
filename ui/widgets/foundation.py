@@ -44,12 +44,12 @@ DIFF_ADD_LINE_BG = QColor("#1E3425")
 DIFF_REMOVE_LINE_BG = QColor("#472B2B")
 
 
-def _make_mono_font() -> QFont:
+def _make_mono_font(point_size: int = 10) -> QFont:
     font = QFont(MONO_FONT_FAMILY)
     if not font.exactMatch():
         font = QFont("Consolas")
     font.setStyleHint(QFont.Monospace)
-    font.setPointSize(10)
+    font.setPointSize(max(1, int(point_size)))
     return font
 
 

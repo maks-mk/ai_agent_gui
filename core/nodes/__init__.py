@@ -107,7 +107,7 @@ class AgentNodes(
         self.tools = tools
         self.llm_with_tools = llm_with_tools or llm
 
-        # Оптимизация: O(1) доступ к инструментам вместо O(N) перебора списка
+        # Optimization: O(1) tool lookup instead of O(N) list traversal
         self.tools_map = {t.name: t for t in tools}
         self._all_tool_names = tuple(self.tools_map.keys())
         self.tool_metadata = tool_metadata or {}

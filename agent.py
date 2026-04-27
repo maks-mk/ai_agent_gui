@@ -6,6 +6,7 @@ from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import AIMessage
 from langgraph.graph import END, START, StateGraph
 
+from core.api_key_rotation import RotatingChatModel
 from core.checkpointing import create_checkpoint_runtime
 from core.config import AgentConfig
 from core.logging_config import setup_logging
@@ -37,14 +38,17 @@ def prepare_llm_with_tools(
     except Exception as exc:
         return llm, False, str(exc)
 
-def create_llm(config: AgentConfig) -> BaseChatModel:
+def create_llm(config: AgentConfig, *, api_key_override: str | None = None) -> BaseChatModel:
     """Initializes LLM based on configuration."""
     if config.provider == "gemini":
         # Lazy import to avoid loading both providers on startup.
         from langchain_google_genai import ChatGoogleGenerativeAI
 
         # Безопасное извлечение ключа (защита от краша, если ключ None)
-        api_key = config.gemini_api_key.get_secret_value() if config.gemini_api_key else None
+        if api_key_override is None:
+            api_key = config.gemini_api_key.get_secret_value() if config.gemini_api_key else None
+        else:
+            api_key = str(api_key_override or "")
         return ChatGoogleGenerativeAI(
             model=config.gemini_model,
             temperature=config.temperature,
@@ -54,7 +58,10 @@ def create_llm(config: AgentConfig) -> BaseChatModel:
         # Lazy import to avoid loading both providers on startup.
         from langchain_openai import ChatOpenAI
 
-        api_key = config.openai_api_key.get_secret_value() if config.openai_api_key else None
+        if api_key_override is None:
+            api_key = config.openai_api_key.get_secret_value() if config.openai_api_key else None
+        else:
+            api_key = str(api_key_override or "")
         return ChatOpenAI(
             model=config.openai_model,
             temperature=config.temperature,
@@ -63,6 +70,18 @@ def create_llm(config: AgentConfig) -> BaseChatModel:
             stream_usage=True,
         )
     raise ValueError(f"Unknown provider: {config.provider}")
+
+
+def create_runtime_llm(config: AgentConfig) -> BaseChatModel | RotatingChatModel:
+    profile_id = str(config.active_model_profile_id or "").strip()
+    if not profile_id:
+        return create_llm(config)
+    return RotatingChatModel(
+        config=config,
+        profile_id=profile_id,
+        profile_store_path=config.model_profile_config_path,
+        llm_factory=create_llm,
+    )
 
 
 # --- Builder ---
@@ -160,7 +179,7 @@ def build_compiled_agent(
     run_logger: Optional[JsonlRunLogger] = None,
 ) -> Tuple[Any, ToolRegistry]:
     """Compile an agent app using already-loaded tools and an existing checkpointer."""
-    llm = create_llm(config)
+    llm = create_runtime_llm(config)
     tool_registry.config = config
     tool_registry.model_capabilities = extract_model_capabilities(llm)
     tool_registry.checkpoint_info = checkpoint_runtime.to_dict()

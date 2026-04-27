@@ -484,7 +484,6 @@ class ComposerTextEdit(QPlainTextEdit):
             self._mention_popup.file_selected.connect(self._insert_selected_mention)
         return self._mention_popup
 
-
 class _ComposerMentionPopup(QFrame):
     file_selected = Signal(str)
     DISPLAY_TEXT_ROLE = int(Qt.UserRole) + 1
@@ -503,7 +502,7 @@ class _ComposerMentionPopup(QFrame):
         layout.setContentsMargins(8, 8, 8, 8)
         layout.setSpacing(4)
 
-        self.header_label = QLabel("Файлы", self)
+        self.header_label = QLabel("Files", self)
         self.header_label.setObjectName("ComposerMentionHeader")
         layout.addWidget(self.header_label)
 
@@ -511,9 +510,9 @@ class _ComposerMentionPopup(QFrame):
         self.list_widget.setObjectName("ComposerMentionList")
         self.list_widget.setFrameShape(QFrame.NoFrame)
         self.list_widget.setHorizontalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
-        self.list_widget.setTextElideMode(Qt.ElideMiddle)
+        self.list_widget.setVerticalScrollBarPolicy(Qt.ScrollBarAlwaysOff)
         self.list_widget.setSelectionMode(QListWidget.SingleSelection)
-        self.list_widget.setVerticalScrollMode(QListWidget.ScrollPerPixel)
+        self.list_widget.setUniformItemSizes(False)
         self.list_widget.setSpacing(1)
         self.list_widget.setFocusPolicy(Qt.NoFocus)
         self.list_widget.itemClicked.connect(self._on_item_clicked)

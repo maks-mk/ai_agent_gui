@@ -7,6 +7,7 @@ from typing import Any, List
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 
+from core.api_key_rotation import ApiKeyAuthenticationPoolError, ApiKeyRotationExhaustedError
 from core.state import AgentState
 from core.node_errors import EmptyLLMResponseError
 from core.message_utils import compact_text, stringify_content
@@ -145,6 +146,8 @@ class LLMMixin:
         raise RuntimeError("LLM retry loop exited unexpectedly without a response.")
 
     def _is_fatal_llm_error(self, error: Exception) -> bool:
+        if isinstance(error, (ApiKeyRotationExhaustedError, ApiKeyAuthenticationPoolError)):
+            return True
         err_str = " ".join(str(error).lower().split())
         fatal_markers = (
             "insufficient_balance",

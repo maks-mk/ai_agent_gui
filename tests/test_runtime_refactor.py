@@ -2901,7 +2901,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(notice_events), 1)
         self.assertEqual(
             notice_events[0].payload.get("message"),
-            "Модель переключена на gemini-1.5-flash.",
+            "Model switched to gemini-1.5-flash.",
         )
         rebuild_mock.assert_awaited_once()
         self.assertEqual(worker._runtime_profile_id, "gemini-1-5-flash")

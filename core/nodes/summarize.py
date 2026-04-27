@@ -57,8 +57,8 @@ class SummarizeMixin:
 
         to_summarize = messages[:idx]
 
-        # ЗАЩИТА: Если последние N сообщений сами по себе весят больше лимита,
-        # мы не можем ничего сжать без потери недавнего контекста.
+        # SAFEGUARD: If the last N messages alone exceed the limit,
+        # we cannot compress anything without losing recent context.
         if not to_summarize:
             logger.warning(
                 f"⚠ Context (~{estimated_tokens} tokens) exceeds threshold, "

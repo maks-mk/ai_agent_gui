@@ -246,7 +246,7 @@ class BaseMixin:
         return None
 
     def _get_base_prompt(self) -> str:
-        """Ленивая загрузка и кэширование промпта для устранения дискового I/O"""
+        """Lazily load and cache the prompt to avoid repeated disk I/O."""
         if self._cached_base_prompt is None:
             prompt_path = self.config.prompt_path.absolute()
             if self.config.prompt_path.exists():

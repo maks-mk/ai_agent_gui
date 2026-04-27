@@ -78,7 +78,7 @@ def _resolve_runtime_path(value: Union[str, Path], *, base_dir: Path = BASE_DIR)
 
 class AgentConfig(BaseSettings):
     """
-    Конфигурация агента, загружаемая из переменных окружения и .env файла.
+    Agent configuration loaded from environment variables and the .env file.
     """
 
     model_config = SettingsConfigDict(
@@ -100,6 +100,10 @@ class AgentConfig(BaseSettings):
         default=BASE_DIR / ".agent_state" / "checkpoints.sqlite",
         alias="CHECKPOINT_SQLITE_PATH",
     )
+    model_profile_config_path: Path = Field(
+        default=BASE_DIR / ".agent_state" / "config.json",
+        alias="MODEL_PROFILE_CONFIG_PATH",
+    )
     session_state_path: Path = Field(
         default=BASE_DIR / ".agent_state" / "session.json",
         alias="SESSION_STATE_PATH",
@@ -109,6 +113,7 @@ class AgentConfig(BaseSettings):
 
     # Provider Settings
     provider: Literal["gemini", "openai"] = Field(default="gemini", alias="PROVIDER")
+    active_model_profile_id: Optional[str] = Field(default=None, alias="ACTIVE_MODEL_PROFILE_ID")
 
     # Tavily Search
     tavily_api_key: Optional[SecretStr] = Field(default=None, alias="TAVILY_API_KEY")
@@ -207,6 +212,7 @@ class AgentConfig(BaseSettings):
         "prompt_path",
         "mcp_config_path",
         "checkpoint_sqlite_path",
+        "model_profile_config_path",
         "session_state_path",
         "run_log_dir",
         "log_file",

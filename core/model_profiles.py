@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import re
+import threading
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -12,6 +13,88 @@ _ID_ALLOWED_RE = re.compile(r"[^a-z0-9_-]+")
 
 def _clean_text(value: Any) -> str:
     return str(value or "").strip()
+
+
+def normalize_api_key_list(raw_keys: Any, *, fallback: Any = "") -> list[str]:
+    values: list[str] = []
+    seen: set[str] = set()
+
+    def _append(candidate: Any) -> None:
+        text = _clean_text(candidate)
+        if not text or text in seen:
+            return
+        seen.add(text)
+        values.append(text)
+
+    if isinstance(raw_keys, str):
+        raw_items = raw_keys.splitlines() if any(ch in raw_keys for ch in ("\n", "\r")) else [raw_keys]
+    elif isinstance(raw_keys, (list, tuple, set)):
+        raw_items = list(raw_keys)
+    else:
+        raw_items = []
+
+    for item in raw_items:
+        _append(item)
+
+    fallback_text = _clean_text(fallback)
+    if fallback_text and fallback_text not in seen:
+        values.insert(0, fallback_text)
+    return values
+
+
+def _normalize_invalid_api_keys(raw_invalid_keys: Any, api_keys: list[str]) -> list[str]:
+    allowed = set(api_keys)
+    return [key for key in normalize_api_key_list(raw_invalid_keys) if key in allowed]
+
+
+def _normalize_api_key_index(raw_index: Any, api_keys: list[str], *, preferred_key: str = "") -> tuple[int, str]:
+    if not api_keys:
+        return 0, ""
+
+    if preferred_key and preferred_key in api_keys:
+        index = api_keys.index(preferred_key)
+    else:
+        try:
+            index = int(raw_index)
+        except (TypeError, ValueError):
+            index = 0
+        index = max(0, min(index, len(api_keys) - 1))
+    return index, api_keys[index]
+
+
+def _first_usable_api_key_index(api_keys: list[str], invalid_api_keys: list[str]) -> int | None:
+    invalid = set(invalid_api_keys)
+    for index, key in enumerate(api_keys):
+        if key not in invalid:
+            return index
+    return None
+
+
+def _next_usable_api_key_index(api_keys: list[str], current_index: int, invalid_api_keys: list[str]) -> int | None:
+    if not api_keys:
+        return None
+    invalid = set(invalid_api_keys)
+    for offset in range(1, len(api_keys)):
+        candidate_index = (current_index + offset) % len(api_keys)
+        if api_keys[candidate_index] not in invalid:
+            return candidate_index
+    return None
+
+
+def _normalized_rotation_fields(raw_profile: Mapping[str, Any]) -> tuple[list[str], int, list[str], str]:
+    api_keys = normalize_api_key_list(raw_profile.get("api_keys"), fallback=raw_profile.get("api_key"))
+    invalid_api_keys = _normalize_invalid_api_keys(raw_profile.get("invalid_api_keys"), api_keys)
+    api_key_index, active_api_key = _normalize_api_key_index(
+        raw_profile.get("api_key_index"),
+        api_keys,
+        preferred_key=_clean_text(raw_profile.get("api_key")),
+    )
+    if api_keys and active_api_key in invalid_api_keys:
+        next_index = _first_usable_api_key_index(api_keys, invalid_api_keys)
+        if next_index is not None:
+            api_key_index = next_index
+            active_api_key = api_keys[next_index]
+    return api_keys, api_key_index, invalid_api_keys, active_api_key
 
 
 def _normalize_provider(value: Any) -> str:
@@ -65,7 +148,7 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
         raw_profiles = []
 
     used_ids: set[str] = set()
-    seen_profiles: set[tuple[str, str, str, str, bool, bool]] = set()
+    seen_profiles: set[tuple[str, str, tuple[str, ...], str, bool, bool]] = set()
     profiles: list[dict[str, Any]] = []
     for raw in raw_profiles:
         if not isinstance(raw, dict):
@@ -74,13 +157,13 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
         model_name = _clean_text(raw.get("model"))
         if not provider or not model_name:
             continue
-        api_key = _clean_text(raw.get("api_key"))
+        api_keys, api_key_index, invalid_api_keys, api_key = _normalized_rotation_fields(raw)
         base_url = _clean_text(raw.get("base_url")) if provider == "openai" else ""
         supports_image_input = _normalize_bool(raw.get("supports_image_input"))
         enabled = _normalize_bool(raw.get("enabled")) if "enabled" in raw else True
 
         # Deduplicate exact same profile payloads to keep env bootstrap/import idempotent.
-        profile_fingerprint = (provider, model_name, api_key, base_url, supports_image_input, enabled)
+        profile_fingerprint = (provider, model_name, tuple(api_keys), base_url, supports_image_input, enabled)
         if profile_fingerprint in seen_profiles:
             continue
         seen_profiles.add(profile_fingerprint)
@@ -93,6 +176,9 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
                 "provider": provider,
                 "model": model_name,
                 "api_key": api_key,
+                "api_keys": api_keys,
+                "api_key_index": api_key_index,
+                "invalid_api_keys": invalid_api_keys,
                 "base_url": base_url,
                 "supports_image_input": supports_image_input,
                 "enabled": enabled,
@@ -178,18 +264,22 @@ def bootstrap_profiles_from_env(env: Mapping[str, str] | None = None) -> dict[st
 
 
 def find_active_profile(payload: dict[str, Any]) -> dict[str, Any] | None:
-    active_id = _clean_text((payload or {}).get("active_profile"))
-    for profile in (payload or {}).get("profiles", []) or []:
+    normalized = normalize_profiles_payload(payload)
+    active_id = _clean_text(normalized.get("active_profile"))
+    for profile in normalized.get("profiles", []) or []:
         if isinstance(profile, dict) and _clean_text(profile.get("id")) == active_id:
-            return {
-                "id": _clean_text(profile.get("id")),
-                "provider": _normalize_provider(profile.get("provider")),
-                "model": _clean_text(profile.get("model")),
-                "api_key": _clean_text(profile.get("api_key")),
-                "base_url": _clean_text(profile.get("base_url")),
-                "supports_image_input": _normalize_bool(profile.get("supports_image_input")),
-                "enabled": _normalize_bool(profile.get("enabled")) if "enabled" in profile else True,
-            }
+            return dict(profile)
+    return None
+
+
+def find_profile_by_id(payload: Any, profile_id: Any) -> dict[str, Any] | None:
+    normalized = normalize_profiles_payload(payload)
+    target_id = _clean_text(profile_id)
+    if not target_id:
+        return None
+    for profile in normalized.get("profiles", []) or []:
+        if isinstance(profile, dict) and _clean_text(profile.get("id")) == target_id:
+            return dict(profile)
     return None
 
 
@@ -249,6 +339,9 @@ def merge_profiles_with_env(existing_payload: Any, env_payload: Any) -> dict[str
 
 
 class ModelProfileStore:
+    _lock_registry_guard = threading.Lock()
+    _lock_registry: dict[str, threading.RLock] = {}
+
     def __init__(self, path: Path | str):
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -256,6 +349,15 @@ class ModelProfileStore:
     @staticmethod
     def normalize(payload: Any) -> dict[str, Any]:
         return normalize_profiles_payload(payload)
+
+    def _path_lock(self) -> threading.RLock:
+        key = str(self.path.resolve())
+        with self._lock_registry_guard:
+            lock = self._lock_registry.get(key)
+            if lock is None:
+                lock = threading.RLock()
+                self._lock_registry[key] = lock
+            return lock
 
     def _read_raw_payload(self) -> dict[str, Any] | None:
         if not self.path.exists():
@@ -266,20 +368,7 @@ class ModelProfileStore:
             return None
         return raw if isinstance(raw, dict) else None
 
-    def load_or_initialize(self, env: Mapping[str, str] | None = None) -> dict[str, Any]:
-        env_bootstrap = bootstrap_profiles_from_env(env)
-        raw = self._read_raw_payload()
-        if raw is None:
-            return self.save(env_bootstrap)
-        normalized = self.normalize(raw)
-        merged = merge_profiles_with_env(normalized, env_bootstrap)
-        if merged != normalized:
-            return self.save(merged)
-        if normalized != raw:
-            return self.save(normalized)
-        return normalized
-
-    def save(self, payload: Any) -> dict[str, Any]:
+    def _write_normalized_payload(self, payload: Any) -> dict[str, Any]:
         normalized = self.normalize(payload)
         tmp_path = self.path.with_suffix(f"{self.path.suffix}.tmp")
         serialized = json.dumps(normalized, ensure_ascii=False, indent=2)
@@ -295,3 +384,113 @@ class ModelProfileStore:
             except Exception:
                 pass
         return normalized
+
+    def load(self) -> dict[str, Any]:
+        with self._path_lock():
+            raw = self._read_raw_payload()
+            if raw is None:
+                return {"active_profile": None, "profiles": []}
+            normalized = self.normalize(raw)
+            if normalized != raw:
+                return self._write_normalized_payload(normalized)
+            return normalized
+
+    def load_or_initialize(self, env: Mapping[str, str] | None = None) -> dict[str, Any]:
+        with self._path_lock():
+            env_bootstrap = bootstrap_profiles_from_env(env)
+            raw = self._read_raw_payload()
+            if raw is None:
+                return self._write_normalized_payload(env_bootstrap)
+            normalized = self.normalize(raw)
+            merged = merge_profiles_with_env(normalized, env_bootstrap)
+            if merged != normalized:
+                return self._write_normalized_payload(merged)
+            if normalized != raw:
+                return self._write_normalized_payload(normalized)
+            return normalized
+
+    def save(self, payload: Any) -> dict[str, Any]:
+        with self._path_lock():
+            return self._write_normalized_payload(payload)
+
+    def get_api_key_state(self, profile_id: str) -> dict[str, Any]:
+        with self._path_lock():
+            profile = find_profile_by_id(self.load(), profile_id)
+            if profile is None:
+                return {
+                    "profile_id": _clean_text(profile_id),
+                    "api_keys": [],
+                    "invalid_api_keys": [],
+                    "api_key_index": 0,
+                    "current_key": "",
+                    "available_keys": [],
+                }
+            api_keys = list(profile.get("api_keys") or [])
+            invalid_api_keys = list(profile.get("invalid_api_keys") or [])
+            current_key = _clean_text(profile.get("api_key"))
+            available_keys = [key for key in api_keys if key not in set(invalid_api_keys)]
+            return {
+                "profile_id": _clean_text(profile.get("id")),
+                "api_keys": api_keys,
+                "invalid_api_keys": invalid_api_keys,
+                "api_key_index": int(profile.get("api_key_index") or 0),
+                "current_key": current_key,
+                "available_keys": available_keys,
+            }
+
+    def rotate_api_key(self, profile_id: str, failed_key: str, *, invalidate: bool = False) -> dict[str, Any]:
+        with self._path_lock():
+            payload = self.load()
+            target_id = _clean_text(profile_id)
+            failed_key = _clean_text(failed_key)
+            profiles = [dict(item) for item in payload.get("profiles", []) or []]
+            profile_index = next(
+                (
+                    index
+                    for index, profile in enumerate(profiles)
+                    if _clean_text(profile.get("id")) == target_id
+                ),
+                None,
+            )
+            if profile_index is None:
+                return self.get_api_key_state(target_id)
+
+            profile = dict(profiles[profile_index])
+            api_keys = list(profile.get("api_keys") or [])
+            invalid_api_keys = list(profile.get("invalid_api_keys") or [])
+            invalid_changed = False
+            if invalidate and failed_key and failed_key in api_keys and failed_key not in invalid_api_keys:
+                invalid_api_keys.append(failed_key)
+                invalid_changed = True
+
+            current_index, current_key = _normalize_api_key_index(
+                profile.get("api_key_index"),
+                api_keys,
+                preferred_key=profile.get("api_key"),
+            )
+            rotation_changed = False
+            if current_key == failed_key:
+                next_index = _next_usable_api_key_index(api_keys, current_index, invalid_api_keys)
+                if next_index is not None and next_index != current_index:
+                    current_index = next_index
+                    current_key = api_keys[current_index]
+                    rotation_changed = True
+
+            if current_key in invalid_api_keys:
+                fallback_index = _first_usable_api_key_index(api_keys, invalid_api_keys)
+                if fallback_index is not None and fallback_index != current_index:
+                    current_index = fallback_index
+                    current_key = api_keys[current_index]
+                    rotation_changed = True
+
+            profile["api_keys"] = api_keys
+            profile["api_key_index"] = current_index
+            profile["invalid_api_keys"] = invalid_api_keys
+            profile["api_key"] = current_key
+            profiles[profile_index] = profile
+            payload["profiles"] = profiles
+            if rotation_changed or invalid_changed:
+                payload = self._write_normalized_payload(payload)
+            else:
+                payload = self.normalize(payload)
+            return self.get_api_key_state(target_id)

@@ -83,7 +83,7 @@ class ToolsMixin:
         state: AgentState | None = None,
         tool_call_id: str = "",
     ) -> str:
-        # Быстрый поиск за O(1)
+        # Fast O(1) lookup
         tool = self.tools_map.get(name)
         if not tool:
             self._log_run_event(

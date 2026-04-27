@@ -234,6 +234,15 @@ class AgentRunWorker(QObject):
     async def _ensure_runtime_matches_selected_profile(self) -> bool:
         return await self._coordinator.ensure_runtime_matches_selected_profile()
 
+    def _refresh_model_profiles_from_store(self) -> None:
+        if self.profile_store is None:
+            return
+        self.model_profiles = self.profile_store.load()
+        self._set_effective_model_capabilities(
+            self.runtime_model_capabilities,
+            model_profiles=self.model_profiles,
+        )
+
     def _normalize_approval_mode(self, value: str | None) -> str:
         return normalize_approval_mode(value)
 
@@ -434,6 +443,7 @@ class AgentRunWorker(QObject):
                 if result.cancelled:
                     self._log_ui_run_event("run_cancelled", interrupted_tool_count=len(result.cancelled_tools))
                     await self._repair_current_session_if_needed()
+                    self._refresh_model_profiles_from_store()
                     self._active_run_elapsed_seconds = 0.0
                     self._active_request_has_images = False
                     self._set_busy(False)
@@ -442,12 +452,14 @@ class AgentRunWorker(QObject):
                 if result.failed:
                     self._log_ui_run_event("run_failed", message=result.error_message)
                     await self._repair_current_session_if_needed()
+                    self._refresh_model_profiles_from_store()
                     self._active_run_elapsed_seconds = 0.0
                     self._active_request_has_images = False
                     self._set_busy(False)
                     return
 
                 if result.interrupt is None:
+                    self._refresh_model_profiles_from_store()
                     self.store.save_active_session(self.current_session, touch=True, set_active=True)
                     await self._emit_session_payload(include_transcript=False)
                     self._active_run_elapsed_seconds = 0.0
@@ -477,6 +489,7 @@ class AgentRunWorker(QObject):
                 self._set_busy(False)
                 return
         except Exception as exc:
+            self._refresh_model_profiles_from_store()
             self._active_run_elapsed_seconds = 0.0
             if self._active_request_has_images:
                 self.event_emitted.emit(
@@ -683,9 +696,9 @@ class AgentRunWorker(QObject):
         target_profile = find_active_profile(candidate)
         target_model = str((target_profile or {}).get("model") or "").strip()
         success_notice_message = (
-            f"Модель переключена на {target_model}."
+            f"Model switched to {target_model}."
             if target_model
-            else "Модель переключена."
+            else "Model switched."
         )
         await self._apply_model_profiles(
             candidate,

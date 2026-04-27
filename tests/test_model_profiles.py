@@ -115,6 +115,51 @@ class ModelProfilesTests(unittest.TestCase):
         self.assertTrue(active["supports_image_input"])
         self.assertTrue(active["enabled"])
 
+    def test_normalization_migrates_legacy_api_key_to_rotation_pool(self):
+        payload = normalize_profiles_payload(
+            {
+                "active_profile": "gpt-4o",
+                "profiles": [
+                    {
+                        "id": "gpt-4o",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "api_key": "sk-demo",
+                        "base_url": "",
+                    }
+                ],
+            }
+        )
+
+        profile = payload["profiles"][0]
+        self.assertEqual(profile["api_key"], "sk-demo")
+        self.assertEqual(profile["api_keys"], ["sk-demo"])
+        self.assertEqual(profile["api_key_index"], 0)
+        self.assertEqual(profile["invalid_api_keys"], [])
+
+    def test_normalization_trims_and_deduplicates_rotation_keys(self):
+        payload = normalize_profiles_payload(
+            {
+                "active_profile": "gpt-4o",
+                "profiles": [
+                    {
+                        "id": "gpt-4o",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "api_key": " sk-third ",
+                        "api_keys": [" sk-first ", "", "sk-second", "sk-first", "sk-third "],
+                        "api_key_index": 2,
+                        "base_url": "",
+                    }
+                ],
+            }
+        )
+
+        profile = payload["profiles"][0]
+        self.assertEqual(profile["api_keys"], ["sk-first", "sk-second", "sk-third"])
+        self.assertEqual(profile["api_key"], "sk-third")
+        self.assertEqual(profile["api_key_index"], 2)
+
     def test_normalization_keeps_profiles_with_different_image_support_flags(self):
         payload = normalize_profiles_payload(
             {
@@ -321,6 +366,56 @@ class ModelProfilesTests(unittest.TestCase):
             }
         )
         self.assertEqual(saved["active_profile"], "gpt-4o")
+
+    def test_store_rotate_api_key_moves_once_for_same_failed_key(self):
+        store = ModelProfileStore(self._tmpdir / "config.json")
+        store.save(
+            {
+                "active_profile": "gpt-4o",
+                "profiles": [
+                    {
+                        "id": "gpt-4o",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "api_keys": ["sk-1", "sk-2", "sk-3"],
+                        "api_key_index": 0,
+                        "api_key": "sk-1",
+                        "base_url": "",
+                    }
+                ],
+            }
+        )
+
+        first_rotation = store.rotate_api_key("gpt-4o", "sk-1")
+        second_rotation = store.rotate_api_key("gpt-4o", "sk-1")
+
+        self.assertEqual(first_rotation["current_key"], "sk-2")
+        self.assertEqual(second_rotation["current_key"], "sk-2")
+        self.assertEqual(store.load()["profiles"][0]["api_key_index"], 1)
+
+    def test_store_rotate_api_key_marks_invalid_key_and_skips_it(self):
+        store = ModelProfileStore(self._tmpdir / "config.json")
+        store.save(
+            {
+                "active_profile": "gemini-1-5-flash",
+                "profiles": [
+                    {
+                        "id": "gemini-1-5-flash",
+                        "provider": "gemini",
+                        "model": "gemini-1.5-flash",
+                        "api_keys": ["gm-1", "gm-2"],
+                        "api_key_index": 0,
+                        "api_key": "gm-1",
+                        "base_url": "",
+                    }
+                ],
+            }
+        )
+
+        rotated = store.rotate_api_key("gemini-1-5-flash", "gm-1", invalidate=True)
+
+        self.assertEqual(rotated["current_key"], "gm-2")
+        self.assertEqual(rotated["invalid_api_keys"], ["gm-1"])
 
 
 if __name__ == "__main__":

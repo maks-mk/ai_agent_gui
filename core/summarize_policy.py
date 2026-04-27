@@ -14,14 +14,14 @@ IsInternalRetry = Callable[[BaseMessage], bool]
 logger = logging.getLogger("agent")
 
 # ---------------------------------------------------------------------------
-# Tiktoken — ленивая инициализация.
-# Энкодер создаётся один раз и переиспользуется на протяжении жизни процесса.
-# cl100k_base — кодировка GPT-4/GPT-3.5. Для Gemini не идеальна, но даёт
-# точность ±15%, что кратно лучше символьной эвристики.
+# Tiktoken — lazy initialization.
+# The encoder is created once and reused for the lifetime of the process.
+# cl100k_base is the GPT-4/GPT-3.5 encoding. It is not ideal for Gemini, but
+# its accuracy is within about ±15%, which is far better than a char heuristic.
 # ---------------------------------------------------------------------------
 
 _TIKTOKEN_ENCODER = None
-_TIKTOKEN_AVAILABLE: Optional[bool] = None  # None = не проверялось
+_TIKTOKEN_AVAILABLE: Optional[bool] = None  # None = not checked yet
 
 
 def _get_encoder():
@@ -30,7 +30,7 @@ def _get_encoder():
         return _TIKTOKEN_ENCODER
     if _TIKTOKEN_AVAILABLE is False:
         return None
-    # Первый вызов — пробуем инициализировать
+    # First call — try to initialize it
     try:
         import tiktoken
         _TIKTOKEN_ENCODER = tiktoken.get_encoding("cl100k_base")
@@ -44,13 +44,13 @@ def _get_encoder():
     return _TIKTOKEN_ENCODER
 
 
-# Overhead на каждое сообщение в Chat Completions API:
-# role-токен + разделители = ~4 токена (по спецификации OpenAI tiktoken).
+# Overhead for each message in the Chat Completions API:
+# role token + separators = ~4 tokens (per the OpenAI tiktoken spec).
 _MESSAGE_OVERHEAD_TOKENS = 4
 
 
 def _count_tokens_tiktoken(text: str) -> int:
-    """Подсчитать токены через tiktoken. Вызывается только когда энкодер доступен."""
+    """Count tokens with tiktoken. Called only when the encoder is available."""
     enc = _get_encoder()
     if enc is None:
         return 0
@@ -61,17 +61,17 @@ def _count_tokens_tiktoken(text: str) -> int:
 
 
 def _count_tokens_fallback(text: str) -> int:
-    """Символьная эвристика: ~3 символа на токен.
-    3 точнее чем 2: компромисс между ru (~2 sym/tok) и en (~4 sym/tok)."""
+    """Character heuristic: about 3 characters per token.
+    3 is more accurate than 2: a compromise between ru (~2 chars/token) and en (~4 chars/token)."""
     return max(1, len(text) // 3)
 
 
 def estimate_tokens(messages: List[BaseMessage]) -> int:
-    """Оценить суммарное количество токенов для списка сообщений.
+    """Estimate the total token count for a list of messages.
 
-    Алгоритм:
-    - Если tiktoken доступен — используем cl100k_base + overhead per message.
-    - Иначе — символьная эвристика с делителем 3.
+    Algorithm:
+    - If tiktoken is available, use cl100k_base + per-message overhead.
+    - Otherwise, use a character heuristic with a divisor of 3.
     """
     use_tiktoken = _get_encoder() is not None
     count_fn = _count_tokens_tiktoken if use_tiktoken else _count_tokens_fallback
@@ -93,7 +93,7 @@ def estimate_tokens(messages: List[BaseMessage]) -> int:
 
 
 # ---------------------------------------------------------------------------
-# Остальное не изменилось
+# The rest is unchanged
 # ---------------------------------------------------------------------------
 
 def _soft_summary_margin(threshold: int, *, has_summary: bool) -> int:

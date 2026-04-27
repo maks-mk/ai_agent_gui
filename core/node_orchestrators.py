@@ -235,17 +235,13 @@ class AgentTurnOrchestrator:
                 "messages": [
                     AIMessage(
                         content=(
-                            "Модель вернула пустой ответ после повторных попыток. "
-                            "Я не выполнял дополнительных действий; повторите запрос или уточните формулировку."
+                            "The model returned an empty response after repeated attempts. "
+                            "I did not take any additional actions; please retry the request or clarify the wording."
                         )
                     )
                 ],
                 "current_task": current_task,
                 "turn_id": current_turn_id,
-                "turn_outcome": "finish_turn",
-                "pending_approval": None,
-                "open_tool_issue": None,
-                "has_protocol_error": False,
                 "last_tool_error": str(exc),
                 "last_tool_result": "",
             }
@@ -259,7 +255,6 @@ class AgentTurnOrchestrator:
                 has_open_tool_issue=bool(open_tool_issue),
             )
             raise
-
 
 class RecoveryTurnOrchestrator:
     def __init__(self, owner: Any) -> None:

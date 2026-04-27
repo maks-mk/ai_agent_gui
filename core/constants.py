@@ -2,12 +2,12 @@ import sys
 from pathlib import Path
 
 # Agent version (single source of truth)
-AGENT_VERSION = "v0.66.97b"
+AGENT_VERSION = "v0.66.98b"
 
-# Определение корневой директории проекта
+# Determine the project root directory
 if getattr(sys, 'frozen', False):
-    # Если запущено как exe, используем директорию исполняемого файла для конфигов,
-    # но рабочей директорией оставим текущую (cwd), откуда запущен процесс.
+    # When running as an executable, use the executable directory for config files,
+    # but keep the current working directory (cwd) as the process launch location.
     BASE_DIR = Path(sys.executable).parent
 else:
     # core/constants.py -> core/ -> root/
@@ -45,50 +45,50 @@ RECOVERY_CONTINUE_PROMPT_TEMPLATE = (
     "Use tools or another verifiable step instead of stopping."
 )
 
-TOOL_ISSUE_NOT_FOUND_TEXT = "Не удалось продолжить задачу: активная проблема инструмента не найдена."
+TOOL_ISSUE_NOT_FOUND_TEXT = "Unable to continue: the active tool issue could not be found."
 
 TOOL_ISSUE_APPROVAL_DENIED_TEXT = (
-    "Действие не выполнено: вы отклонили необратимую операцию.\n"
-    "Для следующей попытки нужен новый запрос или явное подтверждение."
+    "Action not completed: you declined an irreversible operation.\n"
+    "The next attempt requires a new request or explicit confirmation."
 )
 
 TOOL_ISSUE_WORKSPACE_BOUNDARY_TEMPLATE = (
-    "Не могу продолжить: запрос выходит за пределы рабочей папки{tool_hint}.{summary_line}\n"
-    "Автоматически это не исправить без изменения целевого пути."
+    "Unable to continue: the request goes outside the workspace boundary{tool_hint}.{summary_line}\n"
+    "This cannot be fixed automatically without changing the target path."
 )
 
 TOOL_ISSUE_MISSING_FIELDS_TEMPLATE = (
-    "Для продолжения не хватает внешних данных{tool_hint}.{summary_line}\n"
-    "Нужно уточнить: {fields_label}."
+    "External data is missing to continue{tool_hint}.{summary_line}\n"
+    "Please clarify: {fields_label}."
 )
 
 TOOL_ISSUE_STAGNATION_TEMPLATE = (
-    "Не удалось завершить задачу после автоматических попыток исправления{tool_hint}.{summary_line}\n"
-    "Автовосстановление остановилось на стагнации: без новых внешних данных или изменения условий безопасных следующих шагов не осталось."
+    "Unable to complete the task after automatic recovery attempts{tool_hint}.{summary_line}\n"
+    "Auto-recovery stopped due to stagnation: without new external data or changed conditions, no safe next steps remain."
 )
 
 LOOP_BUDGET_HANDOFF_TEMPLATE = (
-    "Не удалось продолжить восстановление для задачи {task_hint}{tool_hint}: достигнут жёсткий лимит внутренних шагов.\n"
-    "В текущем контексте автоматические стратегии уже исчерпаны."
+    "Unable to continue recovery for task {task_hint}{tool_hint}: the internal step limit has been reached.\n"
+    "In the current context, automatic strategies have been exhausted."
 )
 
 SUCCESSFUL_TOOL_STAGNATION_HANDOFF_TEMPLATE = (
-    "Поставил задачу на паузу для {task_hint}{tool_hint}: один и тот же подтверждённый результат повторился {repeat_count} раз подряд.\n"
-    "Дальше есть риск просто ходить по кругу без нового прогресса."
+    "Paused the task for {task_hint}{tool_hint}: the same confirmed result repeated {repeat_count} times in a row.\n"
+    "Continuing now risks going in circles without making progress."
 )
 
-DEFAULT_INTERNAL_UI_NOTICE = "Сделал паузу на этом шаге. Можно продолжить новым сообщением."
+DEFAULT_INTERNAL_UI_NOTICE = "Paused at this step. You can continue with a new message."
 
 LOOP_BUDGET_UI_NOTICE = (
-    "Сделал паузу на этом шаге: для текущего запроса уже использован внутренний лимит попыток. "
-    "Можно продолжить новым сообщением."
+    "Paused at this step: the internal retry limit for this request has been reached. "
+    "You can continue with a new message."
 )
 
 TOOL_ISSUE_UI_NOTICE = (
-    "Сделал паузу на этом шаге. Чтобы двигаться дальше без лишних повторов, нужен новый запрос или короткое уточнение."
+    "Paused at this step. To move forward without unnecessary repetition, send a new request or a short clarification."
 )
 
 SUCCESSFUL_TOOL_STAGNATION_UI_NOTICE = (
-    "Сделал паузу на этом шаге: результат уже несколько раз подряд подтвердился, и дальше можно просто ходить по кругу. "
-    "Можно продолжить коротким сообщением."
+    "Paused at this step: the result has already been confirmed several times in a row, and continuing may just loop. "
+    "You can continue with a short message."
 )

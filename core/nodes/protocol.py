@@ -96,16 +96,16 @@ class ProtocolMixin:
 
         fragments: List[str] = []
         if pending_count:
-            fragments.append(f"{pending_count} незавершенный(ых) tool call")
+            fragments.append(f"{pending_count} unfinished tool call(s)")
         if orphan_count:
             fragments.append(f"{orphan_count} orphan tool result")
         if duplicate_count:
             fragments.append(f"{duplicate_count} duplicate tool_call_id")
         if interleaving:
-            fragments.append("обнаружены сообщения между tool call и tool result")
+            fragments.append("messages were found between a tool call and its tool result")
         if not fragments:
-            fragments.append("история tool call повреждена")
-        return "Нарушен внутренний контракт истории инструментов: " + ", ".join(fragments) + "."
+            fragments.append("tool call history is corrupted")
+        return "Internal tool history contract violated: " + ", ".join(fragments) + "."
 
     def _filter_tool_calls_for_turn(
         self,

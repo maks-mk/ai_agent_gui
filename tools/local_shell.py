@@ -13,27 +13,27 @@ from core.errors import format_error, ErrorType
 from core.safety_policy import SafetyPolicy
 from core.policy_engine import classify_shell_command
 
-# Константы
+# Constants
 DEFAULT_TIMEOUT = 120
 
-# Глобальные настройки
+# Global settings
 _SAFETY_POLICY: Optional[SafetyPolicy] = None
-_WORKING_DIRECTORY: str = os.getcwd()  # По умолчанию текущая папка процесса
+_WORKING_DIRECTORY: str = os.getcwd()  # Default to the current process working directory
 _CLI_OUTPUT_EMITTER: Optional[Callable[[dict[str, str]], None]] = None
 _CLI_TOOL_ID: ContextVar[str] = ContextVar("cli_tool_id", default="")
 
 _WINDOWS_COMMAND_HINTS = {
-    "cat": "type <file> (или Get-Content <file>)",
-    "ls": "dir (или Get-ChildItem)",
-    "pwd": "cd (или Get-Location)",
-    "cp": "copy (или Copy-Item)",
-    "mv": "move (или Move-Item)",
-    "rm": "del (или Remove-Item)",
-    "grep": "findstr <pattern> <file> (или Select-String ...)",
+    "cat": "type <file> (or Get-Content <file>)",
+    "ls": "dir (or Get-ChildItem)",
+    "pwd": "cd (or Get-Location)",
+    "cp": "copy (or Copy-Item)",
+    "mv": "move (or Move-Item)",
+    "rm": "del (or Remove-Item)",
+    "grep": "findstr <pattern> <file> (or Select-String ...)",
     "head": "Get-Content <file> -TotalCount N",
     "tail": "Get-Content <file> -Tail N",
-    "which": "where <command> (или Get-Command <name>)",
-    "clear": "cls (или Clear-Host)",
+    "which": "where <command> (or Get-Command <name>)",
+    "clear": "cls (or Clear-Host)",
 }
 
 _WINDOWS_PYTHON_HEREDOC_RE = re.compile(
@@ -55,65 +55,65 @@ _WINDOWS_NULL_REDIRECT_RE = re.compile(
 )
 _NPM_LIKE_COMMAND_RE = re.compile(r"(^|[;&|()\s])(?:npm|npx)(?=$|[;&|()\s])", re.IGNORECASE)
 _INTERACTIVE_PROMPT_PATTERNS = (
-    re.compile(r"ok to proceed\?\s*\(y\)", re.IGNORECASE),
-    re.compile(r"do you want to continue\?\s*\[(?:y|yes)/(?:n|no)\]", re.IGNORECASE),
-    re.compile(r"\[(?:y|yes)/(?:n|no)\]", re.IGNORECASE),
-    re.compile(r"\[(?:n|no)/(?:y|yes)\]", re.IGNORECASE),
-    re.compile(r"press any key", re.IGNORECASE),
-    re.compile(r"hit ctrl-c to stop", re.IGNORECASE),
+    re.compile(r"ok to proceed\?\s*\(y\)"),
+    re.compile(r"do you want to continue\?\s*\[(?:y|yes)/(?:n|no)\]"),
+    re.compile(r"\[(?:y|yes)/(?:n|no)\]"),
+    re.compile(r"\[(?:n|no)/(?:y|yes)\]"),
+    re.compile(r"press any key"),
+    re.compile(r"hit ctrl-c to stop"),
 )
 _INSPECT_ONLY_COMMAND_PATTERNS = (
-    re.compile(r"\bget-process\b", re.IGNORECASE),
-    re.compile(r"\btasklist\b", re.IGNORECASE),
-    re.compile(r"\bwhere-object\b", re.IGNORECASE),
-    re.compile(r"\bselect-object\b", re.IGNORECASE),
-    re.compile(r"\bfindstr\b", re.IGNORECASE),
-    re.compile(r"\bget-childitem\b", re.IGNORECASE),
-    re.compile(r"\bget-content\b", re.IGNORECASE),
-    re.compile(r"\bselect-string\b", re.IGNORECASE),
-    re.compile(r"\bdir\b", re.IGNORECASE),
-    re.compile(r"\btype\b", re.IGNORECASE),
-    re.compile(r"\bwhere\b", re.IGNORECASE),
-    re.compile(r"\bnetstat\b", re.IGNORECASE),
-    re.compile(r"\bss\b", re.IGNORECASE),
-    re.compile(r"\bps\b", re.IGNORECASE),
+    re.compile(r"\bget-process\b"),
+    re.compile(r"\btasklist\b"),
+    re.compile(r"\bwhere-object\b"),
+    re.compile(r"\bselect-object\b"),
+    re.compile(r"\bfindstr\b"),
+    re.compile(r"\bget-childitem\b"),
+    re.compile(r"\bget-content\b"),
+    re.compile(r"\bselect-string\b"),
+    re.compile(r"\bdir\b"),
+    re.compile(r"\btype\b"),
+    re.compile(r"\bwhere\b"),
+    re.compile(r"\bnetstat\b"),
+    re.compile(r"\bss\b"),
+    re.compile(r"\bps\b"),
 )
 _MUTATING_COMMAND_PATTERNS = (
-    re.compile(r"\btaskkill\b", re.IGNORECASE),
-    re.compile(r"\bstop-process\b", re.IGNORECASE),
-    re.compile(r"\bremove-item\b", re.IGNORECASE),
-    re.compile(r"\brm\b", re.IGNORECASE),
-    re.compile(r"\bdel\b", re.IGNORECASE),
-    re.compile(r"\brmdir\b", re.IGNORECASE),
-    re.compile(r"\bmove-item\b", re.IGNORECASE),
-    re.compile(r"\brename-item\b", re.IGNORECASE),
-    re.compile(r"\bcopy-item\b", re.IGNORECASE),
-    re.compile(r"\bset-content\b", re.IGNORECASE),
-    re.compile(r"\badd-content\b", re.IGNORECASE),
-    re.compile(r"\bnpm\s+install\b", re.IGNORECASE),
-    re.compile(r"\bnpm\s+uninstall\b", re.IGNORECASE),
-    re.compile(r"\bpip\s+install\b", re.IGNORECASE),
-    re.compile(r"\bgit\s+checkout\b", re.IGNORECASE),
+    re.compile(r"\btaskkill\b"),
+    re.compile(r"\bstop-process\b"),
+    re.compile(r"\bremove-item\b"),
+    re.compile(r"\brm\b"),
+    re.compile(r"\bdel\b"),
+    re.compile(r"\brmdir\b"),
+    re.compile(r"\bmove-item\b"),
+    re.compile(r"\brename-item\b"),
+    re.compile(r"\bcopy-item\b"),
+    re.compile(r"\bset-content\b"),
+    re.compile(r"\badd-content\b"),
+    re.compile(r"\bnpm\s+install\b"),
+    re.compile(r"\bnpm\s+uninstall\b"),
+    re.compile(r"\bpip\s+install\b"),
+    re.compile(r"\bgit\s+checkout\b"),
 )
 _DESTRUCTIVE_COMMAND_PATTERNS = (
-    re.compile(r"\btaskkill\b", re.IGNORECASE),
-    re.compile(r"\bstop-process\b", re.IGNORECASE),
-    re.compile(r"\bremove-item\b", re.IGNORECASE),
-    re.compile(r"\brm\b", re.IGNORECASE),
-    re.compile(r"\bdel\b", re.IGNORECASE),
-    re.compile(r"\brmdir\b", re.IGNORECASE),
+    re.compile(r"\btaskkill\b"),
+    re.compile(r"\bstop-process\b"),
+    re.compile(r"\bremove-item\b"),
+    re.compile(r"\brm\b"),
+    re.compile(r"\bdel\b"),
+    re.compile(r"\brmdir\b"),
 )
 _LONG_RUNNING_SERVICE_PATTERNS = (
-    re.compile(r"\bpython(?:3(?:\.\d+)?)?\s+-m\s+http\.server\b", re.IGNORECASE),
-    re.compile(r"\bhttp-server\b", re.IGNORECASE),
-    re.compile(r"\bnpm\s+start\b", re.IGNORECASE),
-    re.compile(r"\bnpm\s+run\s+dev\b", re.IGNORECASE),
-    re.compile(r"\bnpm\s+exec\b.*\bhttp-server\b", re.IGNORECASE),
-    re.compile(r"\bnpx\b.*\bhttp-server\b", re.IGNORECASE),
-    re.compile(r"\buvicorn\b", re.IGNORECASE),
-    re.compile(r"\bflask\s+run\b", re.IGNORECASE),
-    re.compile(r"\bwebpack(?:\.cmd)?\s+serve\b", re.IGNORECASE),
-    re.compile(r"\bserve\b", re.IGNORECASE),
+    re.compile(r"\bpython(?:3(?:\.\d+)?)?\s+-m\s+http\.server\b"),
+    re.compile(r"\bhttp-server\b"),
+    re.compile(r"\bnpm\s+start\b"),
+    re.compile(r"\bnpm\s+run\s+dev\b"),
+    re.compile(r"\bnpm\s+exec\b.*\bhttp-server\b"),
+    re.compile(r"\bnpx\b.*\bhttp-server\b"),
+    re.compile(r"\buvicorn\b"),
+    re.compile(r"\bflask\s+run\b"),
+    re.compile(r"\bwebpack(?:\.cmd)?\s+serve\b"),
+    re.compile(r"\bserve\b"),
 )
 
 
@@ -134,7 +134,7 @@ def _get_windows_command_hint(command: str, stderr: str) -> str:
     suggestion = _WINDOWS_COMMAND_HINTS.get(first_token)
     if not suggestion:
         return ""
-    return f"\nHint (Windows): команда '{first_token}' не найдена. Попробуйте: {suggestion}."
+    return f"\nHint (Windows): command '{first_token}' was not found. Try: {suggestion}."
 
 
 def _normalize_windows_python_heredoc(command: str) -> str:
@@ -454,8 +454,8 @@ async def cli_exec(command: str) -> str:
             cmd_hint = _get_windows_command_hint(command, stderr)
             if os.name == "nt" and "<< was unexpected at this time." in stderr:
                 cmd_hint += (
-                    "\nHint (Windows): bash-style heredoc (`python - <<'PY'`) не поддерживается через cmd.exe. "
-                    "Используйте PowerShell here-string: @' ... '@ | python -"
+                    "\nHint (Windows): bash-style heredoc (`python - <<'PY'`) is not supported through cmd.exe. "
+                    "Use a PowerShell here-string: @' ... '@ | python -"
                 )
             if output:
                 error_msg += f"\nOutput:\n{output}"

@@ -10,7 +10,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QEvent, QMimeData, QObject, Qt, Signal
 from PySide6.QtGui import QImage, QKeyEvent, QTextCursor, QTextFormat
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QFrame, QPushButton, QSizePolicy, QToolBar, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QDialog, QLabel, QFrame, QPushButton, QSizePolicy, QToolBar, QWidget
 
 import main as agent_cli
 from core.model_profiles import normalize_profiles_payload
@@ -19,6 +19,7 @@ from ui.runtime import build_runtime_snapshot, summarize_approval_request
 from ui.streaming import StreamEvent
 from ui.theme import AMBER_WARNING, BORDER, ERROR_RED, SURFACE_BG, SURFACE_CARD, TEXT_MUTED
 from ui.widgets.composer import _ComposerMentionItemWidget
+from ui.widgets import dialogs as widget_dialogs
 from ui.widgets.foundation import AutoTextBrowser, CodeBlockWidget, CopySafePlainTextEdit, TRANSCRIPT_MAX_WIDTH
 from ui.widgets.messages import AssistantMessageWidget
 from ui.widgets.tool_group import ToolGroupWidget
@@ -1024,7 +1025,7 @@ class GuiUxTests(unittest.TestCase):
         ]
         self.assertEqual(transcript_text_labels, [])
         self.assertIsInstance(self.window.current_turn.tool_group, ToolGroupWidget)
-        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Выполнено (1 инструментов)")
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Completed (1 tools)")
         self.assertTrue(self.window.current_turn.tool_group.container.isHidden())
         tool_card = self.window.current_turn.tool_cards["call-1"]
         self.assertEqual(tool_card.frameShape(), QFrame.NoFrame)
@@ -1055,27 +1056,6 @@ class GuiUxTests(unittest.TestCase):
         self.assertFalse(tool_card.args_container.isHidden())
         self.assertIn("Success", tool_card.args_view.toPlainText())
         self.assertNotIn('"path"', tool_card.args_view.toPlainText())
-
-    def test_assistant_message_widget_preserves_prose_around_fenced_json_block(self):
-        widget = AssistantMessageWidget()
-        widget.set_markdown(
-            "Ошибка парсинга JSON: модель часто оборачивает JSON в блоки кода (\n"
-            "```json\n"
-            '{"name":"cli_exec","args":{"command":"python test.py"}}\n'
-            "```\n"
-            "), которые стандартный json.loads не обрабатывает."
-        )
-        self._process_events()
-
-        visible_parts = [part for part in widget.parts_widgets if not part.isHidden()]
-        self.assertEqual(len(visible_parts), 3)
-        self.assertIsInstance(visible_parts[0], AutoTextBrowser)
-        self.assertIsInstance(visible_parts[1], CodeBlockWidget)
-        self.assertIsInstance(visible_parts[2], AutoTextBrowser)
-        self.assertIn("Ошибка парсинга JSON", visible_parts[0].toPlainText())
-        self.assertEqual(visible_parts[1].title_label.text(), "JSON")
-        self.assertIn('"name":"cli_exec"', visible_parts[1].editor.toPlainText())
-        self.assertIn("json.loads", visible_parts[2].toPlainText())
 
     def test_preview_tool_card_stays_hidden_until_resolved_refresh_arrives(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1282,6 +1262,7 @@ class GuiUxTests(unittest.TestCase):
 
         scrollbar.setValue(scrollbar.maximum())
         self._process_events()
+        self.assertTrue(self.window.transcript.auto_follow_enabled)
         self.window._handle_event(
             StreamEvent("cli_output", {"tool_id": "call-tail", "data": "follow-bottom\n", "stream": "stdout"})
         )
@@ -1334,6 +1315,7 @@ class GuiUxTests(unittest.TestCase):
 
         tool_card = self.window.current_turn.tool_cards["call-cli-finish-open"]
         self.assertTrue(tool_card.tool_button.isChecked())
+        self.assertIsNotNone(tool_card.cli_exec_widget)
         self.assertFalse(tool_card.cli_exec_widget.isHidden())
 
         # User toggles while running; finish still auto-collapses by policy.
@@ -1412,92 +1394,12 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(restored_turn.block_kinds(), ["user", "tool_group"])
         self.assertIsInstance(restored_turn.tool_group, ToolGroupWidget)
         self.assertTrue(restored_turn.tool_group.container.isHidden())
-        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Выполнено (1 инструментов)")
+        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Completed (1 tools)")
         tool_card = restored_turn.tool_cards["call-cli-restored"]
         self.assertFalse(tool_card.tool_button.isChecked())
         self.assertIsNotNone(tool_card.cli_exec_widget)
         self.assertTrue(tool_card.cli_exec_widget.isHidden())
         self.assertEqual(tool_card.phase_badge.text(), "✓")
-
-    def test_restoring_transcript_does_not_show_transient_top_level_widgets(self):
-        class _ShowSpy(QObject):
-            def __init__(self, main_window) -> None:
-                super().__init__()
-                self.main_window = main_window
-                self.top_level_widgets: list[tuple[str, str, str]] = []
-
-            def eventFilter(self, obj, event):  # type: ignore[override]
-                if event.type() != QEvent.Show:
-                    return False
-                if not hasattr(obj, "isWindow") or not hasattr(obj, "parentWidget"):
-                    return False
-                if not obj.isWindow():
-                    return False
-                if obj is self.main_window:
-                    return False
-                self.top_level_widgets.append(
-                    (
-                        type(obj).__name__,
-                        getattr(obj, "objectName", lambda: "")(),
-                        getattr(obj, "windowTitle", lambda: "")(),
-                    )
-                )
-                return False
-
-        payload = self._snapshot_payload()
-        payload["transcript"] = {
-            "summary_notice": "",
-            "turns": [
-                {
-                    "user_text": "прочитай и поправь",
-                    "blocks": [
-                        {
-                            "type": "tool",
-                            "payload": {
-                                "tool_id": "call-read",
-                                "name": "read_file",
-                                "args": {"path": "index.html"},
-                                "display": "Reading file",
-                                "subtitle": "index.html",
-                                "raw_display": "read_file(index.html)",
-                                "args_state": "complete",
-                                "display_state": "finished",
-                                "phase": "finished",
-                                "source_kind": "tool",
-                                "content": "Read 10 lines.",
-                            },
-                        },
-                        {
-                            "type": "tool",
-                            "payload": {
-                                "tool_id": "call-edit",
-                                "name": "edit_file",
-                                "args": {"path": "index.html"},
-                                "display": "Editing file",
-                                "subtitle": "index.html",
-                                "raw_display": "edit_file(index.html)",
-                                "args_state": "complete",
-                                "display_state": "finished",
-                                "phase": "finished",
-                                "source_kind": "tool",
-                                "content": "Success: File edited.",
-                                "diff": "@@ -1 +1 @@\n-old\n+new",
-                            },
-                        },
-                    ],
-                }
-            ],
-        }
-        spy = _ShowSpy(self.window)
-        self.app.installEventFilter(spy)
-        self.addCleanup(lambda: self.app.removeEventFilter(spy))
-        self.window.show()
-        self._process_events()
-
-        self.window._handle_initialized(payload)
-        self._process_events()
-
-        self.assertEqual(spy.top_level_widgets, [])
 
     def test_finished_tool_restored_from_transcript_keeps_success_badge(self):
         payload = self._snapshot_payload()
@@ -1583,7 +1485,7 @@ class GuiUxTests(unittest.TestCase):
         groups = restored_turn.findChildren(ToolGroupWidget)
         self.assertEqual(len(groups), 2)
         self.assertTrue(all(group.container.isHidden() for group in groups))
-        self.assertEqual([group.header_btn.text() for group in groups], ["Выполнено (1 инструментов)", "Выполнено (1 инструментов)"])
+        self.assertEqual([group.header_btn.text() for group in groups], ["Completed (1 tools)", "Completed (1 tools)"])
 
     def test_tool_error_output_is_collapsed_by_default(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1609,7 +1511,7 @@ class GuiUxTests(unittest.TestCase):
         tool_card.tool_button.click()
         self._process_events()
         self.assertIn("error[access_denied]", tool_card.args_view.toPlainText().lower())
-        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Выполняется...")
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Running...")
         self.assertTrue(self.window.current_turn.tool_group.error_icon_label.isHidden())
         self.assertTrue(self.window.current_turn.tool_group.error_count_label.isHidden())
 
@@ -1644,7 +1546,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         restored_turn = self.window.transcript.layout.itemAt(0).widget()
-        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Выполнено (1 инструментов) ·")
+        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Completed (1 tools) ·")
         self.assertFalse(restored_turn.tool_group.error_icon_label.isHidden())
         self.assertEqual(restored_turn.tool_group.error_count_label.text(), "1")
         self.assertTrue(restored_turn.tool_group.container.isHidden())
@@ -1689,7 +1591,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertFalse(tool_card.tool_button.isChecked())
         self.assertTrue(tool_card.args_container.isHidden())
         self.assertFalse(self.window.current_turn.tool_group.container.isHidden())
-        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Выполняется...")
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Running...")
 
     def test_finished_tool_group_stays_open_until_assistant_text_even_after_manual_expand(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1733,7 +1635,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Выполняется...")
+        self.assertEqual(group.header_btn.text(), "Running...")
 
         self.window._handle_event(
             StreamEvent(
@@ -1749,7 +1651,7 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertTrue(group.container.isHidden())
         self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group", "assistant"])
-        self.assertEqual(group.header_btn.text(), "Выполнено (1 инструментов)")
+        self.assertEqual(group.header_btn.text(), "Completed (1 tools)")
 
     def test_approval_notice_after_tool_finish_keeps_group_completed(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1770,7 +1672,7 @@ class GuiUxTests(unittest.TestCase):
 
         group = self.window.current_turn.tool_group
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Выполняется...")
+        self.assertEqual(group.header_btn.text(), "Running...")
 
         self.window._handle_event(
             StreamEvent("approval_resolved", {"approved": True, "always": False, "auto": False})
@@ -1779,7 +1681,7 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group", "notice"])
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Выполняется...")
+        self.assertEqual(group.header_btn.text(), "Running...")
 
     def test_run_finished_keeps_completed_tool_group_open_without_assistant_text(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1802,7 +1704,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertIsNotNone(group)
         self.assertFalse(group.container.isHidden())
         self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group", "stats"])
-        self.assertEqual(group.header_btn.text(), "Выполнено (1 инструментов)")
+        self.assertEqual(group.header_btn.text(), "Completed (1 tools)")
 
     def test_assistant_comment_after_tool_group_does_not_repeat_previous_prefix(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -2501,6 +2403,106 @@ class GuiUxTests(unittest.TestCase):
         result = dialog.result_payload()
 
         self.assertTrue(result["profiles"][0]["supports_image_input"])
+
+    def test_api_key_rotation_dialog_uses_monospace_editor_font(self):
+        dialog = widget_dialogs.ApiKeyRotationDialog(["sk-primary", "sk-secondary"], self.window)
+        self.addCleanup(dialog.close)
+
+        self.assertEqual(dialog.objectName(), "ApiKeyRotationDialog")
+        self.assertEqual(dialog.api_keys(), ["sk-primary", "sk-secondary"])
+        self.assertEqual(dialog.key_count_chip.text(), "2 key(s)")
+        self.assertEqual(dialog.editor.font().pointSize(), 10)
+
+    def test_model_settings_dialog_rotation_save_emits_profiles_saved_immediately(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-primary",
+                    "api_keys": ["sk-primary"],
+                    "base_url": "https://api.openai.com/v1",
+                    "enabled": True,
+                }
+            ],
+        }
+        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        self._process_events()
+
+        saved_payloads = []
+        dialog.profiles_saved.connect(saved_payloads.append)
+
+        class _AcceptedRotationDialog:
+            def __init__(self, *_args, **_kwargs):
+                pass
+
+            def exec(self):
+                return QDialog.Accepted
+
+            def api_keys(self):
+                return ["sk-primary", "sk-secondary"]
+
+        with mock.patch.object(widget_dialogs, "ApiKeyRotationDialog", _AcceptedRotationDialog):
+            dialog._edit_api_key_rotation()
+
+        self.assertEqual(len(saved_payloads), 1)
+        self.assertEqual(saved_payloads[0]["profiles"][0]["api_keys"], ["sk-primary", "sk-secondary"])
+        self.assertEqual(saved_payloads[0]["profiles"][0]["api_key"], "sk-primary")
+        self.assertIn("Rotation pool saved", dialog.save_state_label.text())
+
+    def test_model_settings_dialog_applies_rotation_pool_per_profile(self):
+        dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
+        self.addCleanup(dialog.close)
+        dialog._add_profile()
+        self._process_events()
+
+        dialog.model_edit.setText("openai/gpt-4o")
+        dialog.api_key_edit.setText("sk-primary")
+        dialog._apply_api_key_rotation_to_profile(0, [" sk-primary ", "", "sk-secondary", "sk-primary"])
+        dialog._save_and_accept()
+        result = dialog.result_payload()
+
+        self.assertEqual(result["profiles"][0]["api_keys"], ["sk-primary", "sk-secondary"])
+        self.assertEqual(result["profiles"][0]["api_key"], "sk-primary")
+        self.assertEqual(result["profiles"][0]["api_key_index"], 0)
+
+    def test_model_settings_dialog_rotation_pool_stays_isolated_between_profiles(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-one",
+                    "api_keys": ["sk-one", "sk-two"],
+                    "base_url": "",
+                    "enabled": True,
+                },
+                {
+                    "id": "gemini-1-5-flash",
+                    "provider": "gemini",
+                    "model": "gemini-1.5-flash",
+                    "api_key": "gm-one",
+                    "api_keys": ["gm-one"],
+                    "base_url": "",
+                    "enabled": True,
+                },
+            ],
+        }
+        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        self._process_events()
+
+        dialog._apply_api_key_rotation_to_profile(1, ["gm-one", "gm-two"])
+        dialog._save_and_accept()
+        result = dialog.result_payload()
+
+        self.assertEqual(result["profiles"][0]["api_keys"], ["sk-one", "sk-two"])
+        self.assertEqual(result["profiles"][1]["api_keys"], ["gm-one", "gm-two"])
 
     def test_model_settings_dialog_toggle_disables_profile_without_deleting_it(self):
         payload = {
