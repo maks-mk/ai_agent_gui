@@ -1,0 +1,145 @@
+from __future__ import annotations
+
+from typing import Any, Dict, List, Optional
+
+from langchain_core.language_models import BaseChatModel
+from langchain_core.tools import BaseTool
+
+from core.config import AgentConfig
+from core.run_logger import JsonlRunLogger
+from core.state import AgentState
+from core.tool_policy import ToolMetadata
+
+from core.nodes.base import BaseMixin
+from core.nodes.llm import LLMMixin
+from core.nodes.context import ContextMixin
+from core.nodes.tool_preflight import ToolPreflightMixin
+from core.nodes.protocol import ProtocolMixin
+from core.nodes.summarize import SummarizeMixin
+from core.nodes.agent import AgentMixin
+from core.nodes.approval import ApprovalMixin
+from core.nodes.tools import ToolsMixin
+from core.nodes.recovery import RecoveryMixin
+
+__all__ = ["AgentNodes"]
+
+
+class AgentNodes(
+    BaseMixin,
+    LLMMixin,
+    ContextMixin,
+    ToolPreflightMixin,
+    ProtocolMixin,
+    SummarizeMixin,
+    AgentMixin,
+    ApprovalMixin,
+    ToolsMixin,
+    RecoveryMixin,
+):
+    __slots__ = (
+        "config",
+        "llm",
+        "tools",
+        "llm_with_tools",
+        "tools_map",
+        "_all_tool_names",
+        "tool_metadata",
+        "run_logger",
+        "_cached_base_prompt",
+        "message_context",
+        "context_builder",
+        "recovery_manager",
+        "tool_executor",
+        "agent_turn",
+        "recovery_turn",
+        "tool_batch",
+    )
+
+    # Only these tools are allowed to run in parallel in a single tool-call batch.
+    # Any unknown or mutating tool keeps sequential execution for safety.
+    PARALLEL_SAFE_TOOL_NAMES = frozenset(
+        {
+            "file_info",
+            "read_file",
+            "list_directory",
+            "search_in_file",
+            "search_in_directory",
+            "tail_file",
+            "find_file",
+            "web_search",
+            "fetch_content",
+            "batch_web_search",
+            "get_public_ip",
+            "lookup_ip_info",
+            "get_system_info",
+            "get_local_network_info",
+            "find_process_by_port",
+        }
+    )
+    # Read-only tools can be called repeatedly while an agent verifies edits/results.
+    READ_ONLY_LOOP_TOLERANT_TOOL_NAMES = frozenset(
+        {
+            "file_info",
+            "read_file",
+            "search_in_file",
+            "search_in_directory",
+            "tail_file",
+            "find_file",
+            "list_directory",
+            "web_search",
+            "fetch_content",
+            "batch_web_search",
+        }
+    )
+    PROVIDER_SAFE_TOOL_CALL_ID_RE = __import__("re").compile(r"^[A-Za-z0-9]{9}$")
+
+    def __init__(
+        self,
+        config: AgentConfig,
+        llm: BaseChatModel,
+        tools: List[BaseTool],
+        llm_with_tools: Optional[BaseChatModel] = None,
+        tool_metadata: Optional[Dict[str, ToolMetadata]] = None,
+        run_logger: Optional[JsonlRunLogger] = None,
+    ):
+        self.config = config
+        self.llm = llm
+        self.tools = tools
+        self.llm_with_tools = llm_with_tools or llm
+
+        # Оптимизация: O(1) доступ к инструментам вместо O(N) перебора списка
+        self.tools_map = {t.name: t for t in tools}
+        self._all_tool_names = tuple(self.tools_map.keys())
+        self.tool_metadata = tool_metadata or {}
+        self.run_logger = run_logger
+
+        # Lazy initialization of helpers (mixins may define these)
+        self._init_nodes()
+
+    def _init_nodes(self) -> None:
+        from core.message_context import MessageContextHelper
+        from core.context_builder import ContextBuilder
+        from core.recovery_manager import RecoveryManager
+        from core.tool_executor import ToolExecutor
+        from core.node_orchestrators import AgentTurnOrchestrator, RecoveryTurnOrchestrator, ToolBatchCoordinator
+
+        self.message_context = MessageContextHelper()
+        self.recovery_manager = RecoveryManager()
+        self._cached_base_prompt: Optional[str] = None
+        self.context_builder = ContextBuilder(
+            config=self.config,
+            prompt_loader=self._get_base_prompt,
+            is_internal_retry=self._is_internal_retry_message,
+            log_run_event=self._log_run_event,
+            recovery_message_builder=self.recovery_manager.build_recovery_system_message,
+            provider_safe_tool_call_id_re=self.PROVIDER_SAFE_TOOL_CALL_ID_RE,
+        )
+        self.tool_executor = ToolExecutor(
+            config=self.config,
+            metadata_for_tool=self._metadata_for_tool,
+            log_run_event=self._log_run_event,
+            workspace_boundary_violated=self._workspace_boundary_violated,
+        )
+        self.agent_turn = AgentTurnOrchestrator(self)
+        self.recovery_turn = RecoveryTurnOrchestrator(self)
+        self.tool_batch = ToolBatchCoordinator(self)

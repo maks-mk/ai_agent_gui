@@ -14,6 +14,7 @@ from core.multimodal import DEFAULT_MODEL_CAPABILITIES
 from core.validation import validate_tool_result
 from tools import process_tools
 from tools.tool_registry import ToolRegistry
+from tools.user_input_tool import request_user_input
 
 
 class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
@@ -244,6 +245,47 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         error = validate_tool_result("safe_delete_directory", {"dir_path": str(dir_path)}, "Success")
         self.assertIsNotNone(error)
         self.assertIn("still exists", error)
+
+    def test_validation_does_not_require_local_file_for_successful_edit_or_write(self):
+        self.assertIsNone(
+            validate_tool_result(
+                "edit_file",
+                {"path": "virtual.txt", "old_string": "a", "new_string": "b"},
+                "Success: File edited.",
+            )
+        )
+        self.assertIsNone(
+            validate_tool_result(
+                "write_file",
+                {"path": "virtual.txt", "content": "hello"},
+                "Success: File written.",
+            )
+        )
+
+    def test_request_user_input_schema_normalizes_payload(self):
+        schema = request_user_input.get_input_schema()
+        validated = schema.model_validate(
+            {
+                "question": "  Какой режим выбрать?  ",
+                "options": [" direct_api ", "keep_mcp", "direct_api", " "],
+                "recommended": " direct_api ",
+            }
+        )
+
+        self.assertEqual(validated.question, "Какой режим выбрать?")
+        self.assertEqual(validated.options, ["direct_api", "keep_mcp"])
+        self.assertEqual(validated.recommended, "direct_api")
+
+    def test_request_user_input_schema_rejects_invalid_payload(self):
+        schema = request_user_input.get_input_schema()
+        with self.assertRaises(Exception):
+            schema.model_validate(
+                {
+                    "question": "Выбери вариант",
+                    "options": ["only_one"],
+                    "recommended": "missing",
+                }
+            )
 
     def test_max_file_size_numeric_value_is_bytes(self):
         config = self._make_config(MAX_FILE_SIZE="4096")

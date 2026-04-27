@@ -1609,6 +1609,292 @@ class GuiUxTests(unittest.TestCase):
         tool_card.tool_button.click()
         self._process_events()
         self.assertIn("error[access_denied]", tool_card.args_view.toPlainText().lower())
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Выполняется...")
+        self.assertTrue(self.window.current_turn.tool_group.error_icon_label.isHidden())
+        self.assertTrue(self.window.current_turn.tool_group.error_count_label.isHidden())
+
+    def test_restored_error_tool_group_does_not_crash_and_shows_error_count(self):
+        payload = self._snapshot_payload()
+        payload["transcript"] = {
+            "summary_notice": "",
+            "turns": [
+                {
+                    "user_text": "почини файл",
+                    "blocks": [
+                        {
+                            "type": "tool",
+                            "payload": {
+                                "tool_id": "call-restored-error",
+                                "name": "edit_file",
+                                "args": {"path": "broken.txt"},
+                                "display": "Editing file",
+                                "content": "error[access_denied]: blocked",
+                                "summary": "Skipped",
+                                "is_error": True,
+                                "phase": "finished",
+                                "display_state": "finished",
+                            },
+                        }
+                    ],
+                }
+            ],
+        }
+
+        self.window._handle_initialized(payload)
+        self._process_events()
+
+        restored_turn = self.window.transcript.layout.itemAt(0).widget()
+        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Выполнено (1 инструментов) ·")
+        self.assertFalse(restored_turn.tool_group.error_icon_label.isHidden())
+        self.assertEqual(restored_turn.tool_group.error_count_label.text(), "1")
+        self.assertTrue(restored_turn.tool_group.container.isHidden())
+
+    def test_finish_overrides_stale_running_phase_and_collapses_non_cli_exec(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Прочитай"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-read",
+                    "name": "read_file",
+                    "args": {"path": "main.py"},
+                    "display": "read_file(main.py)",
+                    "phase": "running",
+                },
+            )
+        )
+        self._process_events()
+        tool_card = self.window.current_turn.tool_cards["call-read"]
+        self.assertEqual(tool_card.phase_badge.text(), "Running")
+
+        tool_card.tool_button.click()
+        self._process_events()
+        self.assertTrue(tool_card.tool_button.isChecked())
+        self.assertFalse(tool_card.args_container.isHidden())
+
+        self.window._handle_event(
+            StreamEvent(
+                "tool_finished",
+                {
+                    "tool_id": "call-read",
+                    "name": "read_file",
+                    "content": "ok",
+                    "phase": "running",
+                },
+            )
+        )
+        self._process_events()
+        self.assertEqual(tool_card.phase_badge.text(), "✓")
+        self.assertFalse(tool_card.tool_button.isChecked())
+        self.assertTrue(tool_card.args_container.isHidden())
+        self.assertFalse(self.window.current_turn.tool_group.container.isHidden())
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Выполняется...")
+
+    def test_finished_tool_group_stays_open_until_assistant_text_even_after_manual_expand(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Исправь файл"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-edit-open",
+                    "name": "edit_file",
+                    "args": {"path": "demo.txt"},
+                    "display": "Editing file",
+                    "phase": "running",
+                },
+            )
+        )
+        self._process_events()
+
+        group = self.window.current_turn.tool_group
+        tool_card = self.window.current_turn.tool_cards["call-edit-open"]
+        self.assertIsNotNone(group)
+        self.assertFalse(group.container.isHidden())
+
+        tool_card.tool_button.click()
+        self._process_events()
+        self.assertFalse(tool_card.args_container.isHidden())
+
+        self.window._handle_event(
+            StreamEvent(
+                "tool_finished",
+                {
+                    "tool_id": "call-edit-open",
+                    "name": "edit_file",
+                    "args": {"path": "demo.txt"},
+                    "content": "Success",
+                    "summary": "File edited successfully",
+                    "phase": "running",
+                },
+            )
+        )
+        self._process_events()
+
+        self.assertFalse(group.container.isHidden())
+        self.assertEqual(group.header_btn.text(), "Выполняется...")
+
+        self.window._handle_event(
+            StreamEvent(
+                "assistant_delta",
+                {
+                    "text": "Комментирую результат",
+                    "full_text": "Комментирую результат",
+                    "has_thought": False,
+                },
+            )
+        )
+        self._process_events()
+
+        self.assertTrue(group.container.isHidden())
+        self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group", "assistant"])
+        self.assertEqual(group.header_btn.text(), "Выполнено (1 инструментов)")
+
+    def test_approval_notice_after_tool_finish_keeps_group_completed(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Исправь файл"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_finished",
+                {
+                    "tool_id": "call-approved-edit",
+                    "name": "edit_file",
+                    "args": {"path": "demo.txt"},
+                    "content": "Success",
+                    "summary": "File edited successfully",
+                },
+            )
+        )
+        self._process_events()
+
+        group = self.window.current_turn.tool_group
+        self.assertFalse(group.container.isHidden())
+        self.assertEqual(group.header_btn.text(), "Выполняется...")
+
+        self.window._handle_event(
+            StreamEvent("approval_resolved", {"approved": True, "always": False, "auto": False})
+        )
+        self._process_events()
+
+        self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group", "notice"])
+        self.assertFalse(group.container.isHidden())
+        self.assertEqual(group.header_btn.text(), "Выполняется...")
+
+    def test_run_finished_keeps_completed_tool_group_open_without_assistant_text(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Используй инструмент"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_finished",
+                {
+                    "tool_id": "call-finish-open",
+                    "name": "read_file",
+                    "args": {"path": "main.py"},
+                    "content": "ok",
+                },
+            )
+        )
+        self.window._handle_event(StreamEvent("run_finished", {"stats": "1.0s   In: 10   Out: 5"}))
+        self._process_events()
+
+        group = self.window.current_turn.tool_group
+        self.assertIsNotNone(group)
+        self.assertFalse(group.container.isHidden())
+        self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group", "stats"])
+        self.assertEqual(group.header_btn.text(), "Выполнено (1 инструментов)")
+
+    def test_assistant_comment_after_tool_group_does_not_repeat_previous_prefix(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Сделай анализ"}))
+        self.window._handle_event(
+            StreamEvent(
+                "assistant_delta",
+                {
+                    "text": "Изучаю структуру проекта для проведения анализа.",
+                    "full_text": "Изучаю структуру проекта для проведения анализа.",
+                    "has_thought": False,
+                },
+            )
+        )
+        self.window._handle_event(
+            StreamEvent(
+                "tool_finished",
+                {
+                    "tool_id": "call-analysis",
+                    "name": "read_file",
+                    "args": {"path": "README.md"},
+                    "content": "ok",
+                },
+            )
+        )
+        self.window._handle_event(
+            StreamEvent(
+                "assistant_delta",
+                {
+                    "text": "Проект представляет собой автономного AI-агента.",
+                    "full_text": (
+                        "Изучаю структуру проекта для проведения анализа.\n"
+                        "Проект представляет собой автономного AI-агента."
+                    ),
+                    "has_thought": False,
+                },
+            )
+        )
+        self._process_events()
+
+        self.assertEqual(self.window.current_turn.block_kinds(), ["user", "assistant", "tool_group", "assistant"])
+        self.assertEqual(len(self.window.current_turn.assistant_segments), 2)
+        self.assertEqual(
+            self.window.current_turn.assistant_segments[0].markdown(),
+            "Изучаю структуру проекта для проведения анализа.",
+        )
+        self.assertEqual(
+            self.window.current_turn.assistant_segments[1].markdown(),
+            "Проект представляет собой автономного AI-агента.",
+        )
+
+    def test_finish_overrides_stale_running_phase_for_cli_exec(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Запусти"}))
+        self.window._handle_event(
+            StreamEvent(
+                "tool_started",
+                {
+                    "tool_id": "call-cli-run",
+                    "name": "cli_exec",
+                    "args": {"command": "echo hi"},
+                    "display": 'cli_exec("echo hi")',
+                    "phase": "running",
+                },
+            )
+        )
+        self._process_events()
+        tool_card = self.window.current_turn.tool_cards["call-cli-run"]
+        self.assertEqual(tool_card.phase_badge.text(), "Running")
+        self.assertTrue(tool_card.tool_button.isChecked())
+
+        tool_card.tool_button.click()
+        self._process_events()
+        self.assertFalse(tool_card.tool_button.isChecked())
+        self.assertTrue(tool_card.cli_exec_widget.isHidden())
+
+        tool_card._cli_started_at_monotonic = time.monotonic() - 1.2
+        self.window._handle_event(
+            StreamEvent(
+                "tool_finished",
+                {
+                    "tool_id": "call-cli-run",
+                    "name": "cli_exec",
+                    "content": "hi\n",
+                    "phase": "running",
+                },
+            )
+        )
+        self._process_events()
+        self.assertEqual(tool_card.phase_badge.text(), "✓")
+        self.assertFalse(tool_card.tool_button.isChecked())
+        self.assertTrue(tool_card.cli_exec_widget.isHidden())
 
     def test_cli_exec_error_meta_is_marked_for_error_styling(self):
         self.window._handle_initialized(self._snapshot_payload())

@@ -126,11 +126,7 @@ def shell_command_requires_approval(command: str) -> bool:
     profile = classify_shell_command(command)
     if profile.get("inspect_only") and not profile.get("long_running_service"):
         return False
-    return bool(
-        profile.get("mutating")
-        or profile.get("destructive")
-        or profile.get("long_running_service")
-    )
+    return True
 
 
 def tool_requires_approval(

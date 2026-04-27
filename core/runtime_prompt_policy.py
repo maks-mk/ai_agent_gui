@@ -33,8 +33,23 @@ class RuntimeExecutionEnvironment:
 
 class RuntimePromptPolicyBuilder:
     REQUEST_USER_INPUT_TOOL_NAME = "request_user_input"
+    REQUEST_USER_INPUT_POLICY_TEXT = (
+        "REQUEST_USER_INPUT POLICY:\n"
+        "Use request_user_input only when the next step is genuinely blocked by one concrete user decision "
+        "or one missing external value that cannot be recovered from repository state, current messages, or tools.\n"
+        "Do not use request_user_input for approvals of risky actions; the approval flow handles that separately.\n"
+        "Do not use request_user_input for open-ended brainstorming, optional style preferences, or questions "
+        "you can answer yourself from context.\n"
+        "Ask exactly one short question.\n"
+        "Provide 2 to 5 short mutually exclusive options. Options must be concise labels, not explanations.\n"
+        "If one option is best, set `recommended` to the exact option text.\n"
+        "Make the request_user_input tool call by itself. Never batch multiple request_user_input calls.\n"
+        "After resume, treat the latest request_user_input ToolMessage content as the user's final answer and continue "
+        "without asking again in the same turn."
+    )
     TOOL_INTENT_REQUIREMENT_TEXT = (
         "TOOL INTENT REQUIREMENT:\n"
+        "Never send an empty assistant message when tool_calls are present.\n"
         "The `content` field of every assistant message that contains `tool_calls` MUST be non-empty.\n"
         "Write one plain sentence: what you are about to do and why.\n"
         "Example: 'Reading config.py to find the database host setting.'\n"
@@ -66,7 +81,7 @@ class RuntimePromptPolicyBuilder:
                     content=(
                         "USER CHOICE ALREADY COLLECTED IN THIS TURN.\n"
                         "Do not call request_user_input again.\n"
-                        "Use the selected value from the latest request_user_input tool result and continue."
+                        "Use the selected value from the latest request_user_input ToolMessage as the user's final answer and continue."
                     )
                 )
             )
@@ -131,13 +146,7 @@ class RuntimePromptPolicyBuilder:
     def _build_request_user_input_policy(self, context: RuntimePromptContext) -> str:
         if self.REQUEST_USER_INPUT_TOOL_NAME not in self._normalized_tool_names(context.active_tool_names):
             return ""
-        return (
-            "REQUEST_USER_INPUT POLICY:\n"
-            "Call request_user_input only for a real blocking decision or missing external input that cannot be resolved "
-            "from context or tools.\n"
-            "Ask exactly one user-choice question per turn. Never batch multiple request_user_input calls.\n"
-            "After resume, continue with the chosen answer instead of asking again."
-        )
+        return self.REQUEST_USER_INPUT_POLICY_TEXT
 
     def _detect_execution_environment(self) -> RuntimeExecutionEnvironment:
         os_family = self._detect_os_family()

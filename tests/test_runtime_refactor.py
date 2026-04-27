@@ -266,6 +266,122 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(missing, [])
 
+    def test_build_agent_result_injects_dummy_gemini_thought_signature_for_first_tool_call(self):
+        tool = FakeTool("web_search", "ok")
+        nodes = AgentNodes(
+            config=self._make_config(
+                PROVIDER="gemini",
+                GEMINI_API_KEY="test-key",
+                GEMINI_MODEL="gemini-robotics-er-1.6-preview",
+            ),
+            llm=FakeLLM([]),
+            tools=[tool],
+            llm_with_tools=FakeLLM([]),
+        )
+        response = AIMessage(content="").model_copy(
+            update={
+                "tool_calls": [
+                    {"id": "tc-1", "name": "web_search", "args": {"query": "latest Claude Opus 4.7"}},
+                ]
+            }
+        )
+
+        result = nodes._build_agent_result(
+            response=response,
+            current_task="Найди последнюю информацию",
+            tools_available=True,
+            turn_id=1,
+            messages=[HumanMessage(content="Найди последнюю информацию")],
+            allowed_tool_names=["web_search"],
+        )
+
+        message = next(item for item in result["messages"] if isinstance(item, AIMessage))
+        signature_map = message.additional_kwargs["__gemini_function_call_thought_signatures__"]
+        self.assertIn("tc-1", signature_map)
+        self.assertTrue(signature_map["tc-1"])
+        self.assertEqual(result["turn_outcome"], "run_tools")
+
+    def test_build_agent_result_preserves_existing_gemini_thought_signature(self):
+        tool = FakeTool("web_search", "ok")
+        nodes = AgentNodes(
+            config=self._make_config(
+                PROVIDER="gemini",
+                GEMINI_API_KEY="test-key",
+                GEMINI_MODEL="gemini-robotics-er-1.6-preview",
+            ),
+            llm=FakeLLM([]),
+            tools=[tool],
+            llm_with_tools=FakeLLM([]),
+        )
+        response = AIMessage(
+            content="",
+            additional_kwargs={
+                "__gemini_function_call_thought_signatures__": {
+                    "tc-1": "existing-signature",
+                }
+            },
+        ).model_copy(
+            update={
+                "tool_calls": [
+                    {"id": "tc-1", "name": "web_search", "args": {"query": "latest Claude Opus 4.7"}},
+                ]
+            }
+        )
+
+        result = nodes._build_agent_result(
+            response=response,
+            current_task="Найди последнюю информацию",
+            tools_available=True,
+            turn_id=1,
+            messages=[HumanMessage(content="Найди последнюю информацию")],
+            allowed_tool_names=["web_search"],
+        )
+
+        message = next(item for item in result["messages"] if isinstance(item, AIMessage))
+        signature_map = message.additional_kwargs["__gemini_function_call_thought_signatures__"]
+        self.assertEqual(signature_map["tc-1"], "existing-signature")
+
+    def test_sanitize_messages_for_model_remaps_gemini_thought_signature_keys_with_tool_ids(self):
+        tool = FakeTool("web_search", "ok")
+        nodes = AgentNodes(
+            config=self._make_config(
+                PROVIDER="gemini",
+                GEMINI_API_KEY="test-key",
+                GEMINI_MODEL="gemini-robotics-er-1.6-preview",
+            ),
+            llm=FakeLLM([]),
+            tools=[tool],
+            llm_with_tools=FakeLLM([]),
+        )
+        long_tool_id = "chatcmpl-tool-9d8dc0bbe38d6202"
+        messages = [
+            HumanMessage(content="Найди последнюю информацию"),
+            AIMessage(
+                content="",
+                additional_kwargs={
+                    "__gemini_function_call_thought_signatures__": {
+                        long_tool_id: "existing-signature",
+                    }
+                },
+                tool_calls=[
+                    {"id": long_tool_id, "name": "web_search", "args": {"query": "latest Claude Opus 4.7"}},
+                ],
+            ),
+            ToolMessage(content="ok", tool_call_id=long_tool_id, name="web_search"),
+        ]
+
+        sanitized = nodes._sanitize_messages_for_model(messages)
+
+        ai_message = next(message for message in sanitized if isinstance(message, AIMessage))
+        tool_message = next(message for message in sanitized if isinstance(message, ToolMessage))
+        remapped_id = ai_message.tool_calls[0]["id"]
+        signature_map = ai_message.additional_kwargs["__gemini_function_call_thought_signatures__"]
+
+        self.assertRegex(remapped_id, r"^[A-Za-z0-9]{9}$")
+        self.assertEqual(tool_message.tool_call_id, remapped_id)
+        self.assertEqual(signature_map[remapped_id], "existing-signature")
+        self.assertNotIn(long_tool_id, signature_map)
+
     async def test_process_tool_call_allows_repeated_distinct_args_without_name_based_budget(self):
         tool = FakeTool("analysis_helper", "ok")
         nodes = AgentNodes(

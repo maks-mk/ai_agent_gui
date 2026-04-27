@@ -29,6 +29,8 @@ from core.state import AgentState
 
 logger = logging.getLogger("agent")
 
+_GEMINI_FUNCTION_CALL_THOUGHT_SIGNATURES_KEY = "__gemini_function_call_thought_signatures__"
+
 IsInternalRetry = Callable[[BaseMessage], bool]
 PromptLoader = Callable[[], str]
 RunLogger = Callable[..., None]
@@ -139,6 +141,30 @@ class ContextBuilder:
                         normalized_tool_calls.append(cloned_call)
                     if tool_calls_changed:
                         normalized_message = message.model_copy(update={"tool_calls": normalized_tool_calls})
+
+                if isinstance(normalized_message, (AIMessage, AIMessageChunk)):
+                    metadata = dict(getattr(normalized_message, "additional_kwargs", {}) or {})
+                    signature_map = metadata.get(_GEMINI_FUNCTION_CALL_THOUGHT_SIGNATURES_KEY)
+                    if isinstance(signature_map, dict) and signature_map:
+                        remapped_signature_map: Dict[str, Any] = {}
+                        signature_map_changed = False
+                        for raw_id, signature in signature_map.items():
+                            normalized_raw_id = str(raw_id or "").strip()
+                            if not normalized_raw_id:
+                                continue
+                            mapped_id = tool_call_id_map.get(normalized_raw_id)
+                            if not mapped_id:
+                                mapped_id = self._normalize_tool_call_id_for_provider(
+                                    normalized_raw_id,
+                                    used_ids=used_tool_call_ids,
+                                )
+                                tool_call_id_map[normalized_raw_id] = mapped_id
+                            remapped_signature_map[mapped_id] = signature
+                            if mapped_id != normalized_raw_id:
+                                signature_map_changed = True
+                        if signature_map_changed:
+                            metadata[_GEMINI_FUNCTION_CALL_THOUGHT_SIGNATURES_KEY] = remapped_signature_map
+                            normalized_message = normalized_message.model_copy(update={"additional_kwargs": metadata})
 
             if isinstance(normalized_message, ToolMessage):
                 raw_tool_id = str(normalized_message.tool_call_id or "").strip()

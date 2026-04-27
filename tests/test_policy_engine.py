@@ -38,6 +38,11 @@ class ToolApprovalPolicyTests(unittest.TestCase):
         self.assertTrue(shell_command_requires_approval("taskkill /IM node.exe /F"))
         self.assertTrue(shell_command_requires_approval("npm run dev"))
         self.assertTrue(shell_command_requires_approval("curl -X POST https://example.com -d 'x=1'"))
+        self.assertTrue(shell_command_requires_approval("git reset --hard HEAD~1"))
+
+    def test_shell_approval_defaults_to_conservative_for_unknown_commands(self):
+        self.assertTrue(shell_command_requires_approval("git status"))
+        self.assertTrue(shell_command_requires_approval("New-Item demo.txt -ItemType File"))
 
     def test_tool_approval_uses_metadata_for_non_shell_tools(self):
         self.assertFalse(

@@ -109,6 +109,12 @@ START
 `request_user_input` — отдельный инструмент для блокирующего выбора пользователя:
 - не более одного вызова за ход
 - нельзя батчить с другими tool calls в одном ответе
+- использовать только когда следующий шаг реально заблокирован одним конкретным выбором пользователя или отсутствующим внешним значением, которое нельзя получить из контекста или tools
+- не использовать для approval рискованных действий: это отдельный flow
+- задавать ровно один короткий вопрос
+- передавать 2-5 коротких взаимоисключающих опций
+- если один вариант явно лучший, указывать его через `recommended`
+- после resume продолжать с выбранным ответом, а не спрашивать заново в том же ходе
 
 ---
 
@@ -121,6 +127,16 @@ START
 - Активный профиль выбирается в GUI; `.env` используется только для bootstrap начального набора
 - Legacy-ключи `MODEL`, `API_KEY`, `BASE_URL` поддерживаются для import/совместимости
 - Для Gemini-профилей `base_url` игнорируется
+
+### Автоматическая загрузка списка моделей
+
+При добавлении или редактировании профиля в `Model Profiles` список моделей загружается автоматически — вводить имя вручную не нужно.
+
+**Gemini:** после ввода API Key список загружается автоматически (debounce 600 мс). Модели фильтруются: остаются только те, что поддерживают `generateContent` и принадлежат семействам `gemini` / `gemma`. Автоматически исключаются embedding-, audio-, image- и служебные модели. Список сгруппирован и отсортирован по убыванию версии.
+
+**OpenAI-compatible:** список загружается при заполнении обоих полей — API Key и Base URL. Применяется базовая фильтрация по ключевым словам. Если загрузка не удалась — поле переходит в режим ручного ввода.
+
+Логика реализована в `core/model_fetcher.py`. При переключении между профилями с одним ключом список берётся из кеша без повторного запроса.
 
 ---
 
@@ -273,30 +289,129 @@ START
 ├── mcp.json              # Конфиг MCP-серверов
 ├── env_example.txt       # Шаблон .env
 ├── requirements.txt
-├── core/                 # Runtime: граф, конфиг, policy, recovery, сессии
-├── tools/                # Встроенные инструменты и MCP-интеграция
-│   └── filesystem_impl/  # Низкоуровневая реализация filesystem-операций
-├── ui/                   # Qt GUI: окно, виджеты, streaming, runtime bridge
-│   ├── window_components/ # Builders и controllers главного окна
-│   └── widgets/          # Composer, transcript и вспомогательные виджеты
-└── tests/                # Тесты
+├── core/                 # Ядро runtime (~31 модуль)
+│   ├── nodes/            # 11 узлов LangGraph (mixin-архитектура)
+│   │   ├── __init__.py   # AgentNodes — сборка всех mixin в единый класс
+│   │   ├── base.py       # BaseMixin — логирование, state introspection, turn_id
+│   │   ├── llm.py        # LLMMixin — вызов LLM, token streaming, tool binding
+│   │   ├── context.py    # ContextMixin — сборка контекста для LLM-промпта
+│   │   ├── tool_preflight.py  # ToolPreflightMixin — metadata, JSON-schema, loop detection, approval gate
+│   │   ├── protocol.py   # ProtocolMixin — tool issues, message filtering, error merging
+│   │   ├── summarize.py  # SummarizeMixin — compact history при превышении токенов
+│   │   ├── agent.py      # AgentMixin — фасад agent_node, result building
+│   │   ├── approval.py   # ApprovalMixin — interrupt для мутирующих операций
+│   │   ├── tools.py      # ToolsMixin — dispatch tool execution, parallel batching
+│   │   └── recovery.py   # RecoveryMixin — bounded recovery, self-correction ceiling
+│   ├── agent.py          # Сборка и маршрутизация StateGraph
+│   ├── config.py         # Pydantic-settings конфигурация из .env
+│   ├── state.py          # TypedDict состояния графа
+│   ├── checkpointing.py  # SQLite / memory checkpoint store
+│   ├── context_builder.py # Сборка runtime-промпта (OS, shell, safety, recovery)
+│   ├── recovery_manager.py # Recovery strategies и retry logic
+│   ├── self_correction_engine.py # Repair fingerprints, strategy dispatch
+│   ├── tool_executor.py  # Async execution, parallel coordinator, batch runner
+│   ├── tool_policy.py   # ToolMetadata, approval rules
+│   ├── policy_engine.py  # Shell command classification (read-only / mutating / destructive)
+│   ├── safety_policy.py  # Workspace boundary, safety levels
+│   ├── model_fetcher.py  # Автозагрузка и фильтрация моделей из Gemini / OpenAI API
+│   ├── model_profiles.py # Профили моделей с переключением в GUI
+│   ├── session_store.py  # Persist сессий и индекса
+│   ├── session_utils.py  # Session helpers, ID generation
+│   ├── run_logger.py     # JSONL логирование каждого run
+│   ├── runtime_prompt_policy.py # Runtime-слой промпта (дата, ОС, политика)
+│   ├── text_utils.py     # Форматирование, compact, elide, truncate
+│   ├── message_context.py # Message context helper
+│   ├── message_utils.py  # Stringify, compact content
+│   ├── input_sanitizer.py # Очистка input от control-символов
+│   ├── multimodal.py     # Image input, base64, MIME detection
+│   ├── errors.py          # Error formatting, ErrorType
+│   ├── tool_args.py       # Canonicalize, inspect tool args
+│   ├── tool_results.py    # Parse tool execution results
+│   ├── tool_issues.py     # Build tool issues, fingerprints
+│   ├── node_errors.py     # Provider-specific errors
+│   ├── constants.py       # Константы промптов, лимитов
+│   ├── validation.py      # Validation helpers
+│   ├── fast_copy.py       # Clipboard-safe copy helpers
+│   └── utils.py           # Misc utilities
+├── tools/                # Встроенные инструменты и MCP-интеграция (7 файлов)
+│   ├── filesystem.py      # read_file, write_file, edit_file, list_directory, search, tail…
+│   ├── filesystem_impl/   # Низкоуровневая реализация filesystem-операций
+│   │   ├── __init__.py
+│   │   ├── manager.py     # FilesystemManager
+│   │   ├── editing.py     # Diff-based editing helpers
+│   │   └── reader.py      # File reading with bounds
+│   ├── local_shell.py     # cli_exec, shell streaming, command classification
+│   ├── search_tools.py    # web_search, fetch_content, batch_web_search (Tavily)
+│   ├── system_tools.py    # get_system_info, get_public_ip, network_info
+│   ├── process_tools.py   # run_background_process, process management
+│   ├── user_input_tool.py # request_user_input — блокирующий выбор пользователя
+│   └── tool_registry.py   # ToolRegistry — загрузка, metadata, MCP clients
+├── ui/                    # Qt GUI (~13 модулей)
+│   ├── main_window.py     # Entry point re-export
+│   ├── main_window_state.py # State machine окна (busy, initialized, error)
+│   ├── runtime.py         # Runtime snapshot builder
+│   ├── runtime_payloads.py # Payload builders для GUI events
+│   ├── runtime_session.py # Session coordination, load/save
+│   ├── runtime_worker.py  # Async worker thread, event loop для графа
+│   ├── streaming.py       # StreamEvent, event routing
+│   ├── theme.py           # QSS stylesheet, палитра, icons
+│   ├── tool_message_utils.py # Tool message formatting для GUI
+│   ├── visibility.py      # Widget visibility helpers
+│   ├── window_components/ # Builders и controllers главного окна (7 файлов)
+│   │   ├── __init__.py
+│   │   ├── main_window.py      # MainWindow — главное окно, menu, layout
+│   │   ├── inspector_controller.py # Inspector panel controller
+│   │   ├── sidebar_controller.py   # Sidebar controller
+│   │   ├── status_bar_manager.py   # Status bar manager
+│   │   ├── menu_builder.py         # Menu builder
+│   │   └── workspace_builder.py    # Workspace layout builder
+│   └── widgets/           # Виджеты интерфейса (11 файлов)
+│       ├── __init__.py    # Экспорт всех public-классов
+│       ├── transcript.py  # ChatTranscriptWidget, ConversationTurnWidget
+│       ├── tools.py       # ToolCardWidget, CliExecWidget
+│       ├── tool_group.py  # ToolGroupWidget — контейнер для группы tool cards
+│       ├── composer.py    # ComposerTextEdit — редактор ввода с @-mentions
+│       ├── messages.py    # AssistantMessageWidget, UserMessageWidget, NoticeWidget…
+│       ├── foundation.py  # Базовые виджеты: CollapsibleSection, CodeBlockWidget, ElidedLabel…
+│       ├── attachments.py # ImageAttachmentChipWidget, ImageAttachmentStripWidget
+│       ├── dialogs.py     # ApprovalDialog, ModelSettingsDialog, InfoPopupDialog
+│       ├── panels.py      # OverviewPanelWidget, InspectorPanelWidget, ToolsPanelWidget
+│       └── sidebar.py     # SessionSidebarWidget, SessionListModel
+└── tests/                # 17 тестовых файлов (~370K байт)
 ```
 
 ---
 
 ## Тесты
 
-```powershell
-venv\Scripts\python.exe -m unittest discover -s tests -p "test_*.py"
-```
+18 тестовых файлов:
 
-Или через `pytest`, если установлен:
+| Файл | Что покрывает |
+|---|---|
+| `test_model_fetcher.py` | Фильтрация моделей, нормализация имён, коды ошибок API, fallback-логика |
+| `test_cli_ux.py` | GUI: composer, transcript, tool cards, streaming, sidebar, attachments, history, mentions, approvals |
+| `test_stream_and_filesystem.py` | Streaming events, filesystem tools, tool output, cli_exec |
+| `test_runtime_refactor.py` | Runtime payloads, transcript restore, tool group logic, run lifecycle |
+| `test_critic_graph.py` | LangGraph workflow, node orchestration, tool batching |
+| `test_self_correction_engine.py` | Recovery strategies, fingerprinting, loop detection |
+| `test_policy_engine.py` | Shell command classification, tool metadata, approval rules |
+| `test_model_profiles.py` | Profile CRUD, switching, validation, serialization |
+| `test_session_utils.py` | Session ID generation, index management |
+| `test_runtime_session_coordination.py` | Session state coordination, load/save |
+| `test_tooling_refactor.py` | Tool registry, MCP loading, tool metadata |
+| `test_input_sanitizer.py` | Input sanitization, truncation, control chars |
+| `test_logging_config.py` | Log configuration, sensitive data filtering |
+| `test_intent_engine.py` | Intent parsing, routing |
+| `test_main_window_facade.py` | MainWindow facade behavior |
+| `test_ui_helpers.py` | UI helper utilities |
+| `test_refactor_services.py` | Service refactoring, internal APIs |
+| `test_runtime_payloads.py` | Payload builders, serialization |
+
+Запуск:
 
 ```powershell
 venv\Scripts\python.exe -m pytest
 ```
-
-Покрытие включает: runtime graph, approvals, recovery, policy engine, session storage, checkpoints, model profiles, GUI и composer UX.
 
 ---
 

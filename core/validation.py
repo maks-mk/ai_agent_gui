@@ -44,18 +44,7 @@ def validate(result: str, context: ValidationContext) -> Optional[str]:
         return None
 
     try:
-        if tool_name in ("write_file", "edit_file"):
-            path = _extract_path(args)
-            if not path:
-                return None
-
-            target = _resolve_workspace_path(path)
-            if not target.exists():
-                return format_error(ErrorType.VALIDATION, f"File {path} not found or was not created.")
-            if tool_name == "write_file" and target.stat().st_size == 0 and args.get("content"):
-                return format_error(ErrorType.VALIDATION, f"File {path} is empty after write.")
-
-        elif tool_name in ("safe_delete_file", "safe_delete_directory"):
+        if tool_name in ("safe_delete_file", "safe_delete_directory"):
             path = _extract_path(args)
             if path and _resolve_workspace_path(path).exists():
                 target_type = "File" if "file" in tool_name else "Directory"

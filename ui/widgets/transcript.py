@@ -110,10 +110,26 @@ class ConversationTurnWidget(QWidget):
             self._assistant_markdown = ""
             return
 
-        if self.tool_group is not None and (not self._timeline or self._timeline[-1][0] != "assistant"):
+        starts_new_assistant_block = not self._timeline or self._timeline[-1][0] != "assistant"
+        resumes_after_tool_group = self.tool_group is not None and starts_new_assistant_block
+        if resumes_after_tool_group:
             self.tool_group.collapse()
 
         segment = self._ensure_assistant_segment()
+        if resumes_after_tool_group and self._assistant_markdown:
+            prefix_len = self._common_prefix_length(self._assistant_markdown, markdown)
+            exact_prefix = markdown.startswith(self._assistant_markdown)
+            significant_prefix = bool(self._assistant_markdown) and (
+                prefix_len >= min(len(self._assistant_markdown), 48)
+                or prefix_len >= int(len(self._assistant_markdown) * 0.8)
+            )
+            if prefix_len > 0 and (exact_prefix or significant_prefix):
+                segment_text = markdown[prefix_len:].lstrip("\n")
+                if segment_text:
+                    segment.set_markdown(segment_text)
+                self._assistant_markdown = markdown
+                return
+
         if not self._assistant_markdown:
             segment.set_markdown(markdown)
         elif markdown.startswith(self._assistant_markdown):
@@ -151,6 +167,15 @@ class ConversationTurnWidget(QWidget):
         card.update_started_payload(payload)
         return card
 
+    @staticmethod
+    def _tool_group_for_card(card: ToolCardWidget) -> ToolGroupWidget | None:
+        parent = card.parentWidget()
+        while parent is not None:
+            if isinstance(parent, ToolGroupWidget):
+                return parent
+            parent = parent.parentWidget()
+        return None
+
     def finish_tool(self, payload: dict[str, Any], *, collapse_delay_ms: int | None = None) -> None:
         tool_id = payload.get("tool_id", "")
         card = self.tool_cards.get(tool_id)
@@ -179,8 +204,7 @@ class ConversationTurnWidget(QWidget):
 
     def complete(self, stats: str) -> None:
         if self.tool_group is not None:
-            self.tool_group.collapse()
-            self.tool_group = None
+            self.tool_group.refresh_completion(auto_collapse=False)
         self._append_block("stats", RunStatsWidget(stats, parent=self))
 
     def restore_blocks(self, blocks: list[dict[str, Any]]) -> None:

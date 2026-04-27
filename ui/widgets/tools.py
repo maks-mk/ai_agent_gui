@@ -466,8 +466,8 @@ class ToolCardWidget(QFrame):
     def finish(self, payload: dict[str, Any], *, collapse_delay_ms: int | None = None) -> None:
         merged_payload = dict(self.payload)
         merged_payload.update(payload)
-        merged_payload.setdefault("phase", "finished")
-        merged_payload.setdefault("display_state", "finished")
+        merged_payload["phase"] = "finished"
+        merged_payload["display_state"] = "finished"
         self._apply_payload_visual_state(merged_payload, finished=True)
         normalized_args = self._normalize_args(self.payload.get("args", {}))
         is_error = bool(self.payload.get("is_error", False))
@@ -526,6 +526,10 @@ class ToolCardWidget(QFrame):
                 self.diff_section.content.set_diff(diff_text, source_path=str(normalized_args.get("path", "") or ""))
             elif isinstance(self.diff_section.content, CodeBlockWidget):
                 self.diff_section.content.set_code(diff_text, "diff")
+
+        if not self._is_cli_exec:
+            self.tool_button.setChecked(False)
+            self._set_args_expanded(False)
 
     def _set_args_expanded(self, expanded: bool) -> None:
         if self._is_cli_exec:

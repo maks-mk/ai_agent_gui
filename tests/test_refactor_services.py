@@ -227,6 +227,9 @@ class RefactorServicesTests(unittest.TestCase):
         joined = "\n".join(system_texts)
         self.assertIn("REQUEST_USER_INPUT POLICY:", joined)
         self.assertIn("Never batch multiple request_user_input calls.", joined)
+        self.assertIn("Do not use request_user_input for approvals of risky actions", joined)
+        self.assertIn("Provide 2 to 5 short mutually exclusive options.", joined)
+        self.assertIn("Make the request_user_input tool call by itself.", joined)
 
     def test_context_builder_does_not_inject_request_user_input_demo_policy(self):
         builder = ContextBuilder(
@@ -335,6 +338,7 @@ class RefactorServicesTests(unittest.TestCase):
 
         system_texts = [str(message.content) for message in context if isinstance(message, SystemMessage)]
         self.assertTrue(any("Do not call request_user_input again" in text for text in system_texts))
+        self.assertTrue(any("latest request_user_input ToolMessage" in text for text in system_texts))
 
     def test_context_builder_stringifies_openai_assistant_content_lists(self):
         builder = ContextBuilder(

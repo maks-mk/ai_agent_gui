@@ -1,9 +1,12 @@
 from __future__ import annotations
 
+import asyncio
 import json
+from enum import Enum
 from typing import Any
 
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, QThread, QTimer, Qt, Signal
+from PySide6.QtGui import QStandardItem
 from PySide6.QtWidgets import (
     QApplication,
     QCheckBox,
@@ -28,9 +31,73 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from core.model_fetcher import (
+    AuthError,
+    EmptyResultError,
+    FetchError,
+    GeminiModelFetcher,
+    ModelEntry,
+    ModelFetcher,
+    NetworkError,
+    OpenAICompatibleModelFetcher,
+    RateLimitError,
+    ServerError,
+)
 from core.model_profiles import ALLOWED_PROVIDERS, generate_profile_id, normalize_profiles_payload, sanitize_profile_id
 from ui.theme import TEXT_MUTED, TEXT_PRIMARY
 from .foundation import CollapsibleSection, _fa_icon, _make_mono_font
+
+
+class ModelLoadState(str, Enum):
+    IDLE = "idle"
+    LOADING = "loading"
+    LOADED = "loaded"
+    FALLBACK = "fallback"
+    ERROR = "error"
+
+
+def _fetch_error_message(error: FetchError) -> str:
+    if isinstance(error, AuthError):
+        return "Неверный API Key. Проверьте ключ."
+    if isinstance(error, RateLimitError):
+        return "Превышен лимит запросов. Подождите."
+    if isinstance(error, ServerError):
+        return "Ошибка сервера. Попробуйте позже."
+    if isinstance(error, NetworkError):
+        return "Нет соединения. Проверьте сеть."
+    if isinstance(error, EmptyResultError):
+        return "Нет доступных моделей для этого ключа."
+    return "Не удалось загрузить модели."
+
+
+class ModelFetchWorker(QThread):
+    fetched = Signal(int, object)
+    failed = Signal(int, str)
+
+    def __init__(
+        self,
+        request_id: int,
+        fetcher: ModelFetcher,
+        api_key: str,
+        base_url: str = "",
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._request_id = int(request_id)
+        self._fetcher = fetcher
+        self._api_key = str(api_key or "").strip()
+        self._base_url = str(base_url or "").strip()
+
+    def run(self) -> None:
+        try:
+            result = asyncio.run(self._fetcher.fetch(self._api_key, self._base_url))
+        except FetchError as error:
+            self.failed.emit(self._request_id, _fetch_error_message(error))
+            return
+        except Exception:
+            self.failed.emit(self._request_id, "Не удалось загрузить модели.")
+            return
+        self.fetched.emit(self._request_id, result)
 
 
 class ModelSettingsDialog(QDialog):
@@ -52,6 +119,16 @@ class ModelSettingsDialog(QDialog):
         self._loading_form = False
         self._filter_text = ""
         self._result_payload = normalized
+        self._form_enabled = False
+        self._model_state = ModelLoadState.IDLE
+        self._model_cache: dict[tuple[str, ...], list[ModelEntry]] = {}
+        self._model_entries_by_id: dict[str, ModelEntry] = {}
+        self._model_workers: list[ModelFetchWorker] = []
+        self._fetch_request_id = 0
+        self._fetch_debounce = QTimer(self)
+        self._fetch_debounce.setSingleShot(True)
+        self._fetch_debounce.setInterval(600)
+        self._fetch_debounce.timeout.connect(self._start_fetch)
         self._name_manual_flags = self._compute_initial_name_manual_flags()
 
         root = QVBoxLayout(self)
@@ -238,10 +315,25 @@ class ModelSettingsDialog(QDialog):
         self.provider_combo.addItems(["openai", "gemini"])
         self.provider_combo.setAccessibleName("Provider")
 
-        self.model_edit = QLineEdit()
-        self.model_edit.setPlaceholderText("e.g. openai/gpt-oss-120b or gemini-1.5-flash")
-        self.model_edit.setClearButtonEnabled(True)
-        self.model_edit.setAccessibleName("Model")
+        self.model_combo = QComboBox()
+        self.model_combo.setAccessibleName("Model")
+        self.model_combo.setInsertPolicy(QComboBox.InsertPolicy.NoInsert)
+        self.model_combo.setEditable(False)
+
+        self.model_text_edit = QLineEdit()
+        self.model_text_edit.setPlaceholderText("Введите название модели вручную")
+        self.model_text_edit.setClearButtonEnabled(True)
+        self.model_text_edit.setAccessibleName("Model")
+
+        self.model_reload_button = QToolButton()
+        self.model_reload_button.setObjectName("ModelSettingsInlineToolButton")
+        self.model_reload_button.setIcon(_fa_icon("fa5s.redo-alt", color=TEXT_MUTED, size=12))
+        self.model_reload_button.setToolTip("Повторить загрузку")
+        self.model_reload_button.setAccessibleName("Retry model loading")
+
+        self.model_loading_label = QLabel("")
+        self.model_loading_label.setObjectName("ModelSettingsHintText")
+        self.model_loading_label.setWordWrap(True)
 
         self.api_key_edit = QLineEdit()
         self.api_key_edit.setEchoMode(QLineEdit.Password)
@@ -283,6 +375,22 @@ class ModelSettingsDialog(QDialog):
         api_key_layout.addWidget(self.api_key_reveal_button, 0, Qt.AlignVCenter)
         api_key_layout.addWidget(self.api_key_copy_button, 0, Qt.AlignVCenter)
 
+        model_row = QWidget()
+        model_row.setObjectName("ModelSettingsFieldRow")
+        model_row_layout = QHBoxLayout(model_row)
+        model_row_layout.setContentsMargins(0, 0, 0, 0)
+        model_row_layout.setSpacing(6)
+        model_row_layout.addWidget(self.model_combo, 1)
+        model_row_layout.addWidget(self.model_text_edit, 1)
+        model_row_layout.addWidget(self.model_reload_button, 0, Qt.AlignVCenter)
+
+        model_field = QWidget()
+        model_field_layout = QVBoxLayout(model_field)
+        model_field_layout.setContentsMargins(0, 0, 0, 0)
+        model_field_layout.setSpacing(4)
+        model_field_layout.addWidget(model_row)
+        model_field_layout.addWidget(self.model_loading_label)
+
         images_row = QWidget()
         images_layout = QVBoxLayout(images_row)
         images_layout.setContentsMargins(0, 2, 0, 2)
@@ -303,14 +411,15 @@ class ModelSettingsDialog(QDialog):
 
         name_label.setBuddy(self.name_edit)
         provider_label.setBuddy(self.provider_combo)
-        model_label.setBuddy(self.model_edit)
+        model_label.setBuddy(self.model_text_edit)
         api_key_label.setBuddy(self.api_key_edit)
         base_url_label.setBuddy(self.base_url_edit)
         images_label.setBuddy(self.supports_images_checkbox)
+        self.model_field_label = model_label
 
         form_layout.addRow(name_label, self.name_edit)
         form_layout.addRow(provider_label, self.provider_combo)
-        form_layout.addRow(model_label, self.model_edit)
+        form_layout.addRow(model_label, model_field)
         form_layout.addRow(api_key_label, api_key_row)
         form_layout.addRow(base_url_label, self.base_url_edit)
         form_layout.addRow(images_label, images_row)
@@ -366,13 +475,16 @@ class ModelSettingsDialog(QDialog):
 
         self.name_edit.textEdited.connect(self._on_name_edited)
         self.provider_combo.currentTextChanged.connect(self._on_provider_changed)
-        self.model_edit.textChanged.connect(self._on_model_changed)
-        self.api_key_edit.textChanged.connect(self._on_form_changed)
+        self.model_combo.currentTextChanged.connect(self._on_model_changed)
+        self.model_text_edit.textChanged.connect(self._on_model_changed)
+        self.api_key_edit.textChanged.connect(self._on_api_key_changed)
         self.api_key_reveal_button.clicked.connect(self._toggle_api_key_visibility)
         self.api_key_copy_button.clicked.connect(self._copy_api_key)
-        self.base_url_edit.textChanged.connect(self._on_form_changed)
+        self.base_url_edit.textChanged.connect(self._on_base_url_changed)
+        self.model_reload_button.clicked.connect(self._reload_models)
         self.supports_images_checkbox.checkStateChanged.connect(self._on_form_changed)
 
+        self._set_model_state(ModelLoadState.IDLE)
         self._refresh_profile_list()
         if self.profile_list.count() > 0:
             self.profile_list.setCurrentRow(self._preferred_row_for_open())
@@ -387,10 +499,10 @@ class ModelSettingsDialog(QDialog):
         return self.profile_list.currentRow()
 
     def _set_form_enabled(self, enabled: bool) -> None:
+        self._form_enabled = bool(enabled)
         for widget in (
             self.name_edit,
             self.provider_combo,
-            self.model_edit,
             self.api_key_edit,
             self.base_url_edit,
             self.supports_images_checkbox,
@@ -399,6 +511,238 @@ class ModelSettingsDialog(QDialog):
         self.delete_button.setEnabled(enabled)
         if enabled:
             self._update_base_url_field_state(self.provider_combo.currentText())
+        self._set_model_state(self._model_state, message=self.model_loading_label.text())
+
+    def _normalized_provider(self) -> str:
+        provider = str(self.provider_combo.currentText() or "").strip().lower()
+        return provider if provider in ALLOWED_PROVIDERS else "openai"
+
+    def _invalidate_pending_fetches(self) -> None:
+        self._fetch_debounce.stop()
+        self._fetch_request_id += 1
+
+    def _clear_model_options(self) -> None:
+        self._model_entries_by_id = {}
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        self.model_combo.blockSignals(False)
+
+    def _set_combo_placeholder(self, text: str) -> None:
+        placeholder = str(text or "").strip()
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        if placeholder:
+            self.model_combo.addItem(placeholder)
+            self.model_combo.setCurrentIndex(0)
+        self.model_combo.blockSignals(False)
+
+    def _set_model_state(self, state: ModelLoadState, *, message: str = "") -> None:
+        self._model_state = state
+        provider = self._normalized_provider()
+        is_openai = provider == "openai"
+        show_combo = state in {ModelLoadState.LOADING, ModelLoadState.LOADED, ModelLoadState.ERROR}
+        show_text = not show_combo
+        status_text = str(message or "").strip()
+
+        self.model_combo.setVisible(show_combo)
+        self.model_text_edit.setVisible(show_text)
+        self.model_combo.setEditable(is_openai and state == ModelLoadState.LOADED)
+        self.model_combo.setEnabled(self._form_enabled and state == ModelLoadState.LOADED)
+        self.model_text_edit.setEnabled(self._form_enabled and state == ModelLoadState.FALLBACK)
+        self.model_reload_button.setVisible(
+            self._form_enabled
+            and (state == ModelLoadState.ERROR or (state == ModelLoadState.FALLBACK and is_openai))
+        )
+        self.model_reload_button.setEnabled(self._form_enabled)
+        self.model_loading_label.setText(status_text)
+        self.model_loading_label.setVisible(bool(status_text))
+        if hasattr(self, "model_field_label"):
+            self.model_field_label.setBuddy(self.model_combo if show_combo else self.model_text_edit)
+
+    def _set_current_model_widgets_text(self, value: str) -> None:
+        text = str(value or "").strip()
+        self.model_text_edit.blockSignals(True)
+        self.model_text_edit.setText(text)
+        self.model_text_edit.blockSignals(False)
+
+        self.model_combo.blockSignals(True)
+        if self.model_combo.count() == 0:
+            self.model_combo.setCurrentIndex(-1)
+        if self.model_combo.isEditable():
+            self.model_combo.setEditText(text)
+        else:
+            index = self.model_combo.findText(text)
+            if index >= 0:
+                self.model_combo.setCurrentIndex(index)
+        self.model_combo.blockSignals(False)
+
+    def _get_current_model_value(self) -> str:
+        if self._model_state == ModelLoadState.LOADED:
+            return str(self.model_combo.currentText() or "").strip()
+        return str(self.model_text_edit.text() or "").strip()
+
+    def _current_fetch_inputs(self) -> tuple[str, str, str, ModelFetcher, tuple[str, ...]] | None:
+        provider = self._normalized_provider()
+        api_key = str(self.api_key_edit.text() or "").strip()
+        if not api_key:
+            return None
+        if provider == "gemini":
+            return provider, api_key, "", GeminiModelFetcher(), (provider, api_key)
+        base_url = str(self.base_url_edit.text() or "").strip().rstrip("/")
+        if not base_url:
+            return None
+        return provider, api_key, base_url, OpenAICompatibleModelFetcher(), (provider, api_key, base_url)
+
+    def _schedule_fetch(self, delay_ms: int = 600) -> None:
+        if self._current_row() < 0:
+            return
+        if self._current_fetch_inputs() is None:
+            self._set_model_state(ModelLoadState.IDLE)
+            return
+        self._fetch_debounce.setInterval(max(0, int(delay_ms)))
+        self._fetch_debounce.start()
+
+    def _cleanup_model_worker(self, worker: ModelFetchWorker) -> None:
+        if worker in self._model_workers:
+            self._model_workers.remove(worker)
+        worker.deleteLater()
+
+    def _append_gemini_model_items(self, entries: list[ModelEntry]) -> list[str]:
+        ordered_ids: list[str] = []
+        gemini_ids = sorted((entry.id for entry in entries if entry.family == "gemini"), reverse=True)
+        gemma_ids = sorted((entry.id for entry in entries if entry.family == "gemma"), reverse=True)
+        for model_id in gemini_ids:
+            self.model_combo.addItem(model_id)
+            ordered_ids.append(model_id)
+        if gemma_ids and gemini_ids:
+            separator = QStandardItem("── Gemma ──")
+            separator.setFlags(Qt.ItemFlag.NoItemFlags)
+            self.model_combo.model().appendRow(separator)
+        for model_id in gemma_ids:
+            self.model_combo.addItem(model_id)
+            ordered_ids.append(model_id)
+        return ordered_ids
+
+    def _apply_entry_image_support(self, model_id: str) -> None:
+        entry = self._model_entries_by_id.get(str(model_id or "").strip())
+        if entry is None:
+            return
+        self.supports_images_checkbox.setChecked(bool(entry.supports_image_input))
+
+    def _apply_loaded_models(self, entries: list[ModelEntry]) -> None:
+        provider = self._normalized_provider()
+        current_value = self._get_current_model_value()
+        self._model_entries_by_id = {entry.id: entry for entry in entries}
+
+        self.model_combo.blockSignals(True)
+        self.model_combo.clear()
+        if provider == "gemini":
+            ordered_ids = self._append_gemini_model_items(entries)
+        else:
+            ordered_ids = sorted(entry.id for entry in entries)
+            for model_id in ordered_ids:
+                self.model_combo.addItem(model_id)
+
+        selected_model = current_value if current_value in self._model_entries_by_id else (ordered_ids[0] if ordered_ids else "")
+        if selected_model:
+            selected_index = self.model_combo.findText(selected_model)
+            if selected_index >= 0:
+                self.model_combo.setCurrentIndex(selected_index)
+            elif provider == "openai":
+                self.model_combo.setEditText(selected_model)
+        self.model_combo.blockSignals(False)
+
+        if not selected_model and provider == "openai":
+            self._set_model_state(
+                ModelLoadState.FALLBACK,
+                message="Список моделей пуст. Введите название модели вручную.",
+            )
+            return
+
+        self._set_current_model_widgets_text(selected_model)
+        self._set_model_state(ModelLoadState.LOADED)
+        self._apply_entry_image_support(selected_model)
+        self._on_form_changed()
+
+    def _start_fetch(self) -> None:
+        self._fetch_debounce.setInterval(600)
+        request = self._current_fetch_inputs()
+        if request is None:
+            self._set_model_state(ModelLoadState.IDLE)
+            return
+
+        provider, api_key, base_url, fetcher, cache_key = request
+        cached_entries = self._model_cache.get(cache_key)
+        if cached_entries is not None:
+            self._apply_loaded_models(cached_entries)
+            return
+
+        self._fetch_request_id += 1
+        request_id = self._fetch_request_id
+        self._set_combo_placeholder("Загрузка моделей…")
+        self._set_model_state(ModelLoadState.LOADING, message="Загрузка…")
+
+        worker = ModelFetchWorker(request_id, fetcher, api_key, base_url, parent=self)
+        self._model_workers.append(worker)
+        worker.fetched.connect(self._on_models_fetched)
+        worker.failed.connect(self._on_models_failed)
+        worker.finished.connect(lambda: self._cleanup_model_worker(worker))
+        worker.start()
+
+    def _on_models_fetched(self, request_id: int, payload: object) -> None:
+        if request_id != self._fetch_request_id:
+            return
+        entries = [entry for entry in list(payload or []) if isinstance(entry, ModelEntry)]
+        request = self._current_fetch_inputs()
+        if request is None:
+            return
+        cache_key = request[-1]
+        self._model_cache[cache_key] = entries
+        self._apply_loaded_models(entries)
+
+    def _on_models_failed(self, request_id: int, message: str) -> None:
+        if request_id != self._fetch_request_id:
+            return
+        current_value = self._get_current_model_value()
+        self._set_current_model_widgets_text(current_value)
+        if self._normalized_provider() == "openai":
+            self._set_model_state(ModelLoadState.FALLBACK, message=message)
+            return
+        self._set_combo_placeholder(current_value or "Модели недоступны")
+        self._set_model_state(ModelLoadState.ERROR, message=message)
+
+    def _reload_models(self) -> None:
+        if self._loading_form:
+            return
+        request = self._current_fetch_inputs()
+        if request is not None:
+            self._model_cache.pop(request[-1], None)
+        self._invalidate_pending_fetches()
+        if request is None:
+            self._set_model_state(ModelLoadState.IDLE)
+            return
+        self._schedule_fetch(0)
+
+    def _on_api_key_changed(self, _text: str) -> None:
+        if self._loading_form:
+            return
+        self._invalidate_pending_fetches()
+        self._clear_model_options()
+        self._set_model_state(ModelLoadState.IDLE)
+        if self._current_fetch_inputs() is not None:
+            self._schedule_fetch(600)
+        self._on_form_changed()
+
+    def _on_base_url_changed(self, _text: str) -> None:
+        if self._loading_form:
+            return
+        if self._normalized_provider() == "openai":
+            self._invalidate_pending_fetches()
+            self._clear_model_options()
+            self._set_model_state(ModelLoadState.IDLE)
+            if self._current_fetch_inputs() is not None:
+                self._schedule_fetch(600)
+        self._on_form_changed()
 
     def _set_save_state(self, message: str) -> None:
         text = str(message or "").strip()
@@ -653,8 +997,12 @@ class ModelSettingsDialog(QDialog):
 
     def _sync_form_to_profile(self, row: int) -> None:
         if row < 0 or row >= len(self._profiles):
+            self._invalidate_pending_fetches()
+            self._clear_model_options()
+            self._set_current_model_widgets_text("")
             self._selected_row = -1
             self._set_form_enabled(False)
+            self._set_model_state(ModelLoadState.IDLE)
             self.form_hint.setText("Select a profile and edit fields on the right.")
             self.profile_state_chip.setText("No profile selected")
             self.summary_provider.setText("Provider: —")
@@ -665,17 +1013,20 @@ class ModelSettingsDialog(QDialog):
             return
         profile = self._profiles[row]
         self._loading_form = True
+        self._invalidate_pending_fetches()
+        self._clear_model_options()
         self._set_form_enabled(True)
         self.name_edit.setText(str(profile.get("id", "")))
         provider = str(profile.get("provider", "openai")).strip().lower()
         if provider not in ALLOWED_PROVIDERS:
             provider = "openai"
         self.provider_combo.setCurrentText(provider)
-        self.model_edit.setText(str(profile.get("model", "")))
+        self._set_current_model_widgets_text(str(profile.get("model", "")))
         self.api_key_edit.setText(str(profile.get("api_key", "")))
         self.base_url_edit.setText(str(profile.get("base_url", "")))
         self.supports_images_checkbox.setChecked(bool(profile.get("supports_image_input")))
         self._update_base_url_field_state(provider)
+        self._set_model_state(ModelLoadState.IDLE)
         self._loading_form = False
         self._selected_row = row
         profile_id = str(profile.get("id") or "").strip() or "(unnamed)"
@@ -693,6 +1044,8 @@ class ModelSettingsDialog(QDialog):
         )
         self._refresh_profile_counts()
         self._refresh_profile_item_states()
+        if self._current_fetch_inputs() is not None:
+            self._schedule_fetch(100)
 
     def _sync_current_profile_from_form(self, row: int | None = None) -> None:
         if self._loading_form:
@@ -700,14 +1053,12 @@ class ModelSettingsDialog(QDialog):
         target_row = self._current_row() if row is None else row
         if target_row < 0 or target_row >= len(self._profiles):
             return
-        provider = str(self.provider_combo.currentText() or "").strip().lower()
-        if provider not in ALLOWED_PROVIDERS:
-            provider = "openai"
+        provider = self._normalized_provider()
         base_url = str(self.base_url_edit.text() or "").strip() if provider == "openai" else ""
         self._profiles[target_row] = {
             "id": str(self.name_edit.text() or "").strip(),
             "provider": provider,
-            "model": str(self.model_edit.text() or "").strip(),
+            "model": self._get_current_model_value(),
             "api_key": str(self.api_key_edit.text() or "").strip(),
             "base_url": base_url,
             "supports_image_input": self.supports_images_checkbox.isChecked(),
@@ -720,6 +1071,12 @@ class ModelSettingsDialog(QDialog):
             model_name = str(self._profiles[target_row].get("model") or "").strip()
             enabled = "yes" if bool(self._profiles[target_row].get("enabled", True)) else "no"
             item.setToolTip(f"Provider: {provider_text}\nModel: {model_name}\nEnabled: {enabled}".strip())
+        if target_row == self._selected_row:
+            self.summary_provider.setText(f"Provider: {provider or '—'}")
+            self.summary_model.setText(f"Model: {self._profiles[target_row].get('model') or '—'}")
+            self.summary_images.setText(
+                "Image input: on" if bool(self._profiles[target_row].get("supports_image_input")) else "Image input: off"
+            )
         self._refresh_profile_counts()
 
     def _reconcile_active_profile(self) -> None:
@@ -792,10 +1149,13 @@ class ModelSettingsDialog(QDialog):
         row = self._current_row()
         if row < 0 or row >= len(self._profiles):
             return
+        current_model = self._get_current_model_value()
+        if self._model_state == ModelLoadState.LOADED:
+            self._apply_entry_image_support(current_model)
         current_name = str(self.name_edit.text() or "").strip()
         if (not self._name_manual_flags[row]) or not current_name:
             self._loading_form = True
-            self.name_edit.setText(self._suggest_unique_id(self.model_edit.text(), row=row))
+            self.name_edit.setText(self._suggest_unique_id(current_model, row=row))
             self._loading_form = False
         self._on_form_changed()
 
@@ -807,10 +1167,16 @@ class ModelSettingsDialog(QDialog):
         if self._loading_form:
             return
         self._update_base_url_field_state(provider)
+        self._invalidate_pending_fetches()
+        self._clear_model_options()
+        self._loading_form = True
+        self._set_current_model_widgets_text("")
         if str(provider or "").strip().lower() != "openai":
-            self._loading_form = True
             self.base_url_edit.clear()
-            self._loading_form = False
+        self._loading_form = False
+        self._set_model_state(ModelLoadState.IDLE)
+        if self._current_fetch_inputs() is not None:
+            self._schedule_fetch(600)
         self._on_form_changed()
 
     def _add_profile(self) -> None:
