@@ -167,7 +167,7 @@ class AgentMixin:
             has_tool_calls = bool(tools_available and t_calls)
             if has_tool_calls and open_tool_issue and open_tool_issue.get("kind") == "approval_denied":
                 response = AIMessage(
-                    content="Okay, I did not do that because you chose No. Tell me what you want to do instead.",
+                    content="Okay, I did not do that because you declined the action. Tell me what you want to do instead.",
                     additional_kwargs=response.additional_kwargs,
                     response_metadata=response.response_metadata,
                     usage_metadata=response.usage_metadata,

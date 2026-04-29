@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 from typing import Any, Callable, Sequence
 
@@ -11,11 +12,7 @@ class ApiKeyRotationError(RuntimeError):
 
 
 class ApiKeyRotationExhaustedError(ApiKeyRotationError):
-    """Raised when every key in the pool has exhausted rate-limit retries."""
-
-
-class ApiKeyAuthenticationPoolError(ApiKeyRotationError):
-    """Raised when every key in the pool is unauthorized or invalid."""
+    """Raised when every key in the pool has been tried in one full circle without success."""
 
 
 def _normalized_error_text(error: Exception) -> str:
@@ -62,6 +59,14 @@ def classify_api_key_error(error: Exception) -> str | None:
     return None
 
 
+def _mask_key(key: str, tail: int = 5) -> str:
+    """Return key with only the first chars and last *tail* visible, middle replaced with ***.
+    Short keys (<= tail+2) are returned as-is with *** appended."""
+    if len(key) <= tail + 2:
+        return key[:2] + "***"
+    return key[: -tail].rstrip() + "***" + key[-tail:]
+
+
 class RotatingChatModel:
     def __init__(
         self,
@@ -77,6 +82,7 @@ class RotatingChatModel:
         self._profile_store = ModelProfileStore(profile_store_path)
         self._llm_factory = llm_factory
         self._bound_tools = list(bound_tools or [])
+        self._logger = logging.getLogger("agent.api_key_rotation")
         self._prototype_model = self._build_model(self._initial_api_key())
 
     def __getattr__(self, name: str) -> Any:
@@ -94,30 +100,71 @@ class RotatingChatModel:
     async def ainvoke(self, input: Any, **kwargs: Any) -> Any:
         state = self._profile_store.get_api_key_state(self._profile_id)
         api_keys = list(state.get("api_keys") or [])
-        max_attempts = max(1, len(api_keys) or 1)
+
+        # Пул ключей не задан — работаем с дефолтным ключом из конфига.
+        if not api_keys:
+            return await self._build_model(self._initial_api_key()).ainvoke(input, **kwargs)
+
+        start_index = int(state.get("api_key_index") or 0)
+        total = len(api_keys)
         last_error: Exception | None = None
 
-        for attempt in range(max_attempts):
-            state = self._profile_store.get_api_key_state(self._profile_id)
-            active_key = str(state.get("current_key") or self._initial_api_key() or "").strip()
-            model = self._build_model(active_key)
+        for offset in range(total):
+            current_index = (start_index + offset) % total
+            active_key = api_keys[current_index]
+
+            self._logger.debug(
+                f"Attempt {offset + 1}/{total}: key #{current_index} "
+                f"for profile '{self._profile_id}'"
+            )
+
             try:
-                return await model.ainvoke(input, **kwargs)
+                result = await self._build_model(active_key).ainvoke(input, **kwargs)
+
+                # Успех. Если использовался не стартовый ключ — сохраняем
+                # новый индекс в store, чтобы следующий вызов начинался с него.
+                if offset != 0:
+                    self._profile_store.rotate_api_key(
+                        self._profile_id, api_keys[start_index]
+                    )
+                return result
+
             except Exception as exc:
                 error_kind = classify_api_key_error(exc)
-                if error_kind is None or not api_keys:
-                    raise
-                last_error = exc
-                state = self._profile_store.rotate_api_key(
-                    self._profile_id,
-                    active_key,
-                    invalidate=error_kind == "auth",
-                )
-                next_key = str(state.get("current_key") or "").strip()
-                if attempt >= max_attempts - 1 or not next_key or next_key == active_key:
-                    raise self._terminal_error(error_kind, state, exc) from exc
 
-        raise self._terminal_error("rate_limit", state, last_error or RuntimeError("API key rotation failed."))
+                if error_kind is None:
+                    # Non-key error (network, timeout, model error, etc.) —
+                    # propagate immediately; rotation will not help.
+                    self._logger.warning(
+                        f"Non-key error for profile '{self._profile_id}': {exc}"
+                    )
+                    raise
+
+                last_error = exc
+                next_index = (current_index + 1) % total
+                next_key_masked = _mask_key(api_keys[next_index]) if total > 1 else "(none)"
+                self._logger.info(
+                    f"Key #{current_index} ({_mask_key(active_key)}) returned "
+                    f"{error_kind} error for profile '{self._profile_id}' — "
+                    f"switching to key #{next_index} ({next_key_masked})"
+                )
+
+                # Advance the index in the store without marking the key as invalid.
+                self._profile_store.rotate_api_key(self._profile_id, active_key)
+
+        # Full circle completed — no key succeeded.
+        model_label = self._model_label()
+        tried_summary = ", ".join(
+            f"#{i}({_mask_key(k)})" for i, k in enumerate(api_keys)
+        )
+        self._logger.error(
+            f"All {total} keys exhausted for profile '{self._profile_id}' "
+            f"[{tried_summary}]. Last error: {last_error}"
+        )
+        raise ApiKeyRotationExhaustedError(
+            f"All API keys for '{model_label}' have been used without success. "
+            "Please try again later or check your key limits and validity."
+        ) from last_error
 
     def _build_model(self, api_key: str) -> Any:
         model = self._llm_factory(self._config, api_key_override=api_key)
@@ -136,15 +183,3 @@ class RotatingChatModel:
         if getattr(self._config, "provider", "") == "gemini":
             return str(getattr(self._config, "gemini_model", "") or self._profile_id or "model")
         return str(getattr(self._config, "openai_model", "") or self._profile_id or "model")
-
-    def _terminal_error(self, error_kind: str, state: dict[str, Any], error: Exception) -> ApiKeyRotationError:
-        model_label = self._model_label()
-        if error_kind == "auth":
-            return ApiKeyAuthenticationPoolError(
-                f"All API keys for '{model_label}' are unauthorized or invalid. "
-                "Open 'API Key Rotation' and remove or replace the broken keys."
-            )
-        return ApiKeyRotationExhaustedError(
-            f"All API keys for '{model_label}' hit rate limits or exhausted quota. "
-            "Try again later or update the rotation pool."
-        )

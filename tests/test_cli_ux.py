@@ -2467,46 +2467,48 @@ class GuiUxTests(unittest.TestCase):
                 }
             ],
         }
-        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
-        self.addCleanup(dialog.close)
-        self._process_events()
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+            self.addCleanup(dialog.close)
+            self._process_events()
 
-        saved_payloads = []
-        dialog.profiles_saved.connect(saved_payloads.append)
+            saved_payloads = []
+            dialog.profiles_saved.connect(saved_payloads.append)
 
-        class _AcceptedRotationDialog:
-            def __init__(self, *_args, **_kwargs):
-                pass
+            class _AcceptedRotationDialog:
+                def __init__(self, *_args, **_kwargs):
+                    pass
 
-            def exec(self):
-                return QDialog.Accepted
+                def exec(self):
+                    return QDialog.Accepted
 
-            def api_keys(self):
-                return ["sk-primary", "sk-secondary"]
+                def api_keys(self):
+                    return ["sk-primary", "sk-secondary"]
 
-        with mock.patch.object(widget_dialogs, "ApiKeyRotationDialog", _AcceptedRotationDialog):
-            dialog._edit_api_key_rotation()
+            with mock.patch.object(widget_dialogs, "ApiKeyRotationDialog", _AcceptedRotationDialog):
+                dialog._edit_api_key_rotation()
 
-        self.assertEqual(len(saved_payloads), 1)
-        self.assertEqual(saved_payloads[0]["profiles"][0]["api_keys"], ["sk-primary", "sk-secondary"])
-        self.assertEqual(saved_payloads[0]["profiles"][0]["api_key"], "sk-primary")
-        self.assertIn("Rotation pool saved", dialog.save_state_label.text())
+            self.assertEqual(len(saved_payloads), 1)
+            self.assertEqual(saved_payloads[0]["profiles"][0]["api_keys"], ["sk-primary", "sk-secondary"])
+            self.assertEqual(saved_payloads[0]["profiles"][0]["api_key"], "sk-primary")
+            self.assertIn("Rotation pool saved", dialog.save_state_label.text())
 
     def test_model_settings_dialog_applies_rotation_pool_per_profile(self):
-        dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
-        self.addCleanup(dialog.close)
-        dialog._add_profile()
-        self._process_events()
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
+            self.addCleanup(dialog.close)
+            dialog._add_profile()
+            self._process_events()
 
-        dialog.model_edit.setText("openai/gpt-4o")
-        dialog.api_key_edit.setText("sk-primary")
-        dialog._apply_api_key_rotation_to_profile(0, [" sk-primary ", "", "sk-secondary", "sk-primary"])
-        dialog._save_and_accept()
-        result = dialog.result_payload()
+            dialog.model_edit.setText("openai/gpt-4o")
+            dialog.api_key_edit.setText("sk-primary")
+            dialog._apply_api_key_rotation_to_profile(0, [" sk-primary ", "", "sk-secondary", "sk-primary"])
+            dialog._save_and_accept()
+            result = dialog.result_payload()
 
-        self.assertEqual(result["profiles"][0]["api_keys"], ["sk-primary", "sk-secondary"])
-        self.assertEqual(result["profiles"][0]["api_key"], "sk-primary")
-        self.assertEqual(result["profiles"][0]["api_key_index"], 0)
+            self.assertEqual(result["profiles"][0]["api_keys"], ["sk-primary", "sk-secondary"])
+            self.assertEqual(result["profiles"][0]["api_key"], "sk-primary")
+            self.assertEqual(result["profiles"][0]["api_key_index"], 0)
 
     def test_model_settings_dialog_rotation_pool_stays_isolated_between_profiles(self):
         payload = {
@@ -2532,16 +2534,80 @@ class GuiUxTests(unittest.TestCase):
                 },
             ],
         }
-        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
-        self.addCleanup(dialog.close)
-        self._process_events()
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+            self.addCleanup(dialog.close)
+            self._process_events()
 
-        dialog._apply_api_key_rotation_to_profile(1, ["gm-one", "gm-two"])
-        dialog._save_and_accept()
-        result = dialog.result_payload()
+            dialog._apply_api_key_rotation_to_profile(1, ["gm-one", "gm-two"])
+            dialog._save_and_accept()
+            result = dialog.result_payload()
 
-        self.assertEqual(result["profiles"][0]["api_keys"], ["sk-one", "sk-two"])
-        self.assertEqual(result["profiles"][1]["api_keys"], ["gm-one", "gm-two"])
+            self.assertEqual(result["profiles"][0]["api_keys"], ["sk-one", "sk-two"])
+            self.assertEqual(result["profiles"][1]["api_keys"], ["gm-one", "gm-two"])
+
+    def test_model_settings_dialog_save_preserves_rotation_metadata(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-two",
+                    "api_keys": ["sk-one", "sk-two", "sk-three"],
+                    "api_key_index": 1,
+                    "invalid_api_keys": [],
+                    "key_error_timestamps": {},
+                    "base_url": "https://api.openai.com/v1",
+                    "enabled": True,
+                }
+            ],
+        }
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+            self.addCleanup(dialog.close)
+            self._process_events()
+
+            dialog.base_url_edit.setText("https://api.openai.com/v1")
+            dialog._save_and_accept()
+            result = dialog.result_payload()
+
+            self.assertEqual(result["profiles"][0]["api_key"], "sk-two")
+            self.assertEqual(result["profiles"][0]["api_keys"], ["sk-one", "sk-two", "sk-three"])
+            self.assertEqual(result["profiles"][0]["api_key_index"], 1)
+            self.assertEqual(result["profiles"][0]["invalid_api_keys"], [])
+            self.assertEqual(result["profiles"][0]["key_error_timestamps"], {})
+
+    def test_model_settings_dialog_rotation_pool_keeps_current_key_after_edit(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-two",
+                    "api_keys": ["sk-one", "sk-two", "sk-three"],
+                    "api_key_index": 1,
+                    "invalid_api_keys": [],
+                    "key_error_timestamps": {},
+                    "base_url": "https://api.openai.com/v1",
+                    "enabled": True,
+                }
+            ],
+        }
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+            self.addCleanup(dialog.close)
+            self._process_events()
+
+            dialog._apply_api_key_rotation_to_profile(0, ["sk-one", "sk-three"])
+
+            self.assertEqual(dialog._profiles[0]["api_key"], "sk-one")
+            self.assertEqual(dialog._profiles[0]["api_key_index"], 0)
+            self.assertEqual(dialog._profiles[0]["invalid_api_keys"], [])
+            self.assertEqual(dialog._profiles[0]["key_error_timestamps"], {})
 
     def test_model_settings_dialog_toggle_disables_profile_without_deleting_it(self):
         payload = {

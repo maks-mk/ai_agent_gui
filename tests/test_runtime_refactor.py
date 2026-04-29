@@ -1270,7 +1270,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(denied_tool.calls, [])
         self.assertEqual(fallback_tool.calls, [])
         self.assertIsInstance(resumed["messages"][-1], AIMessage)
-        self.assertIn("вы отклонили", str(resumed["messages"][-1].content).lower())
+        self.assertIn("declined", str(resumed["messages"][-1].content).lower())
         self.assertIsNone(resumed["open_tool_issue"])
 
     async def test_approval_rejection_resume_keeps_provider_safe_order(self):
@@ -1315,7 +1315,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(tool.calls, [])
         self.assertEqual(resumed["turn_outcome"], "finish_turn")
-        self.assertIn("вы отклонили", str(resumed["messages"][-1].content).lower())
+        self.assertIn("declined", str(resumed["messages"][-1].content).lower())
 
     async def test_approval_rejection_finishes_turn_without_secondary_verifier(self):
         config = self._make_config(ENABLE_APPROVALS=True)
@@ -1352,7 +1352,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(resumed["open_tool_issue"])
         self.assertEqual(len(agent_llm.invocations), 1)
         final_text = str(resumed["messages"][-1].content).lower()
-        self.assertIn("вы отклонили", final_text)
+        self.assertIn("declined", final_text)
 
     def test_sanitize_messages_for_model_remaps_non_compliant_tool_call_ids(self):
         config = self._make_config()
@@ -2555,7 +2555,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["last_tool_error"], "Empty response from LLM")
         response = result["messages"][-1]
         self.assertIsInstance(response, AIMessage)
-        self.assertIn("Модель вернула пустой ответ", str(response.content))
+        self.assertIn("The model returned an empty response", str(response.content))
 
     async def test_worker_delete_active_session_switches_to_fallback_session(self):
         tmp = self._workspace_tempdir()

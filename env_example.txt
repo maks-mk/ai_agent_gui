@@ -26,10 +26,6 @@ GEMINI_MODEL=gemini-1.5-flash
 # Для OpenRouter:
 # OPENAI_BASE_URL=https://openrouter.ai/api/v1
 # OPENAI_MODEL=deepseek/deepseek-r1
-# Универсальный вариант для совместимых OpenAI backends:
-# MODEL=openai/gpt-oss-120b
-# API_KEY=sk-REPLACE_WITH_YOUR_KEY
-# BASE_URL=https://openrouter.ai/api/v1
 
 # ===========================
 # 2) Основные настройки агента

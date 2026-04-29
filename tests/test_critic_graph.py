@@ -698,7 +698,7 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(agent_llm.invocations), 1)
         self.assertEqual(resumed["turn_outcome"], "finish_turn")
         self.assertIsNone(resumed["open_tool_issue"])
-        self.assertIn("отклонили", str(resumed["messages"][-1].content).lower())
+        self.assertIn("declined", str(resumed["messages"][-1].content).lower())
 
     async def test_mutating_tool_interrupts_and_executes_only_after_approval(self):
         tool = FakeTool("edit_file", "Success: updated")
@@ -828,7 +828,7 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
 
         messages = result.get("messages", [])
         self.assertTrue(messages)
-        self.assertIn("лимит", str(messages[-1].content).lower())
+        self.assertIn("limit", str(messages[-1].content).lower())
         self.assertFalse(any(isinstance(msg, AIMessage) and getattr(msg, "tool_calls", None) for msg in messages))
 
     def test_build_graph_config_keeps_recursion_limit_as_technical_overhead(self):

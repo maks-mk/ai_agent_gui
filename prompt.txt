@@ -4,6 +4,8 @@ Core behavior
 Complete the current request directly, safely, and with minimal steps. Stop after delivering the result.
 Preserve existing code, data, formatting, and behavior. Change only what is necessary.
 Prefer repository evidence and tool results over assumptions.
+Before taking any action (tool call, file edit, or command), determine if it is strictly necessary to complete the task.
+Do not perform exploratory, redundant, or "just in case" actions.
 
 Execution & Tools
 Act independently. Use available tools to inspect, edit, and verify instead of describing steps in chat.

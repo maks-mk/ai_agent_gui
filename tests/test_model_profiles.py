@@ -160,6 +160,32 @@ class ModelProfilesTests(unittest.TestCase):
         self.assertEqual(profile["api_key"], "sk-third")
         self.assertEqual(profile["api_key_index"], 2)
 
+    def test_normalization_resets_rotation_error_state_on_load(self):
+        payload = normalize_profiles_payload(
+            {
+                "active_profile": "gpt-4o",
+                "profiles": [
+                    {
+                        "id": "gpt-4o",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "api_key": "sk-1",
+                        "api_keys": ["sk-1", "sk-2"],
+                        "api_key_index": 0,
+                        "invalid_api_keys": ["sk-1", "missing"],
+                        "key_error_timestamps": {"sk-1": "123.5", "sk-2": 456, "missing": 789, "bad": "oops"},
+                        "base_url": "",
+                    }
+                ],
+            }
+        )
+
+        profile = payload["profiles"][0]
+        self.assertEqual(profile["invalid_api_keys"], [])
+        self.assertEqual(profile["key_error_timestamps"], {})
+        self.assertEqual(profile["api_key"], "sk-1")
+        self.assertEqual(profile["api_key_index"], 0)
+
     def test_normalization_keeps_profiles_with_different_image_support_flags(self):
         payload = normalize_profiles_payload(
             {
@@ -412,10 +438,14 @@ class ModelProfilesTests(unittest.TestCase):
             }
         )
 
-        rotated = store.rotate_api_key("gemini-1-5-flash", "gm-1", invalidate=True)
+        rotated = store.rotate_api_key("gemini-1-5-flash", "gm-1")
 
         self.assertEqual(rotated["current_key"], "gm-2")
-        self.assertEqual(rotated["invalid_api_keys"], ["gm-1"])
+        self.assertEqual(rotated["invalid_api_keys"], [])
+        self.assertEqual(rotated["key_error_timestamps"], {})
+        saved_profile = store.load()["profiles"][0]
+        self.assertEqual(saved_profile["invalid_api_keys"], [])
+        self.assertEqual(saved_profile["key_error_timestamps"], {})
 
 
 if __name__ == "__main__":

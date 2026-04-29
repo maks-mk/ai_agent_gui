@@ -861,7 +861,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
 
     def test_cli_exec_detects_interactive_prompt_and_aborts(self):
         process = self._FakeProcess(
-            stdout_chunks=[b"npx@10.2.2\n", b"Ok to proceed? (y)\n"],
+            stdout_chunks=[b"npx@10.2.2\n", b"OK TO PROCEED? (Y)\n"],
             stderr_chunks=[],
             returncode=0,
         )
@@ -876,6 +876,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
             result = asyncio.run(local_shell.cli_exec.ainvoke({"command": "npm install demo-package"}))
 
         self.assertIn("Interactive prompt detected", result)
+        self.assertIn("OK TO PROCEED? (Y)", result)
         self.assertIn("npm/npx", result)
         self.assertTrue(process.killed)
 

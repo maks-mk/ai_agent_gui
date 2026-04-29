@@ -607,8 +607,8 @@ class RefactorServicesTests(unittest.TestCase):
             ),
         )
 
-        self.assertIn("Не удалось завершить задачу", text)
-        self.assertIn("стагнац", text.lower())
+        self.assertIn("Unable to complete the task", text)
+        self.assertIn("stagnation", text.lower())
         self.assertNotIn("Prepared arguments:", text)
         self.assertNotIn("Suggested next tool:", text)
         self.assertNotIn("Hint:", text)
@@ -620,9 +620,9 @@ class RefactorServicesTests(unittest.TestCase):
         stagnation_notice = manager.build_internal_ui_notice("successful_tool_stagnation")
         fallback_notice = manager.build_internal_ui_notice("recovery_stagnated")
 
-        self.assertIn("внутренний лимит", loop_notice.lower())
-        self.assertIn("по кругу", stagnation_notice.lower())
-        self.assertIn("пау", fallback_notice.lower())
+        self.assertIn("internal retry limit", loop_notice.lower())
+        self.assertIn("loop", stagnation_notice.lower())
+        self.assertIn("paused", fallback_notice.lower())
 
 
 if __name__ == "__main__":

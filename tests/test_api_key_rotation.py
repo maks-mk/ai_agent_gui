@@ -4,7 +4,6 @@ import unittest
 from pathlib import Path
 
 from core.api_key_rotation import (
-    ApiKeyAuthenticationPoolError,
     ApiKeyRotationExhaustedError,
     RotatingChatModel,
 )
@@ -107,7 +106,7 @@ class ApiKeyRotationTests(unittest.TestCase):
         self.assertEqual(calls, ["sk-1", "sk-2"])
         self.assertEqual(store.load()["profiles"][0]["api_key_index"], 1)
 
-    def test_rotating_model_marks_invalid_key_and_uses_next(self):
+    def test_rotating_model_rotates_on_auth_error_without_marking_invalid(self):
         profile_path = self._tmpdir / "config.json"
         store = self._store(profile_path)
         calls: list[str] = []
@@ -133,7 +132,7 @@ class ApiKeyRotationTests(unittest.TestCase):
         self.assertEqual(calls, ["sk-1", "sk-2"])
         saved_profile = store.load()["profiles"][0]
         self.assertEqual(saved_profile["api_key_index"], 1)
-        self.assertEqual(saved_profile["invalid_api_keys"], ["sk-1"])
+        self.assertEqual(saved_profile["invalid_api_keys"], [])
 
     def test_rotating_model_stops_after_pool_is_exhausted(self):
         profile_path = self._tmpdir / "config.json"
@@ -176,7 +175,7 @@ class ApiKeyRotationTests(unittest.TestCase):
 
         self.assertEqual(calls, ["sk-1", "sk-2"])
 
-    def test_rotating_model_raises_auth_pool_error_when_all_keys_invalid(self):
+    def test_rotating_model_raises_exhausted_error_when_all_keys_fail_auth(self):
         profile_path = self._tmpdir / "config.json"
         store = ModelProfileStore(profile_path)
         store.save(
@@ -212,9 +211,10 @@ class ApiKeyRotationTests(unittest.TestCase):
             llm_factory=factory,
         )
 
-        with self.assertRaises(ApiKeyAuthenticationPoolError):
+        with self.assertRaises(ApiKeyRotationExhaustedError) as ctx:
             asyncio.run(model.ainvoke("hello"))
 
+        self.assertIn("All API keys", str(ctx.exception))
         self.assertEqual(calls, ["sk-1", "sk-2"])
 
 

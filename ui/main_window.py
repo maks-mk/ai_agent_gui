@@ -12,7 +12,3 @@ __all__ = [
     "_configure_qt_logging",
     "main",
 ]
-
-
-if __name__ == "__main__":
-    raise SystemExit(main())

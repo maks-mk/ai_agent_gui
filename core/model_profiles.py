@@ -4,6 +4,7 @@ import json
 import os
 import re
 import threading
+import time
 from pathlib import Path
 from typing import Any, Mapping
 
@@ -42,11 +43,6 @@ def normalize_api_key_list(raw_keys: Any, *, fallback: Any = "") -> list[str]:
     return values
 
 
-def _normalize_invalid_api_keys(raw_invalid_keys: Any, api_keys: list[str]) -> list[str]:
-    allowed = set(api_keys)
-    return [key for key in normalize_api_key_list(raw_invalid_keys) if key in allowed]
-
-
 def _normalize_api_key_index(raw_index: Any, api_keys: list[str], *, preferred_key: str = "") -> tuple[int, str]:
     if not api_keys:
         return 0, ""
@@ -62,41 +58,24 @@ def _normalize_api_key_index(raw_index: Any, api_keys: list[str], *, preferred_k
     return index, api_keys[index]
 
 
-def _first_usable_api_key_index(api_keys: list[str], invalid_api_keys: list[str]) -> int | None:
-    invalid = set(invalid_api_keys)
-    for index, key in enumerate(api_keys):
-        if key not in invalid:
-            return index
-    return None
-
-
-def _next_usable_api_key_index(api_keys: list[str], current_index: int, invalid_api_keys: list[str]) -> int | None:
-    if not api_keys:
+def _next_circular_key_index(api_keys: list[str], current_index: int) -> int | None:
+    """Return the next key index in the circular pool, or None if pool has ≤1 key."""
+    if len(api_keys) <= 1:
         return None
-    invalid = set(invalid_api_keys)
-    for offset in range(1, len(api_keys)):
-        candidate_index = (current_index + offset) % len(api_keys)
-        if api_keys[candidate_index] not in invalid:
-            return candidate_index
-    return None
+    return (current_index + 1) % len(api_keys)
 
 
-def _normalized_rotation_fields(raw_profile: Mapping[str, Any]) -> tuple[list[str], int, list[str], str]:
+def _normalized_rotation_fields(raw_profile: Mapping[str, Any]) -> tuple[list[str], int, list[str], str, dict[str, float]]:
     api_keys = normalize_api_key_list(raw_profile.get("api_keys"), fallback=raw_profile.get("api_key"))
-    invalid_api_keys = _normalize_invalid_api_keys(raw_profile.get("invalid_api_keys"), api_keys)
+    invalid_api_keys: list[str] = []
     api_key_index, active_api_key = _normalize_api_key_index(
         raw_profile.get("api_key_index"),
         api_keys,
         preferred_key=_clean_text(raw_profile.get("api_key")),
     )
-    if api_keys and active_api_key in invalid_api_keys:
-        next_index = _first_usable_api_key_index(api_keys, invalid_api_keys)
-        if next_index is not None:
-            api_key_index = next_index
-            active_api_key = api_keys[next_index]
-    return api_keys, api_key_index, invalid_api_keys, active_api_key
-
-
+    key_error_timestamps: dict[str, float] = {}
+    return api_keys, api_key_index, invalid_api_keys, active_api_key, key_error_timestamps
+    
 def _normalize_provider(value: Any) -> str:
     normalized = _clean_text(value).lower()
     return normalized if normalized in ALLOWED_PROVIDERS else ""
@@ -157,7 +136,7 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
         model_name = _clean_text(raw.get("model"))
         if not provider or not model_name:
             continue
-        api_keys, api_key_index, invalid_api_keys, api_key = _normalized_rotation_fields(raw)
+        api_keys, api_key_index, invalid_api_keys, api_key, key_error_timestamps = _normalized_rotation_fields(raw)
         base_url = _clean_text(raw.get("base_url")) if provider == "openai" else ""
         supports_image_input = _normalize_bool(raw.get("supports_image_input"))
         enabled = _normalize_bool(raw.get("enabled")) if "enabled" in raw else True
@@ -179,6 +158,7 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
                 "api_keys": api_keys,
                 "api_key_index": api_key_index,
                 "invalid_api_keys": invalid_api_keys,
+                "key_error_timestamps": key_error_timestamps,
                 "base_url": base_url,
                 "supports_image_input": supports_image_input,
                 "enabled": enabled,
@@ -424,26 +404,28 @@ class ModelProfileStore:
                     "api_key_index": 0,
                     "current_key": "",
                     "available_keys": [],
+                    "key_error_timestamps": {},
                 }
             api_keys = list(profile.get("api_keys") or [])
-            invalid_api_keys = list(profile.get("invalid_api_keys") or [])
             current_key = _clean_text(profile.get("api_key"))
-            available_keys = [key for key in api_keys if key not in set(invalid_api_keys)]
+            # Get error timestamps if they exist
+            key_error_timestamps = dict(profile.get("key_error_timestamps") or {})
             return {
                 "profile_id": _clean_text(profile.get("id")),
                 "api_keys": api_keys,
-                "invalid_api_keys": invalid_api_keys,
+                "invalid_api_keys": [],
                 "api_key_index": int(profile.get("api_key_index") or 0),
                 "current_key": current_key,
-                "available_keys": available_keys,
+                "available_keys": api_keys,
+                "key_error_timestamps": key_error_timestamps,
             }
 
-    def rotate_api_key(self, profile_id: str, failed_key: str, *, invalidate: bool = False) -> dict[str, Any]:
+    def rotate_api_key(self, profile_id: str, failed_key: str, *, invalidate: bool = False, restore_interval: int | None = None) -> dict[str, Any]:
         with self._path_lock():
             payload = self.load()
             target_id = _clean_text(profile_id)
             failed_key = _clean_text(failed_key)
-            profiles = [dict(item) for item in payload.get("profiles", []) or []]
+            profiles =[dict(item) for item in payload.get("profiles", []) or[]]
             profile_index = next(
                 (
                     index
@@ -456,12 +438,7 @@ class ModelProfileStore:
                 return self.get_api_key_state(target_id)
 
             profile = dict(profiles[profile_index])
-            api_keys = list(profile.get("api_keys") or [])
-            invalid_api_keys = list(profile.get("invalid_api_keys") or [])
-            invalid_changed = False
-            if invalidate and failed_key and failed_key in api_keys and failed_key not in invalid_api_keys:
-                invalid_api_keys.append(failed_key)
-                invalid_changed = True
+            api_keys = list(profile.get("api_keys") or[])
 
             current_index, current_key = _normalize_api_key_index(
                 profile.get("api_key_index"),
@@ -470,27 +447,28 @@ class ModelProfileStore:
             )
             rotation_changed = False
             if current_key == failed_key:
-                next_index = _next_usable_api_key_index(api_keys, current_index, invalid_api_keys)
+                next_index = _next_circular_key_index(api_keys, current_index)
                 if next_index is not None and next_index != current_index:
                     current_index = next_index
                     current_key = api_keys[current_index]
                     rotation_changed = True
 
-            if current_key in invalid_api_keys:
-                fallback_index = _first_usable_api_key_index(api_keys, invalid_api_keys)
-                if fallback_index is not None and fallback_index != current_index:
-                    current_index = fallback_index
-                    current_key = api_keys[current_index]
-                    rotation_changed = True
-
             profile["api_keys"] = api_keys
             profile["api_key_index"] = current_index
-            profile["invalid_api_keys"] = invalid_api_keys
+            profile["invalid_api_keys"] = []
             profile["api_key"] = current_key
+            profile["key_error_timestamps"] = {}
             profiles[profile_index] = profile
             payload["profiles"] = profiles
-            if rotation_changed or invalid_changed:
+            if rotation_changed:
                 payload = self._write_normalized_payload(payload)
             else:
                 payload = self.normalize(payload)
             return self.get_api_key_state(target_id)
+            
+    def restore_invalid_keys(self, profile_id: str, *, restore_interval: int | None = None) -> dict[str, Any]:
+        """
+        Manually restore invalid keys that have exceeded the restore interval.
+        (Now a no-op since keys are no longer marked invalid)
+        """
+        return self.get_api_key_state(profile_id)

@@ -142,9 +142,9 @@ START
 
 Агент поддерживает автоматическую ротацию пула API-ключей для каждого профиля. Это позволяет обходить лимиты бесплатных тарифов (Rate Limits) и обеспечивать бесперебойную работу.
 
-- **Как это работает:** вы можете указать несколько ключей для одной модели. Если текущий ключ исчерпал лимит запросов или оказался невалидным, агент автоматически переключится на следующий рабочий ключ и повторит попытку без прерывания сессии.
+- **Как это работает:** вы можете указать несколько ключей для одной модели. Если текущий ключ исчерпал лимит или вернул ошибку, агент двигается к следующему ключу по кругу и повторяет попытку без прерывания сессии. После одного полного круга, если ни один ключ не сработал, выполнение останавливается с сообщением: *"All API keys have been used without success. Please try again later or check your key limits and validity."* — пользователь сам решает, что делать дальше (подождать, обновить ключи и т.д.).
 - **Управление:** настройка доступна в GUI через кнопку «цикличные стрелки» рядом с полем API Key в редакторе профиля.
-- **Безопасность:** если ключ возвращает ошибку авторизации, он помечается как невалидный и исключается из ротации до тех пор, пока вы его не проверите.
+- **Безопасность:** ключи не помечаются как невалидные и не исключаются из пула. Любой ключ может стать рабочим через некоторое время (например, когда снимется rate-limit), поэтому пул остаётся неизменным.
 
 ---
 
@@ -323,6 +323,7 @@ START
 │   ├── safety_policy.py  # Workspace boundary, safety levels
 │   ├── model_fetcher.py  # Автозагрузка и фильтрация моделей из Gemini / OpenAI API
 │   ├── model_profiles.py # Профили моделей с переключением в GUI
+│   ├── api_key_rotation.py # Circular key-pool rotation without invalidation
 │   ├── session_store.py  # Persist сессий и индекса
 │   ├── session_utils.py  # Session helpers, ID generation
 │   ├── run_logger.py     # JSONL логирование каждого run
@@ -397,6 +398,7 @@ START
 | Файл | Что покрывает |
 |---|---|
 | `test_model_fetcher.py` | Фильтрация моделей, нормализация имён, коды ошибок API, fallback-логика |
+| `test_api_key_rotation.py` | Circular key-pool rotation, exhaustion handling, auth/rate-limit error classification |
 | `test_cli_ux.py` | GUI: composer, transcript, tool cards, streaming, sidebar, attachments, history, mentions, approvals |
 | `test_stream_and_filesystem.py` | Streaming events, filesystem tools, tool output, cli_exec |
 | `test_runtime_refactor.py` | Runtime payloads, transcript restore, tool group logic, run lifecycle |

@@ -242,6 +242,11 @@ class AgentTurnOrchestrator:
                 ],
                 "current_task": current_task,
                 "turn_id": current_turn_id,
+                "turn_outcome": "finish_turn",
+                "recovery_state": recovery_state,
+                "pending_approval": None,
+                "open_tool_issue": None,
+                "has_protocol_error": False,
                 "last_tool_error": str(exc),
                 "last_tool_result": "",
             }

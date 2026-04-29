@@ -55,12 +55,12 @@ _WINDOWS_NULL_REDIRECT_RE = re.compile(
 )
 _NPM_LIKE_COMMAND_RE = re.compile(r"(^|[;&|()\s])(?:npm|npx)(?=$|[;&|()\s])", re.IGNORECASE)
 _INTERACTIVE_PROMPT_PATTERNS = (
-    re.compile(r"ok to proceed\?\s*\(y\)"),
-    re.compile(r"do you want to continue\?\s*\[(?:y|yes)/(?:n|no)\]"),
-    re.compile(r"\[(?:y|yes)/(?:n|no)\]"),
-    re.compile(r"\[(?:n|no)/(?:y|yes)\]"),
-    re.compile(r"press any key"),
-    re.compile(r"hit ctrl-c to stop"),
+    re.compile(r"ok to proceed\?\s*\(y\)", re.IGNORECASE),
+    re.compile(r"do you want to continue\?\s*\[(?:y|yes)/(?:n|no)\]", re.IGNORECASE),
+    re.compile(r"\[(?:y|yes)/(?:n|no)\]", re.IGNORECASE),
+    re.compile(r"\[(?:n|no)/(?:y|yes)\]", re.IGNORECASE),
+    re.compile(r"press any key", re.IGNORECASE),
+    re.compile(r"hit ctrl-c to stop", re.IGNORECASE),
 )
 _INSPECT_ONLY_COMMAND_PATTERNS = (
     re.compile(r"\bget-process\b"),
