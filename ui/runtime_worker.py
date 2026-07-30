@@ -132,6 +132,7 @@ class AgentRunWorker(QObject):
         self._runtime_profile_id: str = ""
         self.agent_app = None
         self.tool_registry = None
+        self._pending_mcp_server_name = ""
         self.checkpoint_runtime = None
         self.current_session: SessionSnapshot | None = None
         self.ui_run_logger: JsonlRunLogger | None = None
@@ -441,8 +442,18 @@ class AgentRunWorker(QObject):
         self._runtime_profile_id = self._selected_profile_id(self.model_profiles)
         self.ui_run_logger = JsonlRunLogger(self.config.run_log_dir)
         self.store = SessionStore(self.config.session_state_path)
-        self.agent_app, self.tool_registry = await _runtime_module().build_agent_app(self.config)
+        self.agent_app, self.tool_registry = await _runtime_module().build_agent_app(
+            self.config
+        )
         self.checkpoint_runtime = getattr(self.tool_registry, "checkpoint_runtime", None)
+        pending_mcp_server = self._pending_mcp_server_name
+        if pending_mcp_server:
+            status = next(
+                (item for item in self.tool_registry.mcp_server_status if item.get("server") == pending_mcp_server),
+                {},
+            )
+            if status.get("error"):
+                raise RuntimeError(str(status["error"]))
         self._set_effective_model_capabilities(getattr(self.tool_registry, "model_capabilities", None))
         self._configure_cli_output_bridge()
         selected_session = self._select_session_for_project(force_new_session=force_new_session)
@@ -470,6 +481,46 @@ class AgentRunWorker(QObject):
         self._sync_pending_user_choice_from_payload(payload)
         self.initialized.emit(payload)
         self.session_changed.emit(payload)
+
+    @Slot(object)
+    def set_tool_enabled(self, payload: object) -> None:
+        if self._is_busy or self._awaiting_approval or self.tool_registry is None:
+            return
+        data = payload if isinstance(payload, dict) else {}
+        name = str(data.get("name") or "").strip()
+        if not name:
+            return
+        self.tool_registry.set_tool_enabled(name, bool(data.get("enabled")))
+        self._run(self._shutdown_async())
+        self._run(self._initialize_async())
+
+    @Slot(object)
+    def set_mcp_server_enabled(self, payload: object) -> None:
+        if self._is_busy or self._awaiting_approval or self.tool_registry is None or self.config is None:
+            return
+        data = payload if isinstance(payload, dict) else {}
+        name = str(data.get("name") or "").strip()
+        enabled = bool(data.get("enabled"))
+        if not name:
+            return
+
+        previous_config = self.tool_registry.mcp_config.get(name)
+        previous_enabled = bool(previous_config.get("enabled", True)) if isinstance(previous_config, dict) else None
+        self._pending_mcp_server_name = name if enabled else ""
+        try:
+            self.tool_registry.set_mcp_server_enabled(name, enabled)
+            self._run(self._shutdown_async())
+            self._run(self._initialize_async())
+        except Exception as exc:
+            logger.exception("Failed to update MCP server state:")
+            if previous_enabled is not None:
+                try:
+                    self.tool_registry.set_mcp_server_enabled(name, previous_enabled)
+                except Exception:
+                    logger.exception("Failed to restore MCP server state after initialization failure:")
+            self.initialization_failed.emit(f"Failed to apply MCP server change: {exc}")
+        finally:
+            self._pending_mcp_server_name = ""
 
     @Slot(object)
     def start_run(self, user_text: object) -> None:
@@ -580,7 +631,7 @@ class AgentRunWorker(QObject):
                 stream = self.agent_app.astream(
                     payload,
                     config=build_graph_config(self.current_session.thread_id, self.config.max_loops),
-                    stream_mode=["messages", "updates"],
+                    stream_mode=["messages", "updates", "custom"],
                     version="v2",
                 )
                 processor = StreamProcessor(
@@ -1029,6 +1080,8 @@ class AgentRuntimeController(QObject):
     _delete_session_requested = Signal(str)
     _set_active_profile_requested = Signal(str)
     _save_profiles_requested = Signal(object)
+    _set_mcp_server_enabled_requested = Signal(object)
+    _set_tool_enabled_requested = Signal(object)
     _reinitialize_requested = Signal(bool)
     _shutdown_requested = Signal()
 
@@ -1059,6 +1112,8 @@ class AgentRuntimeController(QObject):
         self._delete_session_requested.connect(self._worker.delete_session)
         self._set_active_profile_requested.connect(self._worker.set_active_profile)
         self._save_profiles_requested.connect(self._worker.save_profiles)
+        self._set_mcp_server_enabled_requested.connect(self._worker.set_mcp_server_enabled)
+        self._set_tool_enabled_requested.connect(self._worker.set_tool_enabled)
         self._shutdown_requested.connect(self._worker.shutdown)
 
         self._worker.initialized.connect(self.initialized)
@@ -1090,7 +1145,10 @@ class AgentRuntimeController(QObject):
             (self._delete_session_requested, worker.delete_session),
             (self._set_active_profile_requested, worker.set_active_profile),
             (self._save_profiles_requested, worker.save_profiles),
+            (self._set_mcp_server_enabled_requested, worker.set_mcp_server_enabled),
+            (self._set_tool_enabled_requested, worker.set_tool_enabled),
             (self._shutdown_requested, worker.shutdown),
+
             (worker.initialized, self.initialized),
             (worker.initialization_failed, self.initialization_failed),
             (worker.event_emitted, self.event_emitted),
@@ -1207,6 +1265,12 @@ class AgentRuntimeController(QObject):
 
     def save_profiles(self, config_payload: dict[str, Any]) -> None:
         self._save_profiles_requested.emit(config_payload)
+
+    def set_tool_enabled(self, name: str, enabled: bool) -> None:
+        self._set_tool_enabled_requested.emit({"name": name, "enabled": enabled})
+
+    def set_mcp_server_enabled(self, name: str, enabled: bool) -> None:
+        self._set_mcp_server_enabled_requested.emit({"name": name, "enabled": enabled})
 
     def shutdown(self) -> None:
         if self._force_stop_timer.isActive():

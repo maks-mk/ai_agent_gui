@@ -191,7 +191,7 @@ def build_compiled_agent(
     tool_registry.checkpoint_info = checkpoint_runtime.to_dict()
     tool_registry.checkpoint_runtime = checkpoint_runtime
 
-    tools = tool_registry.tools
+    tools = tool_registry.active_tools() if hasattr(tool_registry, "active_tools") else tool_registry.tools
     tool_calling_enabled = bool(tools) and config.model_supports_tools
     llm_with_tools = llm
     if tool_calling_enabled:
@@ -234,7 +234,11 @@ def build_compiled_agent(
     return workflow.compile(checkpointer=checkpoint_runtime.checkpointer), tool_registry
 
 
-async def build_agent_app(config: Optional[AgentConfig] = None) -> Tuple[Any, ToolRegistry]:
+async def build_agent_app(
+    config: Optional[AgentConfig] = None,
+    *,
+    disabled_local_tools: set[str] | None = None,
+) -> Tuple[Any, ToolRegistry]:
     """
     Builds the LangGraph application and returns it along with the tool registry.
     """
@@ -251,6 +255,7 @@ async def build_agent_app(config: Optional[AgentConfig] = None) -> Tuple[Any, To
     # 1. Initialize Resources
     tool_registry = ToolRegistry(config)
     await tool_registry.load_all()
+    tool_registry.disabled_local_tools.update(disabled_local_tools or set())
     checkpoint_runtime = await create_checkpoint_runtime(config)
     run_logger = JsonlRunLogger(config.run_log_dir)
     tool_registry.checkpoint_info = checkpoint_runtime.to_dict()

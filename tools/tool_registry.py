@@ -18,6 +18,7 @@ logger = logging.getLogger(__name__)
 _MCP_POLICY_FIELDS = (
     "read_only",
 )
+_BUILTIN_TOOLS_CONFIG_KEY = "_builtin_tools"
 
 
 def _compact_text(value: Any) -> str:
@@ -48,6 +49,10 @@ class ToolRegistry:
         "checkpoint_info",
         "checkpoint_runtime",
         "_cleanup_callbacks",
+        "disabled_mcp_servers",
+        "disabled_local_tools",
+        "builtin_tools",
+        "mcp_config",
     )
 
     def __init__(self, config: AgentConfig):
@@ -61,15 +66,106 @@ class ToolRegistry:
         self.checkpoint_info: Dict[str, Any] = {}
         self.checkpoint_runtime: Any = None
         self._cleanup_callbacks: List[Callable[[], Any]] = []
+        self.disabled_mcp_servers: set[str] = set()
+        self.disabled_local_tools: set[str] = set()
+        self.builtin_tools: List[BaseTool] = []
+        self.mcp_config: Dict[str, Any] = {}
 
     async def load_all(self):
+        if self.config.mcp_config_path.exists():
+            self.mcp_config = self._read_mcp_config()
+        builtin_states = self.mcp_config.get(_BUILTIN_TOOLS_CONFIG_KEY, {})
+        if not isinstance(builtin_states, dict):
+            builtin_states = {}
+
+        builtin_defaults: dict[str, bool] = {}
+        builtin_by_name: dict[str, BaseTool] = {}
         for spec in self._loader_specs():
-            if not spec.enabled(self.config):
-                continue
-            self._load_local_spec(spec)
+            loaded_tools = self._load_local_spec(spec, add_to_runtime=bool(spec.enabled(self.config)))
+            spec_enabled = bool(spec.enabled(self.config))
+            for tool in loaded_tools:
+                builtin_by_name.setdefault(tool.name, tool)
+                builtin_defaults[tool.name] = builtin_defaults.get(tool.name, False) or spec_enabled
+
+        self.builtin_tools = list(builtin_by_name.values())
+        for name, default_enabled in builtin_defaults.items():
+            enabled = bool(builtin_states.get(name, default_enabled))
+            if enabled and name not in {tool.name for tool in self.tools}:
+                self.tools.append(builtin_by_name[name])
+            elif not enabled:
+                self.disabled_local_tools.add(name)
 
         if self.config.mcp_config_path.exists():
             await self._load_mcp_tools()
+
+    def set_mcp_server_enabled(self, server_name: str, enabled: bool) -> None:
+        name = str(server_name or "").strip()
+        if not name or not isinstance(self.mcp_config.get(name), dict):
+            return
+        updated_config = dict(self.mcp_config)
+        updated_server_config = dict(self.mcp_config[name])
+        updated_server_config["enabled"] = bool(enabled)
+        updated_config[name] = updated_server_config
+        try:
+            self.config.mcp_config_path.write_text(
+                json.dumps(updated_config, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.exception("Failed to persist MCP server state to %s", self.config.mcp_config_path)
+            raise
+        self.mcp_config = updated_config
+        self.disabled_mcp_servers.discard(name) if enabled else self.disabled_mcp_servers.add(name)
+
+    def set_tool_enabled(self, tool_name: str, enabled: bool) -> None:
+        name = str(tool_name or "").strip()
+        mcp_tool_names = {
+            tool_name
+            for status in self.mcp_server_status
+            for tool_name in status.get("loaded_tools", [])
+        }
+        tool = next((tool for tool in self.builtin_tools if tool.name == name), None)
+        metadata = self.tool_metadata.get(name)
+        is_mcp = bool(
+            name in mcp_tool_names
+            or (metadata and metadata.source == "mcp")
+            or (tool is not None and hasattr(tool, "_is_mcp"))
+            or ":" in name
+        )
+        if not name or tool is None or is_mcp:
+            return
+        if enabled:
+            self.disabled_local_tools.discard(name)
+        else:
+            self.disabled_local_tools.add(name)
+        self._persist_builtin_tool_state(name, bool(enabled))
+
+    def _persist_builtin_tool_state(self, name: str, enabled: bool) -> None:
+        config = dict(self.mcp_config)
+        states = dict(config.get(_BUILTIN_TOOLS_CONFIG_KEY, {}))
+        states[name] = bool(enabled)
+        config[_BUILTIN_TOOLS_CONFIG_KEY] = states
+        try:
+            self.config.mcp_config_path.write_text(
+                json.dumps(config, ensure_ascii=False, indent=2) + "\n",
+                encoding="utf-8",
+            )
+        except OSError:
+            logger.exception("Failed to persist built-in tool state to %s", self.config.mcp_config_path)
+            raise
+        self.mcp_config = config
+
+    def active_tools(self) -> List[BaseTool]:
+        server_by_tool = {
+            tool_name: status.get("server", "")
+            for status in self.mcp_server_status
+            for tool_name in status.get("loaded_tools", [])
+        }
+        return [
+            tool for tool in self.tools
+            if server_by_tool.get(tool.name, "") not in self.disabled_mcp_servers
+            and tool.name not in self.disabled_local_tools
+        ]
 
     def sync_working_directory(self, cwd: str | Path | None = None) -> None:
         """Propagate runtime cwd to local tool modules that cache workspace roots."""
@@ -190,24 +286,6 @@ class ToolRegistry:
                 },
             ),
             ToolLoaderSpec(
-                name="system",
-                enabled=lambda config: config.use_system_tools,
-                module_name="tools.system_tools",
-                tool_names=("get_public_ip", "lookup_ip_info", "get_system_info", "get_local_network_info"),
-                metadata={
-                    "get_public_ip": ToolMetadata(
-                        name="get_public_ip", read_only=True, networked=True
-                    ),
-                    "lookup_ip_info": ToolMetadata(
-                        name="lookup_ip_info", read_only=True, networked=True
-                    ),
-                    "get_system_info": ToolMetadata(name="get_system_info", read_only=True),
-                    "get_local_network_info": ToolMetadata(
-                        name="get_local_network_info", read_only=True
-                    ),
-                },
-            ),
-            ToolLoaderSpec(
                 name="process",
                 enabled=lambda config: config.enable_process_tools,
                 module_name="tools.process_tools",
@@ -304,24 +382,31 @@ class ToolRegistry:
             }
         )
 
-    def _load_local_spec(self, spec: ToolLoaderSpec) -> None:
+    def _load_local_spec(self, spec: ToolLoaderSpec, *, add_to_runtime: bool) -> List[BaseTool]:
         try:
             module = importlib.import_module(spec.module_name)
-            if spec.configure:
+            if spec.configure and spec.enabled(self.config):
                 spec.configure(module, self.config)
 
+            catalog_tools: List[BaseTool] = []
             loaded_tools: List[BaseTool] = []
+            existing_names = {tool.name for tool in self.tools}
             for attr_name in self._iter_spec_tool_names(spec, module):
                 tool = getattr(module, attr_name)
                 self._optimize_tool_description(tool)
-                loaded_tools.append(tool)
+                catalog_tools.append(tool)
+                if add_to_runtime and tool.name not in existing_names:
+                    loaded_tools.append(tool)
+                    existing_names.add(tool.name)
                 metadata = self._metadata_for_spec_attr(spec, attr_name, tool.name)
                 self.tool_metadata[tool.name] = metadata
             self.tools.extend(loaded_tools)
             self._record_loader_status(spec=spec, loaded_tools=loaded_tools)
+            return catalog_tools
         except Exception as e:
             self._record_loader_status(spec=spec, loaded_tools=[], error=str(e))
             logger.exception("Failed to load %s tools: %s", spec.name, e)
+            return []
 
     @staticmethod
     def _configure_safety(module: Any, config: AgentConfig) -> None:
@@ -513,17 +598,26 @@ class ToolRegistry:
     async def _load_mcp_tools(self):
         try:
             raw_cfg = self._read_mcp_config()
-            enabled_servers = [
-                (name, cfg)
-                for name, cfg in raw_cfg.items()
-                if isinstance(cfg, dict) and cfg.get("enabled", True)
-            ]
+            self.mcp_config = raw_cfg
+            runtime_cfg = self._expand_env_vars(raw_cfg)
+            enabled_servers = []
             for name, cfg in raw_cfg.items():
+                if name == _BUILTIN_TOOLS_CONFIG_KEY:
+                    continue
                 if not isinstance(cfg, dict):
                     logger.warning(
                         "⚠ Skipping invalid config entry '%s': Expected dict, got %s",
                         name,
                         type(cfg).__name__,
+                    )
+                    continue
+                enabled = bool(cfg.get("enabled", True))
+                if enabled:
+                    enabled_servers.append((name, runtime_cfg[name]))
+                else:
+                    self.disabled_mcp_servers.add(name)
+                    self.mcp_server_status.append(
+                        {"server": name, "loaded_tools": [], "error": "", "enabled": False}
                     )
 
             if not enabled_servers:
@@ -557,7 +651,7 @@ class ToolRegistry:
             )
             for name, client, mcp_tools, err in results:
                 if err is not None:
-                    self.mcp_server_status.append({"server": name, "loaded_tools": [], "error": str(err)})
+                    self.mcp_server_status.append({"server": name, "loaded_tools": [], "error": str(err), "enabled": True})
                     logger.error("❌ MCP Server '%s' Error: %s", name, err)
                     continue
 
@@ -581,11 +675,12 @@ class ToolRegistry:
                             "server": name,
                             "loaded_tools": [tool.name for tool in mcp_tools],
                             "error": "",
+                            "enabled": True,
                         }
                     )
                     logger.info("✔ MCP Server '%s': Loaded %s tools", name, len(mcp_tools))
                 else:
-                    self.mcp_server_status.append({"server": name, "loaded_tools": [], "error": "No tools found"})
+                    self.mcp_server_status.append({"server": name, "loaded_tools": [], "error": "No tools found", "enabled": True})
                     logger.warning("⚠ MCP Server '%s': No tools found", name)
         except Exception as e:
             logger.exception(f"Failed to load MCP tools: {e}")
@@ -624,7 +719,7 @@ class ToolRegistry:
         if not isinstance(raw_cfg, dict):
             logger.error(f"❌ MCP Config must be a dictionary, got {type(raw_cfg).__name__}")
             return {}
-        return self._expand_env_vars(raw_cfg)
+        return raw_cfg
 
     def _expand_env_vars(self, data: Union[Dict[str, Any], List[Any], str]) -> Any:
         if isinstance(data, dict):

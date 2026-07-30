@@ -162,7 +162,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             "PROMPT_PATH": Path(__file__).resolve().parents[1] / "prompt.txt",
             "MCP_CONFIG_PATH": Path(__file__).resolve().parents[1] / "tests" / "missing_mcp.json",
             "ENABLE_SEARCH_TOOLS": False,
-            "ENABLE_SYSTEM_TOOLS": False,
             "ENABLE_PROCESS_TOOLS": False,
             "ENABLE_SHELL_TOOL": False,
         }
@@ -1919,6 +1918,58 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(str(response.content), "ok")
         self.assertEqual(normalize_mock.call_count, 2)
+
+    async def test_invoke_llm_with_retry_retries_transient_errors_with_fixed_backoff_and_status(self):
+        config = self._make_config(MAX_RETRIES=1, RETRY_DELAY=0)
+        llm = FakeLLM(
+            [
+                RuntimeError("429 Too Many Requests"),
+                RuntimeError("503 Service Unavailable"),
+                RuntimeError("connection reset by peer"),
+                AIMessage(content="ok"),
+            ]
+        )
+        nodes = AgentNodes(config=config, llm=llm, tools=[], llm_with_tools=llm)
+        writer = mock.Mock()
+
+        with (
+            mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()) as sleep_mock,
+            mock.patch("core.nodes.llm.get_stream_writer", return_value=writer),
+        ):
+            response = await nodes._invoke_llm_with_retry(
+                llm,
+                [HumanMessage(content="Проверь задачу")],
+                state=self._initial_state(),
+                node_name="agent",
+            )
+
+        self.assertEqual(str(response.content), "ok")
+        self.assertEqual([call.args[0] for call in sleep_mock.await_args_list], [2, 4, 8])
+        self.assertEqual(
+            [call.args[0]["label"] for call in writer.call_args_list],
+            ["Reconnecting... 1/3", "Reconnecting... 2/3", "Reconnecting... 3/3"],
+        )
+
+    async def test_invoke_llm_with_retry_does_not_use_transient_backoff_for_non_transient_error(self):
+        config = self._make_config(MAX_RETRIES=1, RETRY_DELAY=0)
+        llm = FakeLLM([RuntimeError("invalid request payload")])
+        nodes = AgentNodes(config=config, llm=llm, tools=[], llm_with_tools=llm)
+        writer = mock.Mock()
+
+        with (
+            mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()) as sleep_mock,
+            mock.patch("core.nodes.llm.get_stream_writer", return_value=writer),
+        ):
+            with self.assertRaisesRegex(RuntimeError, "invalid request payload"):
+                await nodes._invoke_llm_with_retry(
+                    llm,
+                    [HumanMessage(content="Проверь задачу")],
+                    state=self._initial_state(),
+                    node_name="agent",
+                )
+
+        sleep_mock.assert_not_awaited()
+        writer.assert_not_called()
 
     async def test_invoke_llm_with_retry_applies_auto_tool_choice_fallback_warning_once(self):
         config = self._make_config(MAX_RETRIES=3, RETRY_DELAY=0)

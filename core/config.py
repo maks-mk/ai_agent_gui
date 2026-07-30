@@ -155,7 +155,6 @@ class AgentConfig(BaseSettings):
     # Features Toggle
     enable_search_tools: bool = Field(default=True, alias="ENABLE_SEARCH_TOOLS")
     model_supports_tools: bool = Field(default=True, alias="MODEL_SUPPORTS_TOOLS")
-    use_system_tools: bool = Field(default=True, alias="ENABLE_SYSTEM_TOOLS")
     enable_filesystem_tools: bool = Field(default=True, alias="ENABLE_FILESYSTEM_TOOLS")
     enable_process_tools: bool = Field(default=False, alias="ENABLE_PROCESS_TOOLS")
     enable_shell_tool: bool = Field(default=False, alias="ENABLE_SHELL_TOOL")

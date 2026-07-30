@@ -2,8 +2,9 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QSignalBlocker, Qt, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QFormLayout,
     QFrame,
@@ -12,6 +13,7 @@ from PySide6.QtWidgets import (
     QScrollArea,
     QTabWidget,
     QTextBrowser,
+    QToolButton,
     QVBoxLayout,
     QWidget,
 )
@@ -71,6 +73,8 @@ class OverviewPanelWidget(QWidget):
 
 
 class ToolsPanelWidget(QWidget):
+    availability_changed = Signal(str, str, bool)
+
     def __init__(self) -> None:
         super().__init__()
         root = QVBoxLayout(self)
@@ -87,11 +91,12 @@ class ToolsPanelWidget(QWidget):
         self._inner.setContentsMargins(6, 6, 6, 6)
         self._inner.setSpacing(6)
         self._inner.addStretch(1)
+        self._pending_servers: dict[str, bool] = {}
 
         self.scroll.setWidget(self._container)
         root.addWidget(self.scroll)
 
-    def set_tools(self, tools: list[dict[str, str]]) -> None:
+    def set_tools(self, tools: list[dict[str, Any]]) -> None:
         while self._inner.count() > 1:
             item = self._inner.takeAt(0)
             widget = item.widget()
@@ -126,37 +131,79 @@ class ToolsPanelWidget(QWidget):
                 top_row = QHBoxLayout()
                 top_row.setSpacing(6)
 
-                name_label = QLabel(row["name"])
-                name_label.setObjectName("ToolCardTitle")
-                name_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
-                top_row.addWidget(name_label, 1)
+                name_button = QToolButton()
+                name_button.setObjectName("ToolCardTitle")
+                name_button.setText(row["name"])
+                name_button.setCheckable(True)
+                name_button.setChecked(False)
+                name_button.setArrowType(Qt.RightArrow)
+                name_button.setToolButtonStyle(Qt.ToolButtonTextBesideIcon)
+                name_button.setAccessibleName(f"{row['name']} details")
+                name_button.setToolTip(f"Show details for {row['name']}")
+                top_row.addWidget(name_button)
 
-                flags = row.get("flags", "")
-                if flags:
-                    for flag in flags.split(", "):
-                        flag = flag.strip()
-                        if not flag:
-                            continue
-                        chip = QLabel(flag)
-                        chip.setObjectName("ToolFlagChip")
-                        if flag in ("mutating", "destructive", "approval"):
-                            chip.setProperty("flagVariant", "warning")
-                        elif flag in ("mcp", "network"):
-                            chip.setProperty("flagVariant", "accent")
-                        else:
-                            chip.setProperty("flagVariant", "muted")
-                        chip.style().unpolish(chip)
-                        chip.style().polish(chip)
-                        top_row.addWidget(chip, 0)
+                top_row.addStretch(1)
+
+                if row.get("kind") in {"server", "tool"}:
+                    toggle = QCheckBox()
+                    toggle.setObjectName("ToolAvailabilitySwitch")
+                    toggle.setFixedSize(34, 20)
+                    toggle.setChecked(bool(row.get("enabled", True)))
+                    toggle.setAccessibleName(f"{row['name']} enabled")
+                    if row.get("kind") == "server":
+                        name = str(row["name"])
+                        pending = self._pending_servers.get(name)
+                        toggle.setToolTip(f"Enable or disable MCP server {name}")
+                        if pending is not None:
+                            with QSignalBlocker(toggle):
+                                toggle.setChecked(pending)
+                            toggle.setEnabled(False)
+                        toggle.toggled.connect(
+                            lambda checked, switch=toggle, server_name=name:
+                            self._request_server_change(switch, server_name, checked)
+                        )
+                    else:
+                        toggle.setToolTip(f"Enable or disable tool {row['name']}")
+                        toggle.toggled.connect(
+                            lambda checked, name=str(row["name"]):
+                            self.availability_changed.emit("tool", name, checked)
+                        )
+                    top_row.addWidget(toggle, 0, Qt.AlignRight | Qt.AlignVCenter)
+
+                if row.get("kind") == "server" and str(row["name"]) in self._pending_servers:
+                    pending_label = QLabel("Applying…")
+                    pending_label.setObjectName("MCPServerLoadingLabel")
+                    card_layout.addWidget(pending_label)
 
                 card_layout.addLayout(top_row)
+
+                details = QWidget()
+                details.setObjectName("ToolCardDetails")
+                details_layout = QVBoxLayout(details)
+                details_layout.setContentsMargins(0, 0, 0, 0)
+                details_layout.setSpacing(4)
 
                 desc = row.get("description", "")
                 if desc:
                     desc_label = QLabel(desc)
                     desc_label.setWordWrap(True)
                     desc_label.setObjectName("ToolCardDescription")
-                    card_layout.addWidget(desc_label)
+                    details_layout.addWidget(desc_label)
+
+                for child in row.get("tools", []):
+                    child_label = QLabel(f"  • {child.get('name', '')}\n    {child.get('description', '')}")
+                    child_label.setWordWrap(True)
+                    child_label.setObjectName("MCPToolCardItem")
+                    child_label.setTextInteractionFlags(Qt.TextSelectableByMouse)
+                    details_layout.addWidget(child_label)
+
+                details.setVisible(False)
+                name_button.toggled.connect(
+                    lambda expanded, button=name_button, panel=details:
+                    self._set_details_expanded(button, panel, expanded)
+                )
+                card_layout.addWidget(details)
+
 
                 self._inner.insertWidget(insert_pos, card)
                 insert_pos += 1
@@ -166,6 +213,57 @@ class ToolsPanelWidget(QWidget):
             sep.setObjectName("ToolGroupSeparator")
             self._inner.insertWidget(insert_pos, sep)
             insert_pos += 1
+
+
+    @staticmethod
+    def _set_details_expanded(button: QToolButton, details: QWidget, expanded: bool) -> None:
+        details.setVisible(expanded)
+        button.setArrowType(Qt.DownArrow if expanded else Qt.RightArrow)
+        button.setToolTip(
+            f"{'Hide' if expanded else 'Show'} details for {button.text()}"
+        )
+
+    def _request_server_change(self, toggle: QCheckBox, name: str, enabled: bool) -> None:
+        previous_enabled = not enabled
+        self._pending_servers[name] = previous_enabled
+        with QSignalBlocker(toggle):
+            toggle.setChecked(previous_enabled)
+        toggle.setEnabled(False)
+        self.set_tools_pending_labels()
+        self.availability_changed.emit("server", name, enabled)
+
+    def set_tools_pending_labels(self) -> None:
+        for card in self.findChildren(QFrame, "ToolCard"):
+            title = card.findChild(QToolButton, "ToolCardTitle")
+            if title is None or title.text() not in self._pending_servers:
+                continue
+            label = card.findChild(QLabel, "MCPServerLoadingLabel")
+            if label is None:
+                label = QLabel("Applying…", card)
+                label.setObjectName("MCPServerLoadingLabel")
+                card.layout().insertWidget(1, label)
+            label.setText("Applying…")
+            label.setToolTip("Waiting for the MCP runtime to finish reinitializing.")
+
+    def clear_server_pending(self) -> None:
+        self._pending_servers.clear()
+
+    def fail_server_pending(self, message: str) -> None:
+        for name, previous_enabled in self._pending_servers.items():
+            for toggle in self.findChildren(QCheckBox, "ToolAvailabilitySwitch"):
+                if toggle.accessibleName() != f"{name} enabled":
+                    continue
+                with QSignalBlocker(toggle):
+                    toggle.setChecked(previous_enabled)
+                toggle.setEnabled(True)
+                toggle.setToolTip(f"MCP server change failed: {message}")
+            for label in self.findChildren(QLabel, "MCPServerLoadingLabel"):
+                parent = label.parentWidget()
+                title = parent.findChild(QToolButton, "ToolCardTitle") if parent is not None else None
+                if title is not None and title.text() == name:
+                    label.setText("Failed to apply")
+                    label.setToolTip(message)
+        self._pending_servers.clear()
 
 
 class InspectorPanelWidget(QWidget):

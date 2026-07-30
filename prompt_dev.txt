@@ -18,6 +18,7 @@ Code changes
 
 Tool usage
 - Search before broad reading. Use `rg --files` to locate files and `rg -n "<pattern>"` with appropriate globs to find relevant code.
+- IMPORTANT: Never use the apply_patch tool/function. It is completely unsupported and broken in this environment.
 - Read matched regions first; expand only when needed. Do not scan the whole project unless required or requested.
 - If exact relevant files are already known, read them directly. If `rg` is unavailable, use workspace search.
 - Group independent calls when practical and prefer targeted, low-cost commands.

@@ -9,6 +9,7 @@ from core.multimodal import (
     import_image_attachment_from_qimage,
     normalize_image_attachments,
 )
+from core.text_utils import format_elapsed_seconds
 from ui.theme import ACCENT_BLUE, ERROR_RED, SUCCESS_GREEN
 from ui.widgets import _fa_icon
 
@@ -158,7 +159,7 @@ class RunStatusController:
             return
 
         elapsed = time.time() - self.window._run_start_time
-        elapsed_text = f"{int(elapsed)}s"
+        elapsed_text = format_elapsed_seconds(int(elapsed))
         if self.window._last_rendered_elapsed_text == elapsed_text:
             return
 
@@ -204,17 +205,19 @@ class RunStatusController:
         self.window._current_status_phase = phase
 
         try:
-            if elapsed_text.endswith("s"):
+            server_elapsed = float(payload.get("elapsed", 0.0) or 0.0)
+            if server_elapsed <= 0.0 and elapsed_text.endswith("s") and "m" not in elapsed_text:
                 server_elapsed = float(elapsed_text[:-1])
+            if server_elapsed > 0.0:
                 self.window._run_start_time = time.time() - server_elapsed
-        except ValueError:
+        except (TypeError, ValueError):
             pass
 
         self.set_status_visual(label, busy=node != "approval")
 
         if self.window.current_turn is not None:
             current_elapsed = time.time() - self.window._run_start_time if self.window._run_start_time else 0.0
-            self.window._last_rendered_elapsed_text = f"{int(current_elapsed)}s"
+            self.window._last_rendered_elapsed_text = format_elapsed_seconds(int(current_elapsed))
             self.window.current_turn.set_status(label, meta=self.window._last_rendered_elapsed_text, phase=phase)
 
             if node == "summarize":

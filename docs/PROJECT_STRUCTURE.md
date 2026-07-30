@@ -21,7 +21,7 @@
 
 - `PROJECT_STRUCTURE.md` - данный документ: карта модулей и архитектура.
 - `ARCHITECTURE.md` - Runtime Flow, Prompt Layers, Sessions & Checkpoints.
-- `CONFIGURATION.md` - все переменные `.env` (провайдеры, runtime, фиче-флаги, лимиты, retry, персистентность, диагностика).
+- `CONFIGURATION.md` - все переменные `.env` (провайдеры, runtime, фиче-флаги, лимиты, retry, персистентность, диагностика) и provider-заголовки из `headers.json`.
 - `GUI_GUIDE.md` - Transcript, CLI output widget, Composer, горячие клавиши.
 - `SECURITY.md` - Approvals, workspace boundary, `request_user_input`.
 - `MODEL_PROFILES.md` - управление профилями моделей, автозагрузка, ротация API-ключей.
@@ -66,10 +66,11 @@
 Provider-адаптеры, вынесенные из `agent.py`. Изолируют provider-specific private-method overrides от graph runtime.
 
 - `__init__.py` - реэкспорт публичного API: `create_llm`, `create_runtime_llm`, `prepare_llm_with_tools`, хелперы.
+- `anthropic.py` - `ChatAnthropic` adapter: native/adaptive thinking, Anthropic-compatible base URL и нормализация stream metadata от совместимых прокси.
 - `base.py` - общие хелперы: нормализация model-name, reasoning-effort, проверка pydantic-field kwargs.
 - `gemini.py` - Gemini thought-signature adapter (override `_prepare_request`/`_generate`/`_agenerate`), retry-kwargs monkey-patch, фабрика `create_gemini_chat_model()`.
 - `openai_reasoning.py` - `ReasoningDebugChatOpenAI` (override `_stream`/`_astream` для reasoning-debug), `extract_openai_reasoning_delta()`, фабрика `create_openai_chat_model()`.
-- `factory.py` - тонкий оркестратор `create_llm()` (dispatch по provider), `create_runtime_llm()` (API-key rotation), `prepare_llm_with_tools()`.
+- `factory.py` - тонкий оркестратор `create_llm()` (dispatch по Anthropic/Gemini/OpenAI), `create_runtime_llm()` (API-key rotation), `prepare_llm_with_tools()` (нормализация tool schemas перед binding).
 
 ### Узлы и оркестрация графа
 
@@ -127,7 +128,6 @@ Provider-адаптеры, вынесенные из `agent.py`. Изолиру�
 - `local_shell.py` - `cli_exec`, streaming stdout/stderr в реальном времени, exit-code-neutral команды (`grep`/`rg`/`vulture`/`pytest`/`diff` и др. с ненулевым exit code не помечаются как ошибка), управление shell-командами.
 - `process_tools.py` - фоновые процессы: запуск, остановка, поиск по порту.
 - `search_tools.py` - web search/fetch tools (`batch_web_search`, `fetch_content`, опциональный `crawl_site`) и runtime search config.
-- `system_tools.py` - системная информация, сеть, IP.
 - `user_input_tool.py` - запрос уточняющего выбора у пользователя.
 
 ### `tools/filesystem_impl/`

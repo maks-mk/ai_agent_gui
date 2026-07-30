@@ -3,7 +3,10 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import re
 from typing import Any, List
+
+from langgraph.config import get_stream_writer
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
@@ -14,6 +17,33 @@ from core.node_errors import EmptyLLMResponseError
 from core.message_utils import compact_text, stringify_content
 
 logger = logging.getLogger("agent")
+
+_TRANSIENT_RETRY_DELAYS = (2, 4, 8)
+_TRANSIENT_HTTP_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+_TRANSIENT_ERROR_MARKERS = (
+    "rate limit",
+    "rate_limit",
+    "too many requests",
+    "resource exhausted",
+    "resource_exhausted",
+    "timeout",
+    "timed out",
+    "deadline exceeded",
+    "connection",
+    "network",
+    "reset by peer",
+    "connection reset",
+    "connection refused",
+    "connection aborted",
+    "broken pipe",
+    "temporary failure",
+    "temporarily unavailable",
+    "service unavailable",
+    "bad gateway",
+    "gateway timeout",
+    "internal server error",
+    "server disconnected",
+)
 
 
 class LLMMixin:
@@ -52,8 +82,11 @@ class LLMMixin:
     ):
         current_llm = llm
         context = list(context)
-        max_attempts = max(1, self.config.max_retries)
+        configured_max_attempts = max(1, self.config.max_retries)
         retry_delay = max(0, self.config.retry_delay)
+        transient_retry_count = 0
+        configured_retry_count = 0
+        invocation_attempt = 0
         auto_tool_choice_fallback_used = False
         auto_tool_choice_warning = "WARNING: Tools are disabled due to server configuration error."
         self._log_run_event(
@@ -61,11 +94,13 @@ class LLMMixin:
             "llm_invoke_start",
             run_id=None if state is None else state.get("run_id", ""),
             node=node_name,
-            max_attempts=max_attempts,
+            max_attempts=configured_max_attempts,
+            transient_max_retries=len(_TRANSIENT_RETRY_DELAYS),
             context_messages=len(context),
         )
 
-        for attempt in range(max_attempts):
+        while True:
+            invocation_attempt += 1
             try:
                 normalized_context = self._normalize_system_prefix_for_provider(context)
                 response = await current_llm.ainvoke(normalized_context)
@@ -77,7 +112,7 @@ class LLMMixin:
                     "llm_invoke_success",
                     run_id=None if state is None else state.get("run_id", ""),
                     node=node_name,
-                    attempt=attempt + 1,
+                    attempt=invocation_attempt,
                     has_content=bool(stringify_content(response.content).strip()),
                     tool_calls=len(getattr(response, "tool_calls", []) or []),
                 )
@@ -100,54 +135,108 @@ class LLMMixin:
                         system_content = str(context[0].content)
                         if auto_tool_choice_warning not in system_content:
                             system_content = f"{system_content}\n\n{auto_tool_choice_warning}"
-                        context[0] = SystemMessage(
-                            content=system_content
-                        )
+                        context[0] = SystemMessage(content=system_content)
                     continue
 
-                is_fatal = self._is_fatal_llm_error(e)
-                logger.warning(f"LLM Error (Attempt {attempt+1}/{max_attempts}): {e}")
-                self._log_run_event(
-                    state,
-                    "llm_retry",
-                    node=node_name,
-                    attempt=attempt + 1,
-                    max_attempts=max_attempts,
-                    fatal=is_fatal,
-                    error=str(e),
-                )
+                is_transient = self._is_transient_llm_error(e)
+                is_fatal = self._is_fatal_llm_error(e) and not is_transient
+                logger.warning("LLM Error (Attempt %s): %s", invocation_attempt, e)
+
+                if is_transient and transient_retry_count < len(_TRANSIENT_RETRY_DELAYS):
+                    transient_retry_count += 1
+                    backoff_delay = _TRANSIENT_RETRY_DELAYS[transient_retry_count - 1]
+                    self._log_run_event(
+                        state,
+                        "llm_retry",
+                        node=node_name,
+                        attempt=transient_retry_count,
+                        max_attempts=len(_TRANSIENT_RETRY_DELAYS),
+                        invocation_attempt=invocation_attempt,
+                        retry_kind="transient",
+                        backoff_seconds=backoff_delay,
+                        fatal=False,
+                        error=str(e),
+                    )
+                    self._emit_reconnecting_status(node_name, transient_retry_count)
+                    await asyncio.sleep(backoff_delay)
+                    continue
 
                 if is_fatal:
-                    logger.error(f"Fatal LLM error detected. Aborting request: {e}")
+                    logger.error("Fatal LLM error detected. Aborting request: %s", e)
                     self._log_run_event(
                         state,
                         "llm_invoke_fatal",
                         run_id=None if state is None else state.get("run_id", ""),
                         node=node_name,
-                        attempt=attempt + 1,
+                        attempt=invocation_attempt,
                         error_type=type(e).__name__,
                         error=compact_text(str(e), 400),
                     )
                     raise
 
-                if attempt == max_attempts - 1:
+                if is_transient or configured_retry_count >= configured_max_attempts - 1:
                     self._log_run_event(
                         state,
                         "llm_invoke_exhausted",
                         run_id=None if state is None else state.get("run_id", ""),
                         node=node_name,
-                        attempt=attempt + 1,
+                        attempt=invocation_attempt,
                         error_type=type(e).__name__,
                         error=compact_text(str(e), 400),
                     )
                     raise
 
-                # Exponential backoff with jitter: delay = base * 2^attempt + random(0, base)
-                # This avoids thundering-herd on rate limits and transient errors.
-                backoff_delay = retry_delay * (2 ** attempt) + random.uniform(0, retry_delay)
+                backoff_delay = retry_delay * (2 ** configured_retry_count) + random.uniform(0, retry_delay)
+                configured_retry_count += 1
+                self._log_run_event(
+                    state,
+                    "llm_retry",
+                    node=node_name,
+                    attempt=configured_retry_count,
+                    max_attempts=max(0, configured_max_attempts - 1),
+                    invocation_attempt=invocation_attempt,
+                    retry_kind="configured",
+                    backoff_seconds=backoff_delay,
+                    fatal=False,
+                    error=str(e),
+                )
                 await asyncio.sleep(backoff_delay)
 
-        raise RuntimeError("LLM retry loop exited unexpectedly without a response.")
+    @staticmethod
+    def _emit_reconnecting_status(node_name: str, retry_number: int) -> None:
+        try:
+            writer = get_stream_writer()
+            writer(
+                {
+                    "type": "status_changed",
+                    "label": f"Reconnecting... {retry_number}/{len(_TRANSIENT_RETRY_DELAYS)}",
+                    "node": node_name or "agent",
+                }
+            )
+        except RuntimeError:
+            # Direct unit invocations do not have a LangGraph streaming context.
+            return
+
+    @staticmethod
+    def _is_transient_llm_error(error: Exception) -> bool:
+        if classify_api_key_error(error) == "rate_limit":
+            return True
+
+        for candidate in (
+            getattr(error, "status_code", None),
+            getattr(getattr(error, "response", None), "status_code", None),
+        ):
+            try:
+                if int(candidate) in _TRANSIENT_HTTP_STATUS_CODES:
+                    return True
+            except (TypeError, ValueError):
+                continue
+
+        error_text = " ".join(str(error).lower().split())
+        status_pattern = "|".join(str(code) for code in sorted(_TRANSIENT_HTTP_STATUS_CODES))
+        if re.search(rf"(?<!\d)(?:{status_pattern})(?!\d)", error_text):
+            return True
+        return any(marker in error_text for marker in _TRANSIENT_ERROR_MARKERS)
 
     def _is_fatal_llm_error(self, error: Exception) -> bool:
         if isinstance(error, ApiKeyRotationExhaustedError):

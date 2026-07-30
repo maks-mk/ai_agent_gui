@@ -14,6 +14,7 @@ from core.text_utils import (
     build_tool_ui_labels,
     build_mcp_tool_ui_labels,
     classify_tool_args_state,
+    format_elapsed_seconds,
     format_tool_display,
     format_tool_output,
     prepare_markdown_for_render,
@@ -367,6 +368,25 @@ class StreamProcessor:
             self._handle_updates(payload)
         elif mode == "messages":
             self._handle_messages(payload)
+        elif mode == "custom":
+            self._handle_custom(payload)
+
+    def _handle_custom(self, payload: Any) -> None:
+        if not isinstance(payload, dict) or payload.get("type") != "status_changed":
+            return
+
+        label = str(payload.get("label") or "").strip()
+        if not label:
+            return
+        node = str(payload.get("node") or self.active_node or "agent")
+        self.active_node = node
+        self._last_status = (node, label)
+        status_payload = {key: value for key, value in payload.items() if key != "type"}
+        status_payload.setdefault("node", node)
+        status_payload.setdefault("elapsed", self._elapsed_seconds())
+        status_payload.setdefault("elapsed_text", self._status_elapsed_text())
+        status_payload.setdefault("phase", self._status_phase())
+        self._emit("status_changed", status_payload)
 
     def _handle_updates(self, payload: Dict[str, Any]) -> None:
         if "__interrupt__" in payload:
@@ -1673,7 +1693,7 @@ class StreamProcessor:
             return ""
         if elapsed < 10.0:
             return f"{elapsed:.1f}s"
-        return f"{int(round(elapsed))}s"
+        return format_elapsed_seconds(round(elapsed))
 
     def _build_tool_event_payload(
         self,

@@ -5,7 +5,7 @@
 > *"Created by a SysAdmin for developers. Focus on safety, portability, and zero-nonsense execution. No Docker, no heavy environments, just one binary."*
 
 Десктопный AI-агент с runtime на `LangGraph` и графическим интерфейсом на `PySide6`.  
-Работает с файлами, shell-командами, системой, MCP-серверами и веб-поиском.
+Работает с файлами, shell-командами, процессами, MCP-серверами и веб-поиском.
 
 Запуск из исходников: `python main.py`.  
 Сборка в portable `.exe` для Windows: `build.bat`.
@@ -24,11 +24,11 @@
 - безопасность;
 - локальные инструменты;
 - автоматизация;
-- работа с файлами и системой;
+- работа с файлами и локальными процессами;
 - поиск информации в интернете;
 - надёжность.
 
-Проект не стремится конкурировать с AI IDE по количеству функций и не пытается заменить специализированные инструменты для разработки. Фокус — практическое выполнение повседневных задач: работа с файлами, shell-командами, системой, веб-поиском, документацией, скриптами и автоматизацией в одном переносимом приложении без сложной инфраструктуры и дополнительных сервисов.
+Проект не стремится конкурировать с AI IDE по количеству функций и не пытается заменить специализированные инструменты для разработки. Фокус — практическое выполнение повседневных задач: работа с файлами, shell-командами, локальными процессами, веб-поиском, документацией, скриптами и автоматизацией в одном переносимом приложении без сложной инфраструктуры и дополнительных сервисов.
 
 ---
 
@@ -41,10 +41,10 @@
 - Live CLI output streaming: вывод shell-команд отображается в карточке инструмента в реальном времени, а не только после завершения
 - Exit-code-neutral команды: `grep`, `rg`, `vulture`, `pytest`, `diff` и др. с ненулевым exit code не помечаются как ошибка — вывод возвращается с префиксом `Exit Code: N`
 - Stream-interruption recovery с классификацией ошибок (`rate_limit` / `timeout` / `server_error` / `network`) и экспоненциальным backoff с джиттером перед авто-продолжением
-- Инструменты: filesystem, shell, web search, system info, process management, MCP
+- Инструменты: filesystem (включая `download_file`), shell, web search, process management, MCP
 - Approval-паузы перед мутирующими и деструктивными действиями
 - Автосуммаризация контекста при длинных сессиях
-- Настраиваемые HTTP-заголовки для OpenAI-совместимых запросов через `headers.json` (эмуляция QwenCode и др.)
+- Настраиваемые HTTP-заголовки для OpenAI-compatible и Anthropic LLM через `headers.json` (эмуляция совместимых клиентов и прокси)
 - Несколько профилей моделей с переключением прямо в GUI
 - Durable checkpoints — сессии сохраняются между запусками
 - Опциональный image input, если модель его поддерживает
@@ -113,8 +113,8 @@ START
 ├── requirements.txt
 ├── core/                  # Ядро агента: config, state, policies, recovery, provider registry
 │   ├── nodes/             # Узлы LangGraph: context, llm, agent, tools, approval, recovery
-│   └── providers/         # Provider-адаптеры (gemini, openai_reasoning, factory)
-├── tools/                 # Filesystem, shell, search, system, process, user input, MCP registry
+│   └── providers/         # Provider-адаптеры (Anthropic, Gemini, OpenAI-compatible)
+├── tools/                 # Filesystem/download, shell, search, process, user input, MCP registry
 ├── ui/                    # PySide6 GUI, runtime worker, streaming/status handling
 ├── docs/                  # Документация
 ├── tests/                 # Runtime, UI, tools, provider registry, logging, policies
@@ -128,7 +128,7 @@ START
 
 ## Тесты
 
-Полный целевой regression-набор для runtime/GUI/streaming: 720 тестов.
+Запустите полный regression-набор:
 
 ```powershell
 venv\Scripts\python.exe -m pytest
@@ -157,8 +157,8 @@ venv\Scripts\python.exe -m pytest
 | `pydantic-settings` | Конфигурация через `.env` |
 | `tiktoken` | Подсчёт токенов для суммаризации |
 | `tavily-python` | Web search |
-| `psutil` | Системные инструменты и процессы |
-| `httpx` | HTTP для MCP и fetch |
+| `psutil` | Управление процессами |
+| `httpx` | HTTP для загрузки файлов, model discovery, MCP и web fetch |
 | `aiofiles` | Async файловые операции |
 | `aiosqlite` | Async SQLite для checkpointing |
 | `mcp` | Model Context Protocol |
@@ -173,7 +173,7 @@ venv\Scripts\python.exe -m pytest
 | Документ | Содержание |
 |---|---|
 | [Архитектура](./docs/ARCHITECTURE.md) | Runtime Flow, Prompt Layers, Sessions & Checkpoints |
-| [Конфигурация](./docs/CONFIGURATION.md) | Все переменные `.env` (провайдеры, runtime, фиче-флаги, лимиты, retry, персистентность, диагностика), HTTP-заголовки `headers.json` |
+| [Конфигурация](./docs/CONFIGURATION.md) | Все переменные `.env` (провайдеры, runtime, фиче-флаги, лимиты, retry, персистентность, диагностика), HTTP-заголовки `headers.json` для provider-запросов |
 | [GUI](./docs/GUI_GUIDE.md) | Transcript, CLI output widget, Composer, горячие клавиши |
 | [Безопасность](./docs/SECURITY.md) | Approvals, workspace boundary, `request_user_input` |
 | [Профили моделей](./docs/MODEL_PROFILES.md) | Управление профилями, автозагрузка моделей, ротация API-ключей |

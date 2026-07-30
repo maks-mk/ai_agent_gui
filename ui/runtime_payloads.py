@@ -78,24 +78,6 @@ def _tool_group(tool, metadata: ToolMetadata | None) -> str:
     return "Read-only"
 
 
-def _format_tool_flags(metadata: ToolMetadata | None, *, is_mcp: bool) -> str:
-    metadata = metadata or ToolMetadata(name="unknown", read_only=True)
-    flags: list[str] = []
-    if is_mcp:
-        flags.append("mcp")
-    if metadata.read_only and not metadata.mutating and not metadata.destructive:
-        flags.append("read-only")
-    if metadata.requires_approval:
-        flags.append("approval")
-    if metadata.mutating:
-        flags.append("mutating")
-    if metadata.destructive:
-        flags.append("destructive")
-    if metadata.networked:
-        flags.append("network")
-    return ", ".join(flags)
-
-
 def _enabled_mcp_servers(tool_registry) -> list[str]:
     names = []
     for status in getattr(tool_registry, "mcp_server_status", []):
@@ -113,24 +95,87 @@ def _runtime_issue_count(tool_registry) -> int:
     )
 
 
-def build_tools_snapshot(tool_registry) -> list[dict[str, str]]:
-    rows: list[dict[str, str]] = []
+def build_tools_snapshot(tool_registry) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
     metadata_map = getattr(tool_registry, "tool_metadata", {})
     tools = getattr(tool_registry, "tools", [])
+    builtin_tools = getattr(tool_registry, "builtin_tools", tools)
+    statuses = {
+        str(status.get("server", "")): status
+        for status in getattr(tool_registry, "mcp_server_status", [])
+        if status.get("server")
+    }
+    mcp_config = {
+        name: cfg
+        for name, cfg in getattr(tool_registry, "mcp_config", {}).items()
+        if name != "_builtin_tools"
+    }
+    disabled_local_tools = getattr(tool_registry, "disabled_local_tools", set())
+    mcp_tool_names = {
+        str(tool_name)
+        for status in statuses.values()
+        for tool_name in status.get("loaded_tools", [])
+    }
 
-    for group_name in ("Read-only", "Protected", "MCP"):
-        items = []
+    server_names = list(mcp_config)
+    server_names.extend(name for name in statuses if name not in mcp_config)
+    for server_name in server_names:
+        cfg = mcp_config.get(server_name, {})
+        if not isinstance(cfg, dict):
+            continue
+        status = statuses.get(str(server_name), {})
+        enabled = bool(cfg.get("enabled", status.get("enabled", True)))
+        error = str(status.get("error", "") or "")
+        loaded_names = {str(name) for name in status.get("loaded_tools", [])}
+        server_tools = []
         for tool in tools:
             metadata = metadata_map.get(tool.name)
-            if _tool_group(tool, metadata) == group_name:
+            belongs_to_server = (
+                tool.name in loaded_names
+                or tool.name.startswith(f"{server_name}:")
+                or (_tool_is_mcp(tool, metadata) and tool.name.rsplit(":", 1)[-1] in loaded_names)
+            )
+            if belongs_to_server:
+                server_tools.append(
+                    {
+                        "kind": "mcp_tool",
+                        "name": tool.name,
+                        "description": tool.description or "No description",
+                    }
+                )
+        server_tools.sort(key=lambda item: item["name"])
+        if not enabled:
+            description = "MCP server - disabled"
+        elif error:
+            description = f"MCP server - error: {error}"
+        else:
+            description = f"MCP server - {len(server_tools)} tool(s)"
+        rows.append(
+            {
+                "group": "MCP",
+                "kind": "server",
+                "name": str(server_name),
+                "description": description,
+                "enabled": enabled,
+                "tools": server_tools,
+            }
+        )
+
+    for group_name in ("Read-only", "Protected"):
+        items = []
+        for tool in builtin_tools:
+            metadata = metadata_map.get(tool.name)
+            is_mcp = _tool_is_mcp(tool, metadata) or tool.name in mcp_tool_names
+            if not is_mcp and _tool_group(tool, metadata) == group_name:
                 items.append((tool, metadata))
         for tool, metadata in sorted(items, key=lambda item: item[0].name):
             rows.append(
                 {
                     "group": group_name,
+                    "kind": "tool",
                     "name": tool.name,
                     "description": tool.description or "No description",
-                    "flags": _format_tool_flags(metadata, is_mcp=_tool_is_mcp(tool, metadata)),
+                    "enabled": tool.name not in disabled_local_tools,
                 }
             )
     return rows
@@ -155,7 +200,11 @@ def build_runtime_snapshot(config: AgentConfig, tool_registry, snapshot: Session
         "provider": provider_label,
         "model": model_name,
         "backend": backend,
-        "tools_count": len(getattr(tool_registry, "tools", [])),
+        "tools_count": (
+            len(tool_registry.active_tools())
+            if hasattr(tool_registry, "active_tools")
+            else len(getattr(tool_registry, "tools", []))
+        ),
         "session_id": snapshot.session_id,
         "session_short": _short_id(snapshot.session_id),
         "session_title": snapshot.title,
@@ -749,9 +798,8 @@ async def close_runtime_resources(tool_registry) -> None:
     if tool_registry:
         await tool_registry.cleanup()
     try:
-        from tools.system_tools import _net_client
+        from tools.filesystem import close_download_client
 
-        if _net_client:
-            await _net_client.aclose()
+        await close_download_client()
     except ImportError:
         pass

@@ -8,7 +8,7 @@ from unittest import mock
 import httpx
 from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage, ToolMessage
 
-from core.text_utils import format_tool_output, prepare_markdown_for_render, split_markdown_segments
+from core.text_utils import format_elapsed_seconds, format_tool_output, prepare_markdown_for_render, split_markdown_segments
 from ui.streaming import StreamProcessor
 from ui.window_components.main_window import MainWindow
 from tools import filesystem, local_shell
@@ -54,6 +54,18 @@ class StreamAndFilesystemTests(unittest.TestCase):
         path.mkdir(parents=True, exist_ok=True)
         self.addCleanup(lambda: shutil.rmtree(path, ignore_errors=True))
         return path
+
+    def test_elapsed_seconds_uses_minutes_only_above_sixty_seconds(self):
+        self.assertEqual(format_elapsed_seconds(60), "60s")
+        self.assertEqual(format_elapsed_seconds(61), "1m1s")
+        self.assertEqual(format_elapsed_seconds(120), "2m0s")
+
+    def test_stream_status_elapsed_text_uses_minutes_after_rounding(self):
+        processor = StreamProcessor()
+        with mock.patch.object(StreamProcessor, "_elapsed_seconds", return_value=60.4):
+            self.assertEqual(processor._status_elapsed_text(), "60s")
+        with mock.patch.object(StreamProcessor, "_elapsed_seconds", return_value=60.6):
+            self.assertEqual(processor._status_elapsed_text(), "1m1s")
 
     def test_prepare_markdown_does_not_guess_code_blocks_from_plain_text(self):
         source = 'Пример (файл main.go):\npackage main\nimport "fmt"\nfunc main() {\n    fmt.Println("hi")\n}'
@@ -195,6 +207,28 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIn("browser-only access", _format_download_http_error(forbidden))
         self.assertIn("NOT_FOUND", _format_download_http_error(not_found))
         self.assertIn("direct file", _format_download_http_error(not_found))
+
+    def test_stream_processor_forwards_custom_status_event(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        async def _stream():
+            yield {
+                "type": "custom",
+                "data": {
+                    "type": "status_changed",
+                    "label": "Reconnecting... 1/3",
+                    "node": "agent",
+                },
+            }
+
+        result = asyncio.run(processor.process_stream(_stream()))
+
+        statuses = [event.payload for event in events if event.type == "status_changed"]
+        self.assertFalse(result.failed)
+        self.assertTrue(statuses)
+        self.assertEqual(statuses[-1]["label"], "Reconnecting... 1/3")
+        self.assertEqual(statuses[-1]["node"], "agent")
 
     def test_stream_processor_emits_tool_error_and_diff_events(self):
         events = []
@@ -1569,7 +1603,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
             AIMessageChunk(
                 content="",
                 tool_call_chunks=[
-                    {"name": "get_system_info", "args": "", "id": "call-no-args", "index": 0}
+                    {"name": "status_tool", "args": "", "id": "call-no-args", "index": 0}
                 ],
                 chunk_position="last",
             ),
@@ -1580,7 +1614,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
         processor._handle_tool_result(
             ToolMessage(
                 tool_call_id="call-no-args",
-                name="get_system_info",
+                name="status_tool",
                 content="ok",
             )
         )
@@ -1591,7 +1625,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertLess(event_types.index("tool_started"), event_types.index("tool_finished"))
         started = [event.payload for event in events if event.type == "tool_started"]
         self.assertEqual(started[0]["tool_id"], "call-no-args")
-        self.assertEqual(started[0]["name"], "get_system_info")
+        self.assertEqual(started[0]["name"], "status_tool")
         self.assertEqual(started[0]["args"], {})
 
     def test_stream_processor_aliases_late_tool_call_chunk_id_to_preview_card(self):

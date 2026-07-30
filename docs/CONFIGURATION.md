@@ -56,7 +56,6 @@
 | `ENABLE_FILESYSTEM_TOOLS` | Инструменты для работы с файлами |
 | `ENABLE_SHELL_TOOL` | Shell-выполнение команд |
 | `ENABLE_SEARCH_TOOLS` | Web search через Tavily |
-| `ENABLE_SYSTEM_TOOLS` | Информация о системе |
 | `ENABLE_PROCESS_TOOLS` | Управление процессами |
 | `ENABLE_APPROVALS` | Approval-паузы перед рискованными действиями |
 | `ALLOW_EXTERNAL_PROCESS_CONTROL` | Разрешить управление внешними процессами |
@@ -91,15 +90,15 @@
 
 ---
 
-## HTTP-заголовки для OpenAI-совместимых запросов
+## HTTP-заголовки для provider-запросов
 
-Для эмуляции QwenCode или добавления пользовательских заголовков в запросы к OpenAI-совместимым бэкендам используется файл `headers.json` в корне проекта.
+Для эмуляции совместимого клиента или добавления пользовательских заголовков в запросы к OpenAI-compatible и Anthropic LLM используется файл `headers.json` в корне проекта.
 
 **Поведение:**
-- Файл отсутствует → SDK отправляет свои стандартные заголовки (`User-Agent: openai-python 2.44.0`, `X-Stainless-Lang: python` и т.д.).
+- Файл отсутствует → provider SDK отправляет свои стандартные заголовки.
 - Файл присутствует → его строковые значения переопределяют/добавляют заголовки SDK. Битый или не-объектный JSON игнорируется (возвращается пустой словарь).
 
-**Пример `headers.json` (эмуляция QwenCode):**
+**Пример `headers.json` (эмуляция OpenAI-compatible клиента):**
 ```json
 {
   "User-Agent": "QwenCode/0.12.6 (win32; x64)",
@@ -115,10 +114,11 @@
 ```
 
 **Применение:**
-- Заголовки используются в `core/model_fetcher.py` для discovery моделей и в `core/providers/openai_reasoning.py` для запросов к LLM.
+- Заголовки используются в `core/model_fetcher.py` для OpenAI-compatible model discovery, а также в `core/providers/openai_reasoning.py` и `core/providers/anthropic.py` для LLM-запросов.
+- Для Anthropic model discovery используются обязательные API-заголовки, но пользовательские значения из `headers.json` не добавляются.
 - Для Gemini-запросов заголовки не применяются.
 
-**Модуль:** `core/http_headers.py` — загрузчик `load_openai_headers()`, который безопасно читает файл и возвращает словарь заголовков.
+**Модуль:** `core/http_headers.py` — загрузчик `load_provider_headers()`; `load_openai_headers()` сохранён как обратно совместимый alias.
 
 ---
 

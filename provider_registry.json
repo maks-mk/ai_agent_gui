@@ -322,12 +322,9 @@
         ],
         "value_map": {
           "xhigh": "high"
-        },
-        "extra_fields": {
-          "reasoning.summary": "auto"
         }
       },
-      "notes": "Experimental: testing OpenAI-style reasoning payload for GPT-5 models through freemodel.dev."
+      "notes": "AgentRouter OpenAI-compatible Chat Completions uses top-level reasoning_effort; Responses-only reasoning.summary is not sent in chat mode."
     },
     {
       "id": "tokenbay",

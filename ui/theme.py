@@ -1881,6 +1881,48 @@ def build_stylesheet() -> str:
         border-radius: {SOFT_RADIUS_MD}px;
     }}
 
+    QCheckBox#ToolAvailabilitySwitch {{
+        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.08)};
+        border-radius: 10px;
+        border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.16)};
+        padding: 0px;
+        spacing: 0px;
+    }}
+
+    QCheckBox#ToolAvailabilitySwitch:hover {{
+        background: {blend_hex(SURFACE_ALT, "#FFFFFF", 0.16)};
+    }}
+
+    QCheckBox#ToolAvailabilitySwitch:checked {{
+        background: {blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.34)};
+        border: 1px solid {blend_hex(SUCCESS_GREEN, "#FFFFFF", 0.06)};
+    }}
+
+    QCheckBox#ToolAvailabilitySwitch:disabled {{
+        background: {SURFACE_BG};
+        border-color: {BORDER};
+    }}
+
+    QCheckBox#ToolAvailabilitySwitch::indicator {{
+        width: 14px;
+        height: 14px;
+        border-radius: 7px;
+        background: {TEXT_PRIMARY};
+        border: none;
+    }}
+
+    QCheckBox#ToolAvailabilitySwitch::indicator:unchecked {{
+        subcontrol-origin: margin;
+        subcontrol-position: left center;
+        margin-left: 2px;
+    }}
+
+    QCheckBox#ToolAvailabilitySwitch::indicator:checked {{
+        subcontrol-origin: margin;
+        subcontrol-position: right center;
+        margin-right: 2px;
+    }}
+
     QLabel#ToolGroupHeader {{
         color: {TEXT_MUTED};
         font-size: 7.2pt;
@@ -1897,17 +1939,40 @@ def build_stylesheet() -> str:
         color: {ACCENT_BLUE};
     }}
 
-    QLabel#ToolCardTitle {{
+    QToolButton#ToolCardTitle {{
         color: {TEXT_PRIMARY};
         font-weight: 600;
         font-size: 8.8pt;
         font-family: "{MONO_FONT_FAMILY}";
+        background: transparent;
+        border: none;
+        padding: 0;
+        text-align: left;
+    }}
+
+    QToolButton#ToolCardTitle:hover {{
+        color: {ACCENT_BLUE};
+    }}
+
+    QWidget#ToolCardDetails {{
         background: transparent;
     }}
 
     QLabel#ToolCardDescription {{
         color: {TEXT_MUTED};
         font-size: 8pt;
+        background: transparent;
+    }}
+
+    QLabel#MCPToolCardItem {{
+        color: {TEXT_MUTED};
+        font-size: 8pt;
+        background: transparent;
+    }}
+
+    QLabel#MCPServerLoadingLabel {{
+        color: {ACCENT_BLUE};
+        font-size: 7.5pt;
         background: transparent;
     }}
 

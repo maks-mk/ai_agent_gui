@@ -152,9 +152,9 @@ Registry матчится по hostname из `OPENAI_BASE_URL`.
 |---|---|---|
 | Native OpenAI Responses API | `reasoning.effort` | OpenAI |
 | OpenAI SDK `extra_body` | `extra_body.reasoning.effort` | OpenRouter |
-| Top-level Chat Completions field | `reasoning_effort` | Ollama Cloud, Fireworks, NVIDIA NIM, Mistral |
+| Top-level Chat Completions field | `reasoning_effort` | Ollama Cloud, Fireworks, Mistral |
 
-> **NVIDIA NIM** дополнительно поддерживает `max` как максимальный уровень reasoning effort.
+> **NVIDIA NIM** в текущем registry использует отдельный формат `extra_body.chat_template_kwargs.enable_thinking`; подробности ниже.
 
 Не угадывай поле по названию модели. Один и тот же model id через разные gateways может требовать разные параметры.
 
@@ -303,7 +303,7 @@ NVIDIA NIM hosted API (`integrate.api.nvidia.com`, `api.nvidia.com`) имеет 
 
 1. **`chat_template_kwargs` для thinking mode** — агент включает thinking через `extra_body.chat_template_kwargs.enable_thinking` (отправляется через `extra_body`, чтобы обойти LangChain UserWarning о нестандартных параметрах). Это работает на hosted API для моделей, перечисленных в `model_match` (`deepseek-r1`, `deepseek-v4`, `deepseek-v3`, `glm-5`, `glm-4.7`, `kimi-k2`, `qwen3`, `gemma-4`, `gpt-oss`). Модели вне `model_match` либо не поддерживают thinking, либо думают всегда.
 
-2. **Vocabulary**: `low`, `medium`, `high`, `max`. В registry все значения effort маппятся в `enable_thinking: true` (включение/выключение thinking), а `max` — самое глубокое reasoning.
+2. **Vocabulary**: входные значения `minimal`, `low`, `medium`, `high`, `xhigh` и `max` маппятся в `enable_thinking: true`. В текущей схеме они только включают thinking mode и не задают различимую глубину reasoning.
 
 3. **Reasoning в streaming** — модель может возвращать reasoning через нестандартные top-level поля в delta: `delta.reasoning`, `delta.reasoning_content`, `delta.thinking`. Наш `extract_openai_reasoning_delta` уже проверяет эти поля.
 

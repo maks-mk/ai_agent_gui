@@ -16,6 +16,7 @@ from tools import process_tools
 from tools.process_tools import run_background_process
 from tools.search_tools import _parse_urls_input, fetch_content
 from tools.tool_registry import ToolRegistry
+from ui.runtime_payloads import build_tools_snapshot
 from tools.user_input_tool import request_user_input
 
 
@@ -27,7 +28,6 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
             "PROMPT_PATH": Path(__file__).resolve().parents[1] / "prompt.txt",
             "MCP_CONFIG_PATH": Path(__file__).resolve().parents[1] / "tests" / "missing_mcp.json",
             "ENABLE_SEARCH_TOOLS": False,
-            "ENABLE_SYSTEM_TOOLS": False,
             "ENABLE_PROCESS_TOOLS": False,
             "ENABLE_SHELL_TOOL": False,
         }
@@ -46,6 +46,58 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         names = {tool.name for tool in registry.tools}
         self.assertIn("safe_delete_file", names)
         self.assertIn("safe_delete_directory", names)
+        self.assertIn("download_file", names)
+
+    async def test_tool_registry_filters_disabled_local_tool(self):
+        tmp = self._workspace_tempdir()
+        mcp_config_path = tmp / "mcp.json"
+        mcp_config_path.write_text("{}", encoding="utf-8")
+        registry = ToolRegistry(self._make_config(MCP_CONFIG_PATH=mcp_config_path))
+        await registry.load_all()
+
+        registry.set_tool_enabled("read_file", False)
+
+        self.assertNotIn("read_file", {tool.name for tool in registry.active_tools()})
+        self.assertIn("read_file", {tool.name for tool in registry.tools})
+        persisted = json.loads(mcp_config_path.read_text(encoding="utf-8"))
+        self.assertFalse(persisted["_builtin_tools"]["read_file"])
+
+    async def test_tool_registry_catalogs_globally_disabled_builtin_tools(self):
+        registry = ToolRegistry(self._make_config(ENABLE_FILESYSTEM_TOOLS=False))
+
+        await registry.load_all()
+
+        catalog_names = {tool.name for tool in registry.builtin_tools}
+        self.assertIn("read_file", catalog_names)
+        self.assertIn("batch_web_search", catalog_names)
+        self.assertIn("cli_exec", catalog_names)
+        self.assertNotIn("read_file", {tool.name for tool in registry.active_tools()})
+
+    async def test_tool_registry_persists_builtin_state_without_replacing_mcp_servers(self):
+        tmp = self._workspace_tempdir()
+        mcp_config_path = tmp / "mcp.json"
+        mcp_config_path.write_text(
+            json.dumps({"context7": {"url": "https://mcp.context7.com/mcp", "enabled": False}}),
+            encoding="utf-8",
+        )
+        registry = ToolRegistry(self._make_config(MCP_CONFIG_PATH=mcp_config_path))
+        await registry.load_all()
+
+        registry.set_tool_enabled("read_file", False)
+
+        persisted = json.loads(mcp_config_path.read_text(encoding="utf-8"))
+        self.assertEqual(
+            persisted["context7"],
+            {"url": "https://mcp.context7.com/mcp", "enabled": False},
+        )
+        self.assertEqual(persisted["_builtin_tools"], {"read_file": False})
+
+        restored_registry = ToolRegistry(self._make_config(MCP_CONFIG_PATH=mcp_config_path))
+        await restored_registry.load_all()
+        restored_rows = build_tools_snapshot(restored_registry)
+        restored_read_file = next(row for row in restored_rows if row.get("name") == "read_file")
+        self.assertFalse(restored_read_file["enabled"])
+        self.assertNotIn("read_file", {tool.name for tool in restored_registry.active_tools()})
 
     async def test_tool_registry_does_not_keep_selector_catalog_state(self):
         registry = ToolRegistry(self._make_config())
@@ -94,7 +146,10 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         ):
             await registry.load_all()
 
+        registry.set_tool_enabled("context7:resolve-library-id", False)
+
         self.assertEqual(registry.mcp_clients, [fake_client])
+        self.assertIn("context7:resolve-library-id", {tool.name for tool in registry.active_tools()})
         await registry.cleanup()
         fake_client.aclose.assert_awaited_once()
 

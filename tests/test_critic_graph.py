@@ -62,17 +62,24 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         max_retries=3,
         retry_delay=0,
         enable_approvals=False,
+        summary_threshold=None,
+        summary_keep_last=None,
     ):
-        return AgentConfig(
-            provider="openai",
-            openai_api_key="test-key",
-            model_supports_tools=model_supports_tools,
-            max_loops=max_loops,
-            max_retries=max_retries,
-            retry_delay=retry_delay,
-            enable_approvals=enable_approvals,
-            prompt_path=Path(__file__).resolve().parents[1] / "prompt.txt",
-        )
+        config_kwargs = {
+            "provider": "openai",
+            "openai_api_key": "test-key",
+            "model_supports_tools": model_supports_tools,
+            "max_loops": max_loops,
+            "max_retries": max_retries,
+            "retry_delay": retry_delay,
+            "enable_approvals": enable_approvals,
+            "prompt_path": Path(__file__).resolve().parents[1] / "prompt.txt",
+        }
+        if summary_threshold is not None:
+            config_kwargs["summary_threshold"] = summary_threshold
+        if summary_keep_last is not None:
+            config_kwargs["summary_keep_last"] = summary_keep_last
+        return AgentConfig(**config_kwargs)
 
     def _build_app(
         self,
@@ -84,11 +91,15 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         agent_llm_cls=FakeLLM,
         tool_metadata=None,
         max_loops=8,
+        summary_threshold=None,
+        summary_keep_last=None,
     ):
         config = self._make_config(
             model_supports_tools=model_supports_tools,
             enable_approvals=enable_approvals,
             max_loops=max_loops,
+            summary_threshold=summary_threshold,
+            summary_keep_last=summary_keep_last,
         )
         agent_llm = agent_llm_cls(agent_responses)
         nodes = AgentNodes(
@@ -147,6 +158,40 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertEqual(len(agent_llm.invocations), 1)
         self.assertIsNone(result["open_tool_issue"])
+
+    async def test_auto_summary_is_included_in_final_model_payload_as_memory(self):
+        summary_text = "- Completed earlier investigation: relevant file is core/context_builder.py."
+        app, agent_llm = self._build_app(
+            agent_responses=[AIMessage(content=summary_text), AIMessage(content="Continue from memory.")],
+            tools=[],
+            model_supports_tools=False,
+            summary_threshold=1,
+            summary_keep_last=1,
+        )
+        state = self._initial_state("Continue the investigation")
+        state["messages"] = [
+            HumanMessage(content="old request " + "x" * 2000),
+            AIMessage(content="old response " + "x" * 2000),
+            HumanMessage(content="old follow-up " + "x" * 2000),
+            AIMessage(content="old result " + "x" * 2000),
+            HumanMessage(content="old decision " + "x" * 2000),
+            HumanMessage(content="latest request"),
+        ]
+
+        result = await app.ainvoke(
+            state,
+            config={"configurable": {"thread_id": "summary-memory-payload"}, "recursion_limit": 24},
+        )
+
+        self.assertEqual(result["summary"], summary_text)
+        self.assertEqual(len(agent_llm.invocations), 2)
+        final_payload = agent_llm.invocations[1]
+        memory_text = "\n".join(
+            str(message.content)
+            for message in final_payload
+            if isinstance(message, SystemMessage)
+        )
+        self.assertIn(f"<memory>\n{summary_text}\n</memory>", memory_text)
 
     async def test_request_user_input_interrupts_and_resumes_with_selected_option(self):
         tool = FakeTool("edit_file", "Success: File edited.")

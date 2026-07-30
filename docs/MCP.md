@@ -1,6 +1,8 @@
 # MCP (Model Context Protocol)
 
-`mcp.json` задаёт опциональные MCP-серверы. По умолчанию все серверы выключены. В комплекте идут примеры: `filesystem` (stdio), `context7` (remote, read-only) и `sequential-thinking` (stdio) — все с `enabled: false`. Включите нужный сервер, выставив `enabled: true`.
+`mcp.json` хранит конфигурацию опциональных MCP-серверов и сохранённое состояние встроенных инструментов. В текущем шаблоне доступны `context7` (remote HTTP, read-only) и `sequential-thinking` (stdio); оба сервера выключены по умолчанию. Чтобы подключить сервер, выставьте для него `enabled: true`.
+
+Служебный объект `_builtin_tools` не является MCP-сервером. UI записывает в него пользовательские overrides для встроенных инструментов, например `"download_file": false`. Если override отсутствует, состояние определяется соответствующим фиче-флагом из `.env`.
 
 ## Policy
 

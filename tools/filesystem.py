@@ -378,6 +378,22 @@ _DOWNLOAD_HEADERS = {
     "Accept-Language": "en-US,en;q=0.9",
     "Cache-Control": "no-cache",
 }
+_DOWNLOAD_CLIENT: Optional[httpx.AsyncClient] = None
+
+
+def _get_download_client() -> httpx.AsyncClient:
+    global _DOWNLOAD_CLIENT
+    if _DOWNLOAD_CLIENT is None:
+        _DOWNLOAD_CLIENT = httpx.AsyncClient(timeout=15, follow_redirects=True)
+    return _DOWNLOAD_CLIENT
+
+
+async def close_download_client() -> None:
+    global _DOWNLOAD_CLIENT
+    if _DOWNLOAD_CLIENT is None:
+        return
+    client, _DOWNLOAD_CLIENT = _DOWNLOAD_CLIENT, None
+    await client.aclose()
 
 
 def _cleanup_partial_download(path: Path) -> None:
@@ -424,13 +440,11 @@ async def download_file(url: str, filename: Optional[str] = None) -> str:
         temp_destination = destination.with_name(destination.name + ".part")
         _cleanup_partial_download(temp_destination)
 
-        from tools.system_tools import get_net_client
-
-        client = get_net_client()
+        client = _get_download_client()
         logger.info("⬇️ Downloading %s to %s", url, destination)
 
         try:
-            async with client.client.stream(
+            async with client.stream(
                 "GET",
                 url,
                 follow_redirects=True,
@@ -485,6 +499,7 @@ __all__ = [
     "safe_delete_file",
     "safe_delete_directory",
     "download_file",
+    "close_download_client",
     "_DOWNLOAD_HEADERS",
     "_format_download_http_error",
 ]

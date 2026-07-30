@@ -232,6 +232,23 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["messages"][0].content, "result:read_file")
         self.assertEqual(result["messages"][1].content, "result:write_file")
         self.assertEqual(result["messages"][2].content, "result:list_directory")
+        self.assertEqual(owner._call_log, ["read_file", "write_file", "list_directory"])
+
+    async def test_mutating_call_is_a_barrier_for_following_read(self):
+        owner = self._make_owner({"write_file": False, "read_file": True})
+        coordinator = ToolBatchCoordinator(owner)
+        state = self._make_state([
+            _tc("write_file", "tc1"),
+            _tc("read_file", "tc2"),
+        ])
+
+        result = await coordinator.run(state)
+
+        self.assertEqual(owner._call_log, ["write_file", "read_file"])
+        self.assertEqual(
+            [message.tool_call_id for message in result["messages"]],
+            ["tc1", "tc2"],
+        )
 
     async def test_mixed_mode_parallel_runs_concurrently(self):
         """In mixed mode, the parallel-safe calls should overlap in time

@@ -416,6 +416,53 @@ class PrepareLLMWithToolsTests(unittest.TestCase):
         self.assertTrue(enabled)
         self.assertEqual(error, "")
 
+    def test_binding_normalizes_required_arrays_recursively(self):
+        llm = mock.MagicMock()
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "optional_tool",
+                "description": "Tool with optional arguments",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "options": {
+                            "type": "object",
+                            "properties": {"limit": {"type": "integer"}},
+                        }
+                    },
+                },
+            },
+        }
+
+        prepare_llm_with_tools(llm, [tool])
+
+        bound_tool = llm.bind_tools.call_args.args[0][0]
+        parameters = bound_tool["function"]["parameters"]
+        self.assertEqual(parameters["required"], [])
+        self.assertEqual(parameters["properties"]["options"]["required"], [])
+        self.assertNotIn("required", tool["function"]["parameters"])
+
+    def test_binding_preserves_existing_required_fields(self):
+        llm = mock.MagicMock()
+        tool = {
+            "type": "function",
+            "function": {
+                "name": "required_tool",
+                "description": "Tool with a required argument",
+                "parameters": {
+                    "type": "object",
+                    "properties": {"path": {"type": "string"}},
+                    "required": ["path"],
+                },
+            },
+        }
+
+        prepare_llm_with_tools(llm, [tool])
+
+        bound_tool = llm.bind_tools.call_args.args[0][0]
+        self.assertEqual(bound_tool["function"]["parameters"]["required"], ["path"])
+
     def test_binding_exception(self):
         llm = mock.MagicMock()
         llm.bind_tools.side_effect = ValueError("unsupported tool schema")

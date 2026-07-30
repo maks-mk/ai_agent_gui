@@ -5,7 +5,7 @@
 > *"Created by a SysAdmin for developers. Focus on safety, portability, and zero-nonsense execution. No Docker, no heavy environments, just one binary."*
 
 A desktop AI agent with a `LangGraph` runtime and a `PySide6` GUI.  
-It works with files, shell commands, the operating system, MCP servers, and web search.
+It works with files, shell commands, process management, MCP servers, and web search.
 
 Run from source: `python main.py`.  
 Build a portable Windows `.exe`: `build.bat`.
@@ -24,11 +24,11 @@ Main priorities:
 - safety;
 - local tools;
 - automation;
-- working with files and the operating system;
+- working with files and local processes;
 - web search;
 - reliability.
 
-The project does not try to compete with AI IDEs by feature count and does not try to replace specialized development tools. Its focus is practical execution of everyday tasks: working with files, shell commands, the system, web search, documentation, scripts, and automation in one portable application without complex infrastructure or additional services.
+The project does not try to compete with AI IDEs by feature count and does not try to replace specialized development tools. Its focus is practical execution of everyday tasks: working with files, shell commands, local processes, web search, documentation, scripts, and automation in one portable application without complex infrastructure or additional services.
 
 ---
 
@@ -41,10 +41,10 @@ The project does not try to compete with AI IDEs by feature count and does not t
 - Live CLI output streaming: shell command output is shown in the tool card in real time, not only after completion
 - Exit-code-neutral commands: `grep`, `rg`, `vulture`, `pytest`, `diff`, etc. with a non-zero exit code are not marked as errors — the output is returned with an `Exit Code: N` prefix
 - Stream-interruption recovery with error classification (`rate_limit` / `timeout` / `server_error` / `network`) and exponential backoff with jitter before auto-continue
-- Tools: filesystem, shell, web search, system info, process management, MCP
+- Tools: filesystem (including `download_file`), shell, web search, process management, MCP
 - Approval pauses before mutating and destructive actions
 - Automatic context summarization for long sessions
-- Customizable HTTP headers for OpenAI-compatible requests via `headers.json` (QwenCode emulation etc.)
+- Customizable HTTP headers for OpenAI-compatible and Anthropic LLM requests via `headers.json` (client/proxy emulation)
 - Multiple model profiles with switching directly in the GUI
 - Durable checkpoints: sessions persist between launches
 - Optional image input when the selected model supports vision
@@ -111,8 +111,8 @@ Details: [Runtime Flow, Prompt Layers, Sessions & Checkpoints](./docs/ARCHITECTU
 |-- requirements.txt
 |-- core/                  # Agent core: config, state, policies, recovery, provider registry
 |   |-- nodes/             # LangGraph nodes: context, llm, agent, tools, approval, recovery
-|   `-- providers/         # Provider adapters (gemini, openai_reasoning, factory)
-|-- tools/                 # Filesystem, shell, search, system, process, user input, MCP registry
+|   `-- providers/         # Provider adapters (Anthropic, Gemini, OpenAI-compatible)
+|-- tools/                 # Filesystem/download, shell, search, process, user input, MCP registry
 |-- ui/                    # PySide6 GUI, runtime worker, streaming/status handling
 |-- docs/                  # Documentation
 |-- tests/                 # Runtime, UI, tools, provider registry, logging, policies
@@ -126,7 +126,7 @@ Full module map: [`docs/PROJECT_STRUCTURE.md`](./docs/PROJECT_STRUCTURE.md)
 
 ## Tests
 
-Target regression suite for runtime, GUI, and streaming: 720 tests.
+Run the full regression suite:
 
 ```powershell
 venv\Scripts\python.exe -m pytest
@@ -155,8 +155,8 @@ For a portable build, copy `rg.exe` next to the agent executable. If `rg` is not
 | `pydantic-settings` | Configuration through `.env` |
 | `tiktoken` | Token counting for summarization |
 | `tavily-python` | Web search |
-| `psutil` | System tools and processes |
-| `httpx` | HTTP for MCP and fetch |
+| `psutil` | Process management |
+| `httpx` | HTTP for file downloads, model discovery, MCP, and web fetch |
 | `aiofiles` | Async file operations |
 | `aiosqlite` | Async SQLite for checkpointing |
 | `mcp` | Model Context Protocol |
@@ -171,7 +171,7 @@ For a portable build, copy `rg.exe` next to the agent executable. If `rg` is not
 | Document | Contents |
 |---|---|
 | [Architecture](./docs/ARCHITECTURE.md) | Runtime Flow, Prompt Layers, Sessions & Checkpoints |
-| [Configuration](./docs/CONFIGURATION.md) | All `.env` variables (providers, runtime, feature flags, limits, retry, persistence, diagnostics), HTTP headers `headers.json` |
+| [Configuration](./docs/CONFIGURATION.md) | All `.env` variables (providers, runtime, feature flags, limits, retry, persistence, diagnostics), provider request headers via `headers.json` |
 | [GUI](./docs/GUI_GUIDE.md) | Transcript, CLI output widget, Composer, hotkeys |
 | [Security](./docs/SECURITY.md) | Approvals, workspace boundary, `request_user_input` |
 | [Model Profiles](./docs/MODEL_PROFILES.md) | Profile management, auto-loading models, API key rotation |

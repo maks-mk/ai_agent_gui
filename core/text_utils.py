@@ -13,6 +13,14 @@ _SIMPLE_LATEX_INLINE_RE = re.compile(r"\$\s*(\\[A-Za-z]+)\s*\$")
 _MARKDOWN_FENCE_RE = re.compile(r"^(?P<indent>[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>[^`~\r\n]*)[ \t]*(?:\r?\n)?$")
 
 
+def format_elapsed_seconds(seconds: int) -> str:
+    whole_seconds = max(0, int(seconds))
+    if whole_seconds <= 60:
+        return f"{whole_seconds}s"
+    minutes, remaining_seconds = divmod(whole_seconds, 60)
+    return f"{minutes}m{remaining_seconds}s"
+
+
 @dataclass(frozen=True)
 class MarkdownSegment:
     kind: str

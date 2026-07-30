@@ -111,9 +111,6 @@ TAVILY_API_KEY=tvly-REPLACE_WITH_YOUR_KEY
 # Работа с файловой системой (чтение, запись, редактирование)
 ENABLE_FILESYSTEM_TOOLS=true
 
-# Системные утилиты (IP, Network info, System stats)
-ENABLE_SYSTEM_TOOLS=true
-
 # Управление процессами (запуск, остановка фоновых задач)
 ENABLE_PROCESS_TOOLS=false
 

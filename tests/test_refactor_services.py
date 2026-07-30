@@ -5,6 +5,7 @@ from unittest import mock
 
 from langchain_core.messages import AIMessage, HumanMessage, SystemMessage, ToolMessage
 
+from core import constants
 from core.config import AgentConfig
 from core.context_builder import ContextBuilder
 from core.recovery_manager import RecoveryManager
@@ -23,12 +24,16 @@ class RefactorServicesTests(unittest.TestCase):
             "PROMPT_PATH": Path(__file__).resolve().parents[1] / "prompt.txt",
             "MCP_CONFIG_PATH": Path(__file__).resolve().parents[1] / "tests" / "missing_mcp.json",
             "ENABLE_SEARCH_TOOLS": False,
-            "ENABLE_SYSTEM_TOOLS": False,
             "ENABLE_PROCESS_TOOLS": False,
             "ENABLE_SHELL_TOOL": False,
         }
         defaults.update(overrides)
         return AgentConfig(**defaults)
+
+    def test_summary_prompt_explicitly_sets_history_summarization_mode(self):
+        self.assertIn("Conversation-history summarization mode", constants.SUMMARY_PROMPT_TEMPLATE)
+        self.assertIn("update memory for the main model", constants.SUMMARY_PROMPT_TEMPLATE)
+        self.assertIn("do not continue or answer the task", constants.SUMMARY_PROMPT_TEMPLATE)
 
     def test_context_builder_uses_compact_tool_notice_for_large_catalog(self):
         builder = ContextBuilder(

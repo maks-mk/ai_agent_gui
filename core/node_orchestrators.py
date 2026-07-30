@@ -466,7 +466,9 @@ class ToolBatchCoordinator:
                 id(tc): i for i, tc in enumerate(tool_calls)
             }
 
-            if parallel_calls:
+            async def run_parallel_group(group: list[dict[str, Any]]) -> None:
+                if not group:
+                    return
                 processed = await asyncio.gather(
                     *(
                         owner._process_tool_call(
@@ -477,11 +479,11 @@ class ToolBatchCoordinator:
                             current_turn_id,
                             active_tool_names,
                         )
-                        for tool_call in parallel_calls
+                        for tool_call in group
                     ),
                     return_exceptions=True,
                 )
-                for tool_call, processed_item in zip(parallel_calls, processed):
+                for tool_call, processed_item in zip(group, processed):
                     if isinstance(processed_item, (asyncio.CancelledError, GraphInterrupt)):
                         raise processed_item
                     if isinstance(processed_item, Exception):
@@ -495,7 +497,14 @@ class ToolBatchCoordinator:
                         tool_msg, had_error, issue = processed_item
                     results[index_by_identity[id(tool_call)]] = (tool_msg, had_error, issue)
 
-            for tool_call in sequential_calls:
+            pending_parallel: list[dict[str, Any]] = []
+            for tool_call in tool_calls:
+                if owner._tool_call_is_parallel_safe(tool_call):
+                    pending_parallel.append(tool_call)
+                    continue
+
+                await run_parallel_group(pending_parallel)
+                pending_parallel = []
                 tool_msg, had_error, issue = await owner._process_tool_call(
                     tool_call,
                     recent_calls,
@@ -505,6 +514,8 @@ class ToolBatchCoordinator:
                     active_tool_names,
                 )
                 results[index_by_identity[id(tool_call)]] = (tool_msg, had_error, issue)
+
+            await run_parallel_group(pending_parallel)
 
             # Re-assemble in original order.
             for item in results:

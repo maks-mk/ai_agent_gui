@@ -10,9 +10,11 @@ provider-specific private-method overrides.
 from __future__ import annotations
 
 import logging
+from copy import deepcopy
 from typing import Any
 
 from langchain_core.language_models import BaseChatModel
+from langchain_core.utils.function_calling import convert_to_openai_tool
 
 from core.api_key_rotation import RotatingChatModel
 from core.config import AgentConfig
@@ -51,11 +53,35 @@ def create_runtime_llm(config: AgentConfig) -> BaseChatModel | RotatingChatModel
     )
 
 
+def _ensure_required_arrays(schema: Any) -> None:
+    """Make object schemas explicit for OpenAI-compatible validators."""
+    if isinstance(schema, dict):
+        if schema.get("type") == "object" or "properties" in schema:
+            schema.setdefault("required", [])
+        for value in schema.values():
+            _ensure_required_arrays(value)
+    elif isinstance(schema, list):
+        for value in schema:
+            _ensure_required_arrays(value)
+
+
+def _normalize_tool_for_binding(tool: Any) -> Any:
+    """Return a portable tool schema, preserving provider-native tools as-is."""
+    try:
+        normalized = deepcopy(convert_to_openai_tool(tool))
+    except Exception:
+        return tool
+    function = normalized.get("function")
+    if isinstance(function, dict):
+        _ensure_required_arrays(function.get("parameters"))
+    return normalized
+
+
 def prepare_llm_with_tools(
     llm: BaseChatModel,
     tools: list[Any],
 ) -> tuple[BaseChatModel, bool, str]:
-    """Bind tools once and report whether structured tool calling is actually available."""
+    """Bind normalized tools and report whether structured tool calling is available."""
     if not tools:
         return llm, False, ""
 
@@ -63,7 +89,8 @@ def prepare_llm_with_tools(
     if not callable(binder):
         return llm, False, "LLM backend does not implement bind_tools()."
 
+    bind_tools = [_normalize_tool_for_binding(tool) for tool in tools]
     try:
-        return binder(tools), True, ""
+        return binder(bind_tools), True, ""
     except Exception as exc:
         return llm, False, str(exc)

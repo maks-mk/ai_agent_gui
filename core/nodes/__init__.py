@@ -66,10 +66,6 @@ class AgentNodes(
             "web_search",
             "fetch_content",
             "batch_web_search",
-            "get_public_ip",
-            "lookup_ip_info",
-            "get_system_info",
-            "get_local_network_info",
             "find_process_by_port",
         }
     )

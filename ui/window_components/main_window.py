@@ -227,6 +227,7 @@ class MainWindow(QMainWindow):
         self.info_button.clicked.connect(lambda _checked=False: self.info_action.trigger())
         self.sidebar.session_activated.connect(self._switch_session)
         self.sidebar.session_delete_requested.connect(self._request_delete_session)
+        self.tools_panel.availability_changed.connect(self._handle_tool_availability_changed)
 
         self.send_button.clicked.connect(self._submit_request)
         self.add_image_action.triggered.connect(self._attach_images)
@@ -563,6 +564,7 @@ class MainWindow(QMainWindow):
         )
 
     def _handle_initialized(self, payload: dict) -> None:
+        self.tools_panel.clear_server_pending()
         self._apply_runtime_payload(payload, restore_transcript=True)
         self._set_status_visual("Ready", success=True)
         self.status_meta.setText("")
@@ -752,6 +754,7 @@ class MainWindow(QMainWindow):
         self.controller.save_profiles(normalized)
 
     def _handle_init_failed(self, message: str) -> None:
+        self.tools_panel.fail_server_pending(message)
         self._set_status_visual("Initialization failed", error=True)
         QMessageBox.critical(self, "Initialization Failed", message)
 
@@ -780,7 +783,16 @@ class MainWindow(QMainWindow):
         self._update_env_info(self.current_snapshot)
         self.summary_progress_ring.set_summary_progress(payload.get("summary_progress"))
         tools = payload.get("tools", self.current_snapshot.get("tools", []))
-        new_hash = hash(tuple(t.get("name", "") for t in tools))
+        new_hash = hash(tuple(
+            (
+                t.get("kind", "tool"),
+                t.get("name", ""),
+                bool(t.get("enabled", True)),
+                tuple((child.get("name", ""), child.get("description", "")) for child in t.get("tools", [])),
+            )
+            for t in tools
+        ))
+
         if new_hash != self._tools_hash:
             self._tools_hash = new_hash
             self.tools_panel.set_tools(tools)
@@ -800,7 +812,14 @@ class MainWindow(QMainWindow):
         if isinstance(pending_user_choice, dict):
             self._handle_user_choice_request(pending_user_choice)
 
+    def _handle_tool_availability_changed(self, kind: str, name: str, enabled: bool) -> None:
+        setter_name = "set_mcp_server_enabled" if kind == "server" else "set_tool_enabled"
+        setter = getattr(self.controller, setter_name, None)
+        if callable(setter):
+            setter(name, enabled)
+
     def _handle_busy_changed(self, busy: bool) -> None:
+        self.tools_panel.setEnabled(not busy)
         self._status_controller.handle_busy_changed(busy)
 
     def _handle_event(self, event) -> None:

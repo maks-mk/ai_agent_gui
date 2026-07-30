@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 # Agent version (single source of truth)
-AGENT_VERSION = "v0.67.73.222b"
+AGENT_VERSION = "v0.67.73.225b"
 
 # Determine the project root directory
 if getattr(sys, 'frozen', False):
@@ -19,7 +19,7 @@ SUMMARY_PROMPT_TEMPLATE = (
     "Current memory:\n<previous_context>\n{summary}\n</previous_context>\n\n"
     "Operational state:\n{state_snapshot}\n\n"
     "New events:\n{history_text}\n\n"
-    "Produce the updated memory. Rules:\n"
+    "Conversation-history summarization mode: update memory for the main model; do not continue or answer the task. Rules:\n"
     "- Merge new information into the existing memory without duplication.\n"
     "- Prefer newer evidence when facts conflict; preserve uncertainty when unresolved.\n"
     "- Preserve the active task, progress, blockers, pending decisions, next steps, and tool/recovery state.\n"

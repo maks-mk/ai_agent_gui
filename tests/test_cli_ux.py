@@ -11,7 +11,7 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 from PySide6.QtCore import QEvent, QMimeData, QModelIndex, QObject, Qt, QtMsgType, Signal
 from PySide6.QtGui import QImage, QKeyEvent, QTextCursor, QTextFormat
 from PySide6.QtTest import QTest
-from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QFrame, QPushButton, QSizePolicy, QToolBar, QWidget
+from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QFrame, QMessageBox, QPushButton, QSizePolicy, QToolBar, QToolButton, QWidget
 
 import main as agent_cli
 from core.model_fetcher import ModelEntry
@@ -91,6 +91,8 @@ class FakeController(QObject):
         self.set_active_profile_calls: list[str] = []
         self.save_profiles_calls: list[dict] = []
         self.reinitialize_calls: list[bool] = []
+        self.set_tool_enabled_calls: list[tuple[str, bool]] = []
+        self.set_mcp_server_enabled_calls: list[tuple[str, bool]] = []
         self.shutdown_calls = 0
         self.initialize_calls = 0
 
@@ -123,6 +125,12 @@ class FakeController(QObject):
 
     def reinitialize(self, force_new_session: bool = False):
         self.reinitialize_calls.append(force_new_session)
+
+    def set_tool_enabled(self, name: str, enabled: bool):
+        self.set_tool_enabled_calls.append((name, enabled))
+
+    def set_mcp_server_enabled(self, name: str, enabled: bool):
+        self.set_mcp_server_enabled_calls.append((name, enabled))
 
     def shutdown(self):
         self.shutdown_calls += 1
@@ -367,6 +375,11 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(self.window.overview_panel._labels["MCP"].text(), "context7")
         tool_cards = self.window.tools_panel.findChildren(QFrame, "ToolCard")
         self.assertEqual(len(tool_cards), 3)
+        switches = self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+        self.assertEqual(len(switches), 3)
+        mcp_items = self.window.tools_panel.findChildren(QLabel, "MCPToolCardItem")
+        self.assertEqual(len(mcp_items), 1)
+        self.assertIn("context7:resolve-library-id", mcp_items[0].text())
         self.assertIn("Help", self.window.help_text.toPlainText())
         self.assertEqual(self.window.inspector_panel.tabs.tabText(0), "Run")
         self.assertEqual(self.window.inspector_panel.tabs.tabText(1), "Tools")
@@ -379,6 +392,94 @@ class GuiUxTests(unittest.TestCase):
         self.assertGreaterEqual(self.window.sidebar.model.rowCount(), 4)
         self.assertEqual(self.window.active_session_id, "session-1234567890abcdef")
         self.assertEqual(self.window.status_line_label.text(), "Ready")
+
+    def test_tool_descriptions_expand_when_title_is_clicked(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        title = next(
+            item
+            for item in self.window.tools_panel.findChildren(QToolButton, "ToolCardTitle")
+            if item.text() == "read_file"
+        )
+        details = title.parentWidget().findChild(QWidget, "ToolCardDetails")
+
+        self.assertIsNotNone(details)
+        self.assertTrue(details.isHidden())
+        self.assertEqual(title.arrowType(), Qt.RightArrow)
+
+        title.click()
+
+        self.assertFalse(details.isHidden())
+        self.assertEqual(title.arrowType(), Qt.DownArrow)
+
+    def test_local_tool_switch_uses_local_runtime_api(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        switch = next(
+            item
+            for item in self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+            if item.accessibleName() == "edit_file enabled"
+        )
+
+        switch.setChecked(False)
+
+        self.assertEqual(self.controller.set_tool_enabled_calls, [("edit_file", False)])
+        self.assertEqual(self.controller.set_mcp_server_enabled_calls, [])
+
+    def test_mcp_server_switch_stays_pending_until_runtime_is_initialized(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        switch = next(
+            item
+            for item in self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+            if item.accessibleName() == "context7 enabled"
+        )
+
+        switch.setChecked(False)
+
+        self.assertEqual(self.controller.set_mcp_server_enabled_calls, [("context7", False)])
+        self.assertTrue(switch.isChecked())
+        self.assertFalse(switch.isEnabled())
+        labels = self.window.tools_panel.findChildren(QLabel, "MCPServerLoadingLabel")
+        self.assertEqual([label.text() for label in labels], ["Applying…"])
+
+        payload = self._snapshot_payload()
+        server = next(item for item in payload["tools"] if item["kind"] == "server")
+        server["enabled"] = False
+        payload["snapshot"]["tools"] = payload["tools"]
+        self.window._handle_initialized(payload)
+        self._process_events()
+
+        updated_switch = next(
+            item
+            for item in reversed(self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch"))
+            if item.accessibleName() == "context7 enabled"
+        )
+        self.assertFalse(updated_switch.isChecked())
+        self.assertTrue(updated_switch.isEnabled())
+
+    def test_mcp_server_switch_error_restores_previous_state(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        switch = next(
+            item
+            for item in self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+            if item.accessibleName() == "context7 enabled"
+        )
+        switch.setChecked(False)
+
+        with mock.patch.object(QMessageBox, "critical"):
+            self.window._handle_init_failed("MCP process did not start")
+
+        self.assertTrue(switch.isChecked())
+        self.assertTrue(switch.isEnabled())
+        label = self.window.tools_panel.findChild(QLabel, "MCPServerLoadingLabel")
+        self.assertIsNotNone(label)
+        self.assertEqual(label.text(), "Failed to apply")
+        self.assertIn("MCP process did not start", label.toolTip())
+
+    def test_tool_descriptions_have_transparent_background_style(self):
+        stylesheet = build_stylesheet()
+        for selector in ("QWidget#ToolCardDetails", "QLabel#ToolCardDescription", "QLabel#MCPToolCardItem"):
+            self.assertIn(selector, stylesheet)
+            start = stylesheet.index(selector)
+            self.assertIn("background: transparent;", stylesheet[start:stylesheet.index("}", start)])
 
     def test_configure_qt_logging_adds_font_db_rule_once(self):
         with mock.patch.dict(os.environ, {}, clear=False):
@@ -420,6 +521,20 @@ class GuiUxTests(unittest.TestCase):
             [{"text": "Собери summary", "attachments": []}],
         )
         self.assertEqual(self.window.composer.toPlainText(), "")
+
+    def test_submit_request_includes_pasted_text_and_manual_suffix(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window.composer.setPlainText("Вставка: ")
+        self.window.composer.moveCursor(QTextCursor.MoveOperation.End)
+
+        mime = QMimeData()
+        mime.setText("из буфера")
+        self.window.composer.insertFromMimeData(mime)
+        self.window.composer.insertPlainText(" + вручную")
+
+        self.window._submit_request()
+
+        self.assertEqual(self.controller.start_calls[0]["text"], "Вставка: из буфера + вручную")
 
     def test_submit_request_sanitizes_and_truncates_input_before_runtime(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -1213,6 +1328,17 @@ class GuiUxTests(unittest.TestCase):
         self.window.composer.setTextCursor(cursor)
         self.window.composer._refresh_mention_popup()
         self.assertFalse(self.window.composer._mention_popup.isVisible())
+
+    def test_realtime_elapsed_uses_minutes_above_sixty_seconds(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Долгий запрос"}))
+        self.window.is_busy = True
+        self.window._run_start_time = 1000.0
+
+        with mock.patch("ui.main_window_state.time.time", return_value=1061.2):
+            self.window._update_realtime_elapsed()
+
+        self.assertEqual(self.window.current_turn.status_widget.meta_label.text(), "1m1s")
 
     def test_run_started_shows_inline_status_before_output(self):
         self.window._handle_initialized(self._snapshot_payload())
