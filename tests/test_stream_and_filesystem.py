@@ -478,6 +478,22 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIn("↓ 117", stats)
         self.assertIn("↑ 609", stats)
 
+    def test_stream_processor_uses_total_tokens_when_output_is_zero(self):
+        processor = StreamProcessor()
+        processor._handle_updates({"agent": {"token_usage": {"total_tokens": 321, "output_tokens": 0}}})
+
+        stats = processor.tracker.render(0.1)
+        self.assertIn("↓ 321", stats)
+        self.assertIn("↑ 0", stats)
+
+    def test_stream_processor_does_not_estimate_output_tokens_from_text_length(self):
+        processor = StreamProcessor()
+        processor._handle_messages((AIMessage(content="x" * 120), {"langgraph_node": "agent"}))
+
+        stats = processor.tracker.render(0.1)
+        self.assertIn("↓ 0", stats)
+        self.assertIn("↑ 0", stats)
+
     def test_stream_processor_accumulates_total_elapsed_from_previous_segments(self):
         events = []
         perf_values = iter([100.0, 100.0])
@@ -604,6 +620,20 @@ class StreamAndFilesystemTests(unittest.TestCase):
         statuses = [event.payload for event in events if event.type == "status_changed"]
         self.assertTrue(statuses)
         self.assertEqual(statuses[-1]["node"], "agent")
+        self.assertEqual(statuses[-1]["label"], "Thinking...")
+
+    def test_stream_processor_reports_openai_reasoning_delta_as_thinking(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._handle_messages(
+            (
+                AIMessageChunk(content="", additional_kwargs={"reasoning_delta": "Checking constraints."}),
+                {"langgraph_node": "agent"},
+            )
+        )
+
+        statuses = [event.payload for event in events if event.type == "status_changed"]
         self.assertEqual(statuses[-1]["label"], "Thinking...")
 
     def test_stream_processor_suppresses_reasoning_only_content_duplicate(self):
@@ -1175,10 +1205,23 @@ class StreamAndFilesystemTests(unittest.TestCase):
         )
 
         deltas = [event.payload for event in events if event.type == "assistant_delta"]
+        statuses = [event.payload for event in events if event.type == "status_changed"]
         self.assertEqual(len(deltas), 1)
+        self.assertEqual(statuses[-1]["label"], "Thinking...")
         self.assertEqual(deltas[0]["full_text"], "Готово.")
         self.assertNotIn("thought_markdown", deltas[0])
         self.assertNotIn("has_thought", deltas[0])
+
+    def test_stream_processor_reports_anthropic_text_only_as_working(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._handle_messages(
+            (AIMessage(content=[{"type": "text", "text": "Ответ без thinking-блока."}]), {"langgraph_node": "agent"})
+        )
+
+        statuses = [event.payload for event in events if event.type == "status_changed"]
+        self.assertEqual(statuses[-1]["label"], "Working...")
 
     def test_stream_processor_ignores_openai_responses_reasoning_summary(self):
         events = []
@@ -2366,6 +2409,31 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertTrue(finished[0]["interrupted"])
         self.assertIn("ERROR[CANCELLED]", finished[0]["content"])
 
+    def test_stream_processor_preserves_structured_error_and_root_cause(self):
+        processor = StreamProcessor()
+
+        async def _stream():
+            if False:
+                yield None
+            try:
+                raise OSError("DNS lookup failed")
+            except OSError as cause:
+                error = RuntimeError("Connection error.")
+                error.status_code = 503
+                error.request_id = "req-123"
+                error.llm_retry_exhausted = True
+                raise error from cause
+
+        result = asyncio.run(processor.process_stream(_stream()))
+
+        self.assertTrue(result.failed)
+        self.assertEqual(result.error_details["error_type"], "RuntimeError")
+        self.assertEqual(result.error_details["http_status"], 503)
+        self.assertEqual(result.error_details["request_error_id"], "req-123")
+        self.assertEqual(result.error_details["root_cause_type"], "OSError")
+        self.assertEqual(result.error_details["root_cause_message"], "DNS lookup failed")
+        self.assertTrue(result.error_details["retry_exhausted"])
+
     def test_stream_processor_hides_repaired_stream_interruption_tool_message(self):
         events = []
         processor = StreamProcessor(events.append)
@@ -2410,6 +2478,21 @@ class StreamAndFilesystemTests(unittest.TestCase):
         deltas = [event.payload for event in events if event.type == "assistant_delta"]
         self.assertEqual([payload["sequence"] for payload in deltas], [1, 2])
         self.assertEqual(deltas[-1]["full_text"], "Первый ответ")
+
+    def test_stream_processor_commits_visible_text_before_run_finished(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        async def _stream():
+            yield ("messages", (AIMessageChunk(content="**Готово**"), {"langgraph_node": "agent"}))
+
+        asyncio.run(processor.process_stream(_stream()))
+
+        event_types = [event.type for event in events]
+        self.assertIn("assistant_commit", event_types)
+        self.assertLess(event_types.index("assistant_commit"), event_types.index("run_finished"))
+        commit = next(event.payload for event in events if event.type == "assistant_commit")
+        self.assertEqual(commit["full_text"], "**Готово**")
 
     def test_main_window_stale_delta_fallback_detects_shorter_prefix_replay(self):
         window = MainWindow.__new__(MainWindow)
@@ -2585,6 +2668,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
     class _FakeTurn:
         def __init__(self):
             self.markdown = ""
+            self.markdown_updates = []
             self.streaming = False
             self.tool_started = False
             self._kinds = ["user"]
@@ -2594,6 +2678,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
 
         def set_assistant_markdown(self, markdown):
             self.markdown = markdown
+            self.markdown_updates.append(markdown)
             if self._kinds[-1] != "assistant":
                 self._kinds.append("assistant")
 
@@ -2664,6 +2749,36 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertFalse(window._assistant_delta_flush_timer.isActive())
         self.assertEqual(window.transcript.notify_count, 2)
         self.assertEqual(window._status_controller.run_finished_payload, {"stats": "done"})
+
+    def test_main_window_terminal_commit_flushes_before_run_finished_without_second_render(self):
+        window = self._make_lightweight_main_window()
+
+        MainWindow._on_assistant_delta(window, {"full_text": "**Готов", "sequence": 1})
+        MainWindow._on_assistant_delta(window, {"full_text": "**Готово**", "sequence": 2})
+        MainWindow._on_assistant_commit(window, {"full_text": "**Готово**", "sequence": 2})
+
+        updates_before_finish = list(window.current_turn.markdown_updates)
+        MainWindow._on_run_finished(window, {"stats": "done"})
+
+        self.assertEqual(window.current_turn.markdown, "**Готово**")
+        self.assertEqual(window.current_turn.markdown_updates, updates_before_finish)
+        self.assertIsNone(window._pending_assistant_delta_payload)
+
+    def test_main_window_normalizes_markdown_only_when_coalesced_delta_is_rendered(self):
+        window = self._make_lightweight_main_window()
+
+        with mock.patch(
+            "ui.window_components.main_window.prepare_markdown_for_render",
+            wraps=prepare_markdown_for_render,
+        ) as prepare_mock:
+            MainWindow._on_assistant_delta(window, {"full_text": "A", "sequence": 1})
+            MainWindow._on_assistant_delta(window, {"full_text": r"\# Header", "sequence": 2})
+
+            self.assertEqual(prepare_mock.call_count, 1)
+            MainWindow._flush_pending_assistant_delta(window)
+
+        self.assertEqual(prepare_mock.call_count, 2)
+        self.assertEqual(window.current_turn.markdown, "# Header")
 
     def test_main_window_tool_start_flushes_pending_delta_and_stops_streaming(self):
         window = self._make_lightweight_main_window()

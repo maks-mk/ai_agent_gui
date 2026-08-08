@@ -619,23 +619,21 @@ class AnthropicReasoningTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=False):
             return AgentConfig()
 
-    def test_reasoning_effort_low_sets_adaptive_thinking(self):
-        """ANTHROPIC_REASONING=low → thinking.type=adaptive, effort=low."""
+    def test_legacy_reasoning_effort_selects_adaptive_thinking_without_forwarding_effort(self):
+        """Legacy effort labels select documented adaptive thinking mode."""
         from core.providers.anthropic import create_anthropic_chat_model
 
         cfg = self._make_config(ANTHROPIC_REASONING="low")
         model = create_anthropic_chat_model(cfg)
         self.assertEqual(model.thinking, {"type": "adaptive"})
-        self.assertEqual(model.effort, "low")
+        self.assertNotIn("effort", model._get_request_payload([{"role": "user", "content": "hi"}]))
 
-    def test_reasoning_effort_max_sets_adaptive_thinking(self):
-        """ANTHROPIC_REASONING=max → thinking.type=adaptive, effort=max."""
+    def test_reasoning_adaptive_sets_adaptive_thinking(self):
         from core.providers.anthropic import create_anthropic_chat_model
 
-        cfg = self._make_config(ANTHROPIC_REASONING="max")
+        cfg = self._make_config(ANTHROPIC_REASONING="adaptive")
         model = create_anthropic_chat_model(cfg)
         self.assertEqual(model.thinking, {"type": "adaptive"})
-        self.assertEqual(model.effort, "max")
 
     def test_reasoning_off_disables_thinking(self):
         """ANTHROPIC_REASONING=off → thinking.type=disabled."""
@@ -672,14 +670,15 @@ class AnthropicReasoningTests(unittest.TestCase):
                 self.assertNotIn("budget_tokens", payload["thinking"])
                 self.assertNotIn("temperature", payload)
 
-    def test_adaptive_only_model_passes_effort_through_output_config(self):
+    def test_adaptive_only_model_does_not_pass_undocumented_effort(self):
         from core.providers.anthropic import create_anthropic_chat_model
 
         cfg = self._make_config(ANTHROPIC_MODEL="claude-sonnet-5", ANTHROPIC_REASONING="high")
         model = create_anthropic_chat_model(cfg)
         payload = model._get_request_payload([{"role": "user", "content": "hi"}])
         self.assertEqual(payload["thinking"], {"type": "adaptive"})
-        self.assertEqual(payload["output_config"], {"effort": "high"})
+        self.assertNotIn("effort", payload)
+        self.assertNotIn("output_config", payload)
         self.assertNotIn("temperature", payload)
 
     def test_reasoning_off_disables_adaptive_only_models(self):
@@ -711,15 +710,13 @@ class AnthropicReasoningTests(unittest.TestCase):
         model = create_anthropic_chat_model(cfg)
         self.assertEqual(model.thinking, {"type": "adaptive"})
 
-    def test_reasoning_effort_priority_over_budget(self):
-        """When both ANTHROPIC_REASONING and ANTHROPIC_THINKING_BUDGET are set,
-        effort-based mode takes priority and budget is ignored."""
+    def test_adaptive_mode_takes_priority_over_budget(self):
         from core.providers.anthropic import create_anthropic_chat_model
 
         cfg = self._make_config(ANTHROPIC_REASONING="high", ANTHROPIC_THINKING_BUDGET="8192")
         model = create_anthropic_chat_model(cfg)
         self.assertEqual(model.thinking, {"type": "adaptive"})
-        self.assertEqual(model.effort, "high")
+        self.assertNotIn("effort", model._get_request_payload([{"role": "user", "content": "hi"}]))
 
     def test_reasoning_budget_clamped_to_max_tokens(self):
         """budget_tokens must be >= 1024 and < max_tokens."""

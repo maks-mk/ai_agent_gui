@@ -593,7 +593,7 @@ class AgentRunWorker(QObject):
     # --- Stream-interruption recovery helpers ---
 
     @staticmethod
-    def _classify_stream_error(error_message: str) -> dict[str, Any]:
+    def _classify_stream_error(error_message: str, error_details: dict[str, Any] | None = None) -> dict[str, Any]:
         """Classify a provider stream error to drive retry strategy.
 
         Returns a dict with:
@@ -601,6 +601,13 @@ class AgentRunWorker(QObject):
           * ``retryable``: bool — whether a retry makes sense
           * ``label``: human-readable label for UI notices
         """
+        details = error_details or {}
+        status = details.get("http_status")
+        if details.get("retry_exhausted"):
+            return {"kind": "retry_exhausted", "retryable": False, "label": "Retry budget exhausted"}
+        if status is not None and 400 <= int(status) < 500 and int(status) not in {408, 429}:
+            return {"kind": "client_error", "retryable": False, "label": f"HTTP {status}"}
+
         text = " ".join(str(error_message or "").lower().split())
 
         if any(m in text for m in ("429", "rate limit", "rate_limit", "too many requests")):
@@ -609,9 +616,9 @@ class AgentRunWorker(QObject):
             return {"kind": "timeout", "retryable": True, "label": "Timeout"}
         if any(m in text for m in ("502", "503", "504", "bad gateway", "service unavailable", "gateway timeout")):
             return {"kind": "server_error", "retryable": True, "label": "Server error"}
-        if any(m in text for m in ("connection", "network", "reset by peer", "broken pipe", "eof", "stream ended")):
+        if any(m in text for m in ("connection", "network", "reset by peer", "broken pipe", "eof", "stream ended", "disconnected")):
             return {"kind": "network", "retryable": True, "label": "Network error"}
-        return {"kind": "unknown", "retryable": True, "label": "Stream error"}
+        return {"kind": "unknown", "retryable": False, "label": "Stream error"}
 
     @staticmethod
     def _stream_retry_backoff(attempt: int, base_delay: float, error_kind: str) -> float:
@@ -663,10 +670,17 @@ class AgentRunWorker(QObject):
                     return
 
                 if result.failed:
-                    self._log_ui_run_event("run_failed", message=result.error_message)
-                    error_info = self._classify_stream_error(result.error_message)
+                    self._log_ui_run_event(
+                        "run_failed",
+                        **{"message": result.error_message, **result.error_details},
+                    )
+                    error_info = self._classify_stream_error(result.error_message, result.error_details)
                     repair_notices = await self._repair_current_session_if_needed()
-                    if repair_notices and stream_repair_resume_attempts < max_stream_repair_resumes:
+                    if (
+                        error_info["retryable"]
+                        and repair_notices
+                        and stream_repair_resume_attempts < max_stream_repair_resumes
+                    ):
                         stream_repair_resume_attempts += 1
                         backoff = self._stream_retry_backoff(
                             stream_repair_resume_attempts - 1,
@@ -1049,10 +1063,29 @@ class AgentRunWorker(QObject):
         try:
             self._run(self._shutdown_async())
         finally:
-            if self._loop is not None:
-                self._loop.close()
-                self._loop = None
+            self._close_event_loop()
             self.shutdown_complete.emit()
+
+    def _close_event_loop(self) -> None:
+        """Finalize pending async work before releasing the worker event loop."""
+        loop = self._loop
+        if loop is None:
+            return
+        self._loop = None
+        try:
+            pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+            for task in pending:
+                task.cancel()
+            if pending:
+                loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+            # Async HTTP transports use async generators during streaming. They
+            # must be finalized while the loop is still alive; otherwise their
+            # finalizers can create AsyncClient.aclose() after loop.close().
+            loop.run_until_complete(loop.shutdown_asyncgens())
+        except Exception:
+            logger.debug("Failed to fully finalize the runtime event loop.", exc_info=True)
+        finally:
+            loop.close()
 
     async def _shutdown_async(self) -> None:
         self._clear_cli_output_bridge()
@@ -1273,6 +1306,10 @@ class AgentRuntimeController(QObject):
         self._set_mcp_server_enabled_requested.emit({"name": name, "enabled": enabled})
 
     def shutdown(self) -> None:
+        # The worker can be blocked inside run_until_complete while a provider is
+        # streaming. stop_run uses call_soon_threadsafe, allowing that slot to
+        # return so the queued shutdown request can be processed normally.
+        self.stop_run()
         if self._force_stop_timer.isActive():
             self._force_stop_timer.stop()
         self._stop_worker_thread(force=False)

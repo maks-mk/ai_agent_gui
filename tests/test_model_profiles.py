@@ -9,6 +9,7 @@ from core.model_profiles import (
     merge_profiles_with_env,
     normalize_profiles_payload,
 )
+from core.reasoning_controls import profile_reasoning_overrides, reasoning_options_for_profile
 
 
 class ModelProfilesTests(unittest.TestCase):
@@ -136,6 +137,48 @@ class ModelProfilesTests(unittest.TestCase):
         active = find_active_profile(payload)
         self.assertIsNotNone(active)
         self.assertNotIn("show_model_thoughts", active)
+
+    def test_normalization_preserves_reasoning_profile_setting(self):
+        payload = normalize_profiles_payload(
+            {
+                "active_profile": "gpt-5",
+                "profiles": [
+                    {
+                        "id": "gpt-5",
+                        "provider": "openai",
+                        "model": "gpt-5.6",
+                        "api_key": "sk-demo",
+                        "base_url": "https://api.openai.com/v1",
+                        "reasoning": {"enabled": True, "effort": "high"},
+                    }
+                ],
+            }
+        )
+
+        self.assertEqual(payload["profiles"][0]["reasoning"], {"enabled": True, "effort": "high"})
+
+    def test_reasoning_options_use_documented_gemini_and_anthropic_parameters(self):
+        gemini_level_options = reasoning_options_for_profile({"provider": "gemini", "model": "gemini-3.6-flash"})
+        gemini_budget_options = reasoning_options_for_profile({"provider": "gemini", "model": "gemini-2.5-flash"})
+        anthropic_options = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-sonnet-5"})
+
+        self.assertIn({"value": "high", "label": "High", "config": {"enabled": True, "effort": "high"}}, gemini_level_options)
+        self.assertIn(
+            {"value": "budget:4096", "label": "Thinking: 4,096", "config": {"enabled": True, "thinking_budget": 4096}},
+            gemini_budget_options,
+        )
+        self.assertIn({"value": "adaptive", "label": "Adaptive", "config": {"enabled": True, "mode": "adaptive"}}, anthropic_options)
+
+    def test_profile_reasoning_overrides_use_provider_specific_fields(self):
+        self.assertEqual(
+            profile_reasoning_overrides({"provider": "gemini", "reasoning": {"enabled": True, "thinking_budget": 4096}}),
+            {"enable_model_reasoning": True, "gemini_thinking_budget": 4096},
+        )
+        self.assertEqual(
+            profile_reasoning_overrides({"provider": "anthropic", "reasoning": {"enabled": True, "mode": "adaptive"}}),
+            {"enable_model_reasoning": True, "anthropic_reasoning": "adaptive"},
+        )
+
 
     def test_normalization_migrates_legacy_api_key_to_rotation_pool(self):
         payload = normalize_profiles_payload(

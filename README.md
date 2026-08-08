@@ -63,7 +63,7 @@ Copy-Item env_example.txt .env
 python main.py
 ```
 
-Для Claude Sonnet 5 и Opus 4.7/4.8 задавайте adaptive thinking через `ANTHROPIC_REASONING`; `ANTHROPIC_THINKING_BUDGET` предназначен для старых моделей. Полный список параметров находится в [документации конфигурации](./docs/CONFIGURATION.md).
+Для Claude Sonnet 5 и Opus 4.6+ задавайте `ANTHROPIC_REASONING=adaptive`; `ANTHROPIC_THINKING_BUDGET` предназначен для старых моделей. Полный список параметров находится в [документации конфигурации](./docs/CONFIGURATION.md).
 
 ---
 

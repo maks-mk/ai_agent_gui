@@ -28,8 +28,8 @@ GEMINI_THINKING_BUDGET=4096
 # ANTHROPIC_BASE_URL=https://api.anthropic.com
 # NOTE: Do NOT include /v1 — the Anthropic SDK appends /v1/messages automatically.
 # ANTHROPIC_MAX_TOKENS=8192
-# For Claude Sonnet 5 and Opus 4.7/4.8, use adaptive thinking effort.
-# ANTHROPIC_REASONING=medium
+# For Claude Sonnet 5 and Opus 4.6+, use the documented adaptive thinking mode.
+# ANTHROPIC_REASONING=adaptive
 # Fixed-budget thinking for older Claude models only.
 # ANTHROPIC_THINKING_BUDGET=4096
 

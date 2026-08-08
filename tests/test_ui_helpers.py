@@ -7,13 +7,15 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtWidgets import QApplication
+from PySide6.QtTest import QTest
+from PySide6.QtWidgets import QApplication, QLabel
 
 from ui.main_window_state import StreamEventRouter
 from ui.streaming import StreamEvent
 from ui.theme import build_stylesheet
 from ui.widgets.composer import ComposerTextEdit
 from ui.widgets.foundation import SummaryProgressRing
+from ui.widgets.tool_group import ToolGroupWidget
 
 
 class UiHelperTests(unittest.TestCase):
@@ -68,6 +70,27 @@ class UiHelperTests(unittest.TestCase):
         self.assertIn("3,000 reserved", ring.toolTip())
         self.assertIn("850 estimated tokens from compressed memory", ring.toolTip())
         self.assertIn("229,094 provider-reported tokens", ring.toolTip())
+
+    def test_tool_group_animates_expand_and_collapse(self):
+        group = ToolGroupWidget()
+        group.inner.addWidget(QLabel("Tool details", group.container))
+        group.show()
+        self.app.processEvents()
+        self.addCleanup(group.deleteLater)
+
+        group.collapse()
+        self.assertTrue(group.container.isVisible())
+        self.assertGreater(group._container_animation.duration(), 0)
+        QTest.qWait(group._container_animation.duration() + 30)
+        self.assertTrue(group.container.isHidden())
+        self.assertEqual(group.container.maximumHeight(), 0)
+
+        group.expand()
+        self.assertTrue(group.container.isVisible())
+        self.assertLess(group.container.maximumHeight(), 16777215)
+        QTest.qWait(group._container_animation.duration() + 30)
+        self.assertTrue(group.container.isVisible())
+        self.assertEqual(group.container.maximumHeight(), 16777215)
 
     def test_composer_file_index_refreshes_empty_mention_after_directory_change(self):
         composer = ComposerTextEdit()

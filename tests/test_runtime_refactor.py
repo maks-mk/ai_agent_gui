@@ -6,6 +6,7 @@ import sqlite3
 import sys
 import unittest
 import base64
+import logging
 from types import ModuleType, SimpleNamespace
 from unittest import mock
 from pathlib import Path
@@ -18,7 +19,7 @@ from langgraph.types import Command
 from pydantic import BaseModel, RootModel
 
 from agent import _register_llm_cleanup_callback, create_agent_workflow, create_llm, prepare_llm_with_tools
-from core.api_key_rotation import RotatingChatModel
+from core.api_key_rotation import ApiKeyRotationExhaustedError, RotatingChatModel, describe_provider_error
 from core.checkpointing import create_checkpoint_runtime
 from core.config import AgentConfig
 from core.multimodal import (
@@ -629,6 +630,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(captured["model"], "gemini-2.5-flash")
         self.assertEqual(captured["google_api_key"], "gm-test")
+        self.assertEqual(captured["max_retries"], 0)
         self.assertNotIn("convert_system_message_to_human", captured)
         self.assertNotIn("default_headers", captured)
 
@@ -694,6 +696,29 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["thinking_level"], "low")
         self.assertIs(captured["include_thoughts"], True)
         self.assertNotIn("thinking_budget", captured)
+
+    def test_create_llm_for_gemma4_uses_documented_minimal_or_high_thinking_level(self):
+        captured = {}
+
+        class FakeChatGoogleGenerativeAI:
+            model_fields = {"thinking_level": object(), "include_thoughts": object()}
+
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_google_genai": mock.Mock(ChatGoogleGenerativeAI=FakeChatGoogleGenerativeAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="gemini",
+                    GEMINI_API_KEY="gm-test",
+                    GEMINI_MODEL="gemma-4-26b-a4b-it",
+                    MODEL_REASONING_EFFORT="high",
+                )
+            )
+
+        self.assertEqual(captured["thinking_level"], "high")
+        self.assertIs(captured["include_thoughts"], True)
+
 
     def test_create_llm_for_gemini3_does_not_send_legacy_thinking_budget(self):
         captured = {}
@@ -970,6 +995,34 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         await model.aclose()
         created_models[0].async_client.aclose.assert_awaited_once()
+
+    async def test_rotating_chat_model_closes_root_clients_inside_bound_model(self):
+        tmp = Path.cwd() / ".tmp_tests" / uuid4().hex
+        tmp.mkdir(parents=True, exist_ok=True)
+        self.addCleanup(lambda: shutil.rmtree(tmp, ignore_errors=True))
+        root_async_client = mock.AsyncMock()
+        root_client = SimpleNamespace(close=mock.Mock())
+        provider_model = SimpleNamespace(
+            root_async_client=root_async_client,
+            root_client=root_client,
+        )
+        bound_model = SimpleNamespace(
+            bound=provider_model,
+            ainvoke=mock.AsyncMock(return_value=AIMessage(content="ok")),
+        )
+
+        model = RotatingChatModel(
+            config=self._make_config(PROVIDER="openai", OPENAI_API_KEY="sk-test", OPENAI_MODEL="gpt-4o"),
+            profile_id="openai-profile",
+            profile_store_path=tmp / "profiles.json",
+            llm_factory=lambda *_args, **_kwargs: bound_model,
+        )
+
+        await model.ainvoke([HumanMessage(content="one")])
+        await model.aclose()
+
+        root_async_client.aclose.assert_awaited_once()
+        root_client.close.assert_called_once_with()
 
     def test_create_llm_for_openai_reasoning_models_requests_reasoning_summary_by_default(self):
         captured = {}
@@ -1947,8 +2000,123 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([call.args[0] for call in sleep_mock.await_args_list], [2, 4, 8])
         self.assertEqual(
             [call.args[0]["label"] for call in writer.call_args_list],
-            ["Reconnecting... 1/3", "Reconnecting... 2/3", "Reconnecting... 3/3"],
+            ["Retrying provider request... 1/3", "Retrying provider request... 2/3", "Retrying provider request... 3/3"],
         )
+
+    async def test_invoke_llm_with_retry_logs_safe_provider_error_details(self):
+        config = self._make_config(MAX_RETRIES=1, RETRY_DELAY=0)
+        request = SimpleNamespace(url="https://sk-secret@api.example.test/v1/chat?api_key=secret")
+        response = SimpleNamespace(
+            status_code=503,
+            request=request,
+            headers={"x-request-id": "req-safe-123"},
+        )
+        error = RuntimeError(
+            "Service Unavailable at https://sk-message@api.example.test/v1/chat?api_key=message-secret"
+        )
+        error.response = response
+        llm = FakeLLM([error, AIMessage(content="ok")])
+        nodes = AgentNodes(config=config, llm=llm, tools=[], llm_with_tools=llm)
+
+        with (
+            mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()),
+            mock.patch("core.nodes.llm.get_stream_writer", return_value=mock.Mock()),
+            self.assertLogs("agent", level=logging.WARNING) as captured,
+        ):
+            await nodes._invoke_llm_with_retry(
+                llm,
+                [HumanMessage(content="Проверь задачу")],
+                state=self._initial_state(),
+                node_name="agent",
+            )
+
+        log_text = "\n".join(captured.output)
+        self.assertIn("type=RuntimeError", log_text)
+        self.assertIn("http_status=503", log_text)
+        self.assertIn("url_host=api.example.test", log_text)
+        self.assertIn("request_error_id=req-safe-123", log_text)
+        self.assertNotIn("sk-secret", log_text)
+        self.assertNotIn("api_key=secret", log_text)
+        self.assertNotIn("sk-message", log_text)
+        self.assertNotIn("message-secret", log_text)
+        self.assertNotIn("/v1/chat", log_text)
+
+    def test_describe_provider_error_extracts_error_id_from_message(self):
+        details = describe_provider_error(RuntimeError("capacity unavailable. Error id: olm-443aa38422e5"))
+
+        self.assertEqual(details["error_type"], "RuntimeError")
+        self.assertEqual(details["request_error_id"], "olm-443aa38422e5")
+        self.assertIsNone(details["http_status"])
+        self.assertEqual(details["url_host"], "")
+
+    def test_describe_provider_error_extracts_http_status_from_message(self):
+        details = describe_provider_error(RuntimeError("503 Service Unavailable"))
+
+        self.assertEqual(details["http_status"], 503)
+
+    async def test_invoke_llm_with_retry_does_not_retry_permanent_http_client_errors(self):
+        config = self._make_config(MAX_RETRIES=3, RETRY_DELAY=0)
+        for status in (400, 401, 403, 404):
+            error = RuntimeError(f"HTTP {status} client error")
+            error.status_code = status
+            llm = FakeLLM([error, AIMessage(content="must not be used")])
+            nodes = AgentNodes(config=config, llm=llm, tools=[], llm_with_tools=llm)
+
+            with mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()) as sleep_mock:
+                with self.assertRaises(RuntimeError):
+                    await nodes._invoke_llm_with_retry(
+                        llm,
+                        [HumanMessage(content="Проверь задачу")],
+                        state=self._initial_state(),
+                        node_name="agent",
+                    )
+
+            self.assertEqual(len(llm.invocations), 1)
+            sleep_mock.assert_not_awaited()
+
+    async def test_invoke_llm_with_retry_does_not_restart_exhausted_key_pool(self):
+        config = self._make_config(MAX_RETRIES=3, RETRY_DELAY=0)
+        cause = RuntimeError("429 Too Many Requests")
+        cause.status_code = 429
+        exhausted = ApiKeyRotationExhaustedError(
+            "Все API-ключи исчерпаны. Последняя ошибка: HTTP 429",
+            error_kind="rate_limit",
+            keys_tried=3,
+            pool_size=3,
+        )
+        exhausted.__cause__ = cause
+        llm = FakeLLM([exhausted, AIMessage(content="must not be used")])
+        nodes = AgentNodes(config=config, llm=llm, tools=[], llm_with_tools=llm)
+
+        with mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()) as sleep_mock:
+            with self.assertRaises(ApiKeyRotationExhaustedError):
+                await nodes._invoke_llm_with_retry(
+                    llm,
+                    [HumanMessage(content="Проверь задачу")],
+                    state=self._initial_state(),
+                    node_name="agent",
+                )
+
+        self.assertEqual(len(llm.invocations), 1)
+        sleep_mock.assert_not_awaited()
+
+    async def test_invoke_llm_with_retry_marks_exhausted_transient_error(self):
+        config = self._make_config(MAX_RETRIES=3, RETRY_DELAY=0)
+        errors = [RuntimeError("connection reset by peer") for _ in range(4)]
+        llm = FakeLLM(errors)
+        nodes = AgentNodes(config=config, llm=llm, tools=[], llm_with_tools=llm)
+
+        with mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()):
+            with self.assertRaises(RuntimeError) as captured:
+                await nodes._invoke_llm_with_retry(
+                    llm,
+                    [HumanMessage(content="Проверь задачу")],
+                    state=self._initial_state(),
+                    node_name="agent",
+                )
+
+        self.assertTrue(getattr(captured.exception, "llm_retry_exhausted", False))
+        self.assertEqual(len(llm.invocations), 4)
 
     async def test_invoke_llm_with_retry_does_not_use_transient_backoff_for_non_transient_error(self):
         config = self._make_config(MAX_RETRIES=1, RETRY_DELAY=0)
@@ -4568,7 +4736,23 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
     def test_classify_stream_error_unknown(self):
         info = gui_runtime.AgentRunWorker._classify_stream_error("Something unexpected happened")
         self.assertEqual(info["kind"], "unknown")
-        self.assertTrue(info["retryable"])
+        self.assertFalse(info["retryable"])
+
+    def test_classify_stream_error_does_not_retry_exhausted_llm_error(self):
+        info = gui_runtime.AgentRunWorker._classify_stream_error(
+            "Connection error.",
+            {"retry_exhausted": True, "http_status": None},
+        )
+        self.assertEqual(info["kind"], "retry_exhausted")
+        self.assertFalse(info["retryable"])
+
+    def test_classify_stream_error_does_not_retry_permanent_http_error(self):
+        info = gui_runtime.AgentRunWorker._classify_stream_error(
+            "Function not found",
+            {"retry_exhausted": False, "http_status": 404},
+        )
+        self.assertEqual(info["kind"], "client_error")
+        self.assertFalse(info["retryable"])
 
     def test_stream_retry_backoff_increases_with_attempts(self):
         """Backoff should increase exponentially across attempts."""

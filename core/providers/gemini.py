@@ -376,6 +376,9 @@ def create_gemini_chat_model(config: AgentConfig, *, api_key_override: str | Non
         "model": config.gemini_model,
         "temperature": config.temperature,
         "google_api_key": api_key,
+        # Keep retry policy in LLMMixin; SDK retries would multiply requests
+        # across application retries, key rotation, and stream repair.
+        "max_retries": 0,
     }
     gemini_thinking_enabled = False
     gemini_reasoning_mode = "disabled"

@@ -326,6 +326,29 @@
       },
       "notes": "AgentRouter OpenAI-compatible Chat Completions uses top-level reasoning_effort; Responses-only reasoning.summary is not sent in chat mode."
     },
+	{
+      "id": "apimaster",
+      "enabled": true,
+      "priority": 60,
+      "match": [
+        "apimaster.ai"
+      ],
+      "match_type": "exact",
+      "supports_reasoning": true,
+      "validation": "map",
+      "reasoning": {
+        "path": "reasoning_effort",
+        "allowed_values": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "value_map": {
+          "xhigh": "high"
+        }
+      },
+      "notes": "apimaster.ai OpenAI-compatible Chat Completions uses top-level reasoning_effort; Responses-only reasoning.summary is not sent in chat mode."
+    },
     {
       "id": "tokenbay",
       "enabled": true,

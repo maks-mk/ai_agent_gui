@@ -258,18 +258,28 @@ class AssistantMessageWidget(QFrame):
         chunks: list[str] = []
         pending: list[str] = []
         compound = False
-        for line in text.splitlines(keepends=True):
+        lines = text.splitlines(keepends=True)
+        for index, line in enumerate(lines):
             pending.append(line)
             stripped = line.rstrip("\r\n")
             if stripped and _STREAMING_BLOCK_RE.match(stripped):
                 compound = True
-            if not stripped and not compound:
-                chunks.append("".join(pending))
-                pending.clear()
-            elif not stripped and compound:
-                # Lists, quotes, tables and indented blocks may legally continue
-                # after a blank line, so they remain one mutable Markdown part.
+            if stripped:
                 continue
+
+            next_nonempty = ""
+            for following in lines[index + 1 :]:
+                candidate = following.rstrip("\r\n")
+                if candidate:
+                    next_nonempty = candidate
+                    break
+            if compound and next_nonempty and _STREAMING_BLOCK_RE.match(next_nonempty):
+                # A loose list, quote, table or indented block continues after
+                # the blank line. Keep that compound construct in one document.
+                continue
+            chunks.append("".join(pending))
+            pending.clear()
+            compound = False
         if pending:
             chunks.append("".join(pending))
         return chunks or [text]

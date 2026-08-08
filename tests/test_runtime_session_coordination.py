@@ -132,3 +132,27 @@ class RuntimeSessionCoordinationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.openai_model, "claude-3-7-sonnet")
         self.assertEqual(result.openai_base_url, "http://127.0.0.1:3002/v1")
         self.assertFalse(result.show_model_thoughts)
+
+    async def test_build_config_for_active_profile_applies_profile_reasoning(self):
+        worker = AgentRunWorker()
+        worker.base_config = AgentConfig(PROVIDER="openai", OPENAI_API_KEY="test-key", OPENAI_MODEL="gpt-4o")
+        worker.config = worker.base_config
+        worker.profile_store = None
+        model_profiles = {
+            "active_profile": "gpt-5",
+            "profiles": [
+                {
+                    "id": "gpt-5",
+                    "provider": "openai",
+                    "model": "gpt-5.6",
+                    "api_key": "sk-profile",
+                    "base_url": "https://api.openai.com/v1",
+                    "reasoning": {"enabled": True, "effort": "high"},
+                }
+            ],
+        }
+
+        result = worker._build_config_for_active_profile(model_profiles)
+
+        self.assertTrue(result.enable_model_reasoning)
+        self.assertEqual(result.model_reasoning_effort, "high")

@@ -8,6 +8,7 @@ from typing import Any, Callable, Dict, Optional, Set
 
 from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage, ToolMessage
 
+from core.api_key_rotation import describe_provider_error
 from core.message_utils import is_tool_message_error, stringify_content
 from core.text_utils import (
     TokenTracker,
@@ -17,7 +18,6 @@ from core.text_utils import (
     format_elapsed_seconds,
     format_tool_display,
     format_tool_output,
-    prepare_markdown_for_render,
 )
 from core.reasoning_debug import debug_event, elapsed_since, log_unknown_fields, now, preview_value
 from core.tool_args import canonicalize_tool_args
@@ -79,7 +79,7 @@ def _describe_thinking_signal(content: Any) -> str:
         item_type = str(content.get("type") or "").strip().lower()
         if bool(content.get("thought")):
             return "thought_flag"
-        if item_type in {"thinking", "thought", "reasoning", "reasoning_content", "reasoning_summary", "redacted_thinking"}:
+        if item_type in {"thinking", "thought", "reasoning", "reasoning_content", "reasoning_delta", "reasoning_summary", "redacted_thinking"}:
             return f"type:{item_type}"
         if item_type.startswith(("reasoning.", "thinking.", "thought.", "analysis.")):
             return f"type:{item_type}"
@@ -88,6 +88,7 @@ def _describe_thinking_signal(content: Any) -> str:
             "analysis_content",
             "reasoning_content",
             "reasoning",
+            "reasoning_delta",
             "reasoning_summary",
             "reasoning_details",
             "thinking",
@@ -156,6 +157,7 @@ class StreamProcessResult:
     cancelled: bool = False
     failed: bool = False
     error_message: str = ""
+    error_details: Dict[str, Any] = field(default_factory=dict)
     cancelled_tools: list[Dict[str, Any]] = field(default_factory=list)
     events: list[StreamEvent] = field(default_factory=list)
     elapsed_seconds: float = 0.0
@@ -281,13 +283,25 @@ class StreamProcessor:
                 elapsed_seconds=self._elapsed_seconds(),
             )
         except Exception as exc:
-            logger.debug("Stream processing failed: %s", exc)
+            error_details = describe_provider_error(exc)
+            logger.warning(
+                "Stream processing failed: type=%s http_status=%s url_host=%s "
+                "request_error_id=%s root_cause_type=%s message=%s root_cause=%s",
+                error_details["error_type"],
+                error_details["http_status"] or "-",
+                error_details["url_host"] or "-",
+                error_details["request_error_id"] or "-",
+                error_details["root_cause_type"],
+                error_details["message"],
+                error_details["root_cause_message"],
+            )
             self._emit_interrupted_tool_results(reason="stream_error")
-            self._emit("run_failed", {"message": str(exc)})
+            self._emit("run_failed", {"message": error_details["message"], **error_details})
             return StreamProcessResult(
                 stats=None,
                 failed=True,
-                error_message=str(exc),
+                error_message=error_details["message"],
+                error_details=error_details,
                 events=list(self.events),
                 elapsed_seconds=self._elapsed_seconds(),
             )
@@ -303,6 +317,7 @@ class StreamProcessor:
             )
 
         self._flush_deferred_assistant_delta()
+        self._emit_assistant_commit()
         duration = self._elapsed_seconds()
         debug_event(
             "stream_timing",
@@ -620,23 +635,39 @@ class StreamProcessor:
     def _emit_assistant_delta(self, chunk: str) -> None:
         self._emit_status()
         visible_text = self.clean_full.strip()
-        rendered_markdown = prepare_markdown_for_render(visible_text) if visible_text else ""
         self._assistant_delta_sequence += 1
         logger.debug(
-            "Stream emit_assistant_delta rendered_len=%s rendered_preview=%s",
-            len(rendered_markdown),
-            _clip_debug_text(rendered_markdown),
+            "Stream emit_assistant_delta visible_len=%s visible_preview=%s",
+            len(visible_text),
+            _clip_debug_text(visible_text),
         )
         self._emit(
             "assistant_delta",
             {
                 "text": chunk,
-                "full_text": rendered_markdown,
+                # Keep the stream processor focused on text assembly. Markdown
+                # normalization is intentionally deferred to the coalesced UI
+                # render so bursts of provider tokens do not repeatedly scan the
+                # complete response before most intermediate states are dropped.
+                "full_text": visible_text,
                 "sequence": self._assistant_delta_sequence,
             },
         )
         self._visible_full_text = self.full_text
         self._deferred_assistant_delta = False
+
+    def _emit_assistant_commit(self) -> None:
+        """Commit the last visible text before the run-finished UI transition."""
+        visible_text = self.clean_full.strip()
+        if not visible_text or visible_text != self._visible_full_text.strip():
+            return
+        self._emit(
+            "assistant_commit",
+            {
+                "full_text": visible_text,
+                "sequence": self._assistant_delta_sequence,
+            },
+        )
 
     def _consume_messages_replay_chunk(self, incoming_text: str) -> bool:
         if self._messages_text_seen or not self.full_text:
@@ -947,6 +978,7 @@ class StreamProcessor:
                 "thought",
                 "reasoning",
                 "reasoning_content",
+                "reasoning_delta",
                 "reasoning_summary",
                 "analysis",
                 "analysis_content",
@@ -1034,6 +1066,7 @@ class StreamProcessor:
                 "analysis_content",
                 "reasoning_content",
                 "reasoning",
+                "reasoning_delta",
                 "reasoning_summary",
                 "reasoning_details",
                 "thinking",

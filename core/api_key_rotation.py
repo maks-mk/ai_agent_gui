@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import inspect
 import logging
+import re
 from pathlib import Path
 from typing import Any, Callable, Sequence
+from urllib.parse import urlsplit
 
 from core.logging_config import SensitiveDataFilter
 from core.model_profiles import ModelProfileStore
@@ -15,6 +17,21 @@ class ApiKeyRotationError(RuntimeError):
 
 class ApiKeyRotationExhaustedError(ApiKeyRotationError):
     """Raised when every key in the pool has been tried in one full circle without success."""
+
+    def __init__(
+        self,
+        message: str,
+        *,
+        error_kind: str | None = None,
+        keys_tried: int = 0,
+        pool_size: int = 0,
+    ) -> None:
+        super().__init__(message)
+        self.error_kind = error_kind
+        self.keys_tried = max(0, int(keys_tried))
+        self.pool_size = max(0, int(pool_size))
+        # One complete key-pool pass consumes the application retry budget.
+        self.llm_retry_exhausted = True
 
 
 def _normalized_error_text(error: Exception) -> str:
@@ -32,7 +49,91 @@ def _extract_status_code(error: Exception) -> int | None:
             return int(candidate)
         except (TypeError, ValueError):
             continue
-    return None
+    text = str(error).strip()
+    match = re.search(r"^(?:HTTP\s*)?([45]\d{2})(?!\d)", text, re.IGNORECASE)
+    if match is None:
+        match = re.search(r"\b(?:HTTP(?:\s+status)?|status(?:\s+code)?|error\s+code)\s*[:=]?\s*([45]\d{2})(?!\d)", text, re.IGNORECASE)
+    return int(match.group(1)) if match else None
+
+
+def _extract_request_host(error: Exception) -> str:
+    request = getattr(error, "request", None) or getattr(getattr(error, "response", None), "request", None)
+    url = getattr(request, "url", None)
+    if url is None:
+        return ""
+    host = getattr(url, "host", None)
+    if host:
+        return str(host).strip().lower()
+    try:
+        return str(urlsplit(str(url)).hostname or "").strip().lower()
+    except (TypeError, ValueError):
+        return ""
+
+
+def _extract_request_error_id(error: Exception) -> str:
+    for candidate in (
+        getattr(error, "request_id", None),
+        getattr(error, "error_id", None),
+    ):
+        if candidate:
+            return str(candidate).strip()
+
+    response = getattr(error, "response", None)
+    headers = getattr(response, "headers", None)
+    if headers is not None:
+        for name in ("x-request-id", "request-id", "x-error-id", "error-id"):
+            try:
+                candidate = headers.get(name)
+            except (AttributeError, TypeError):
+                candidate = None
+            if candidate:
+                return str(candidate).strip()
+
+    match = re.search(r"\b(?:request|error)[ _-]?id\s*[:=]\s*([A-Za-z0-9._:-]+)", str(error), re.IGNORECASE)
+    return match.group(1) if match else ""
+
+
+def _safe_provider_error_message(error: Exception) -> str:
+    text = " ".join(str(error or "").split())
+
+    def replace_url(match: re.Match[str]) -> str:
+        try:
+            parsed = urlsplit(match.group(0))
+        except ValueError:
+            return "<redacted-url>"
+        if not parsed.hostname:
+            return "<redacted-url>"
+        scheme = parsed.scheme.lower() or "https"
+        return f"{scheme}://{parsed.hostname.lower()}"
+
+    text = re.sub(r"https?://[^\s'\"<>]+", replace_url, text, flags=re.IGNORECASE)
+    return SensitiveDataFilter._sanitize_string(text)
+
+
+def describe_provider_error(error: Exception) -> dict[str, Any]:
+    """Return safe structured diagnostics without URL paths, queries, or API keys."""
+    root_cause = error
+    seen: set[int] = set()
+    while True:
+        seen.add(id(root_cause))
+        next_cause = getattr(root_cause, "__cause__", None) or getattr(root_cause, "__context__", None)
+        if next_cause is None or id(next_cause) in seen:
+            break
+        root_cause = next_cause
+
+    return {
+        "error_type": type(error).__name__,
+        "http_status": _extract_status_code(error),
+        "url_host": _extract_request_host(error),
+        "request_error_id": _extract_request_error_id(error),
+        "message": _safe_provider_error_message(error),
+        "root_cause_type": type(root_cause).__name__,
+        "root_cause_message": _safe_provider_error_message(root_cause),
+        "retry_exhausted": bool(getattr(error, "llm_retry_exhausted", False)),
+        "rotation_error_kind": getattr(error, "error_kind", None),
+        "rotation_keys_tried": int(getattr(error, "keys_tried", 0) or 0),
+        "rotation_pool_size": int(getattr(error, "pool_size", 0) or 0),
+    }
 
 
 def _extract_provider_code_text(error: Exception) -> str:
@@ -154,15 +255,37 @@ def _mask_key(key: str, tail: int = 5) -> str:
 async def _close_model_clients(model: Any) -> None:
     if model is None:
         return
-    for target in (getattr(model, "async_client", None), getattr(model, "client", None)):
-        if target is None:
+    pending_models = [model]
+    seen_models: set[int] = set()
+    closed_clients: set[int] = set()
+    while pending_models:
+        current = pending_models.pop()
+        marker = id(current)
+        if marker in seen_models:
             continue
-        close_method = getattr(target, "aclose", None) or getattr(target, "close", None)
-        if not callable(close_method):
-            continue
-        result = close_method()
-        if inspect.isawaitable(result):
-            await result
+        seen_models.add(marker)
+
+        # bind_tools() commonly returns a RunnableBinding. The provider model,
+        # including its root HTTP clients, remains reachable through ``bound``.
+        bound = getattr(current, "bound", None)
+        if bound is not None and bound is not current:
+            pending_models.append(bound)
+
+        for target in (
+            getattr(current, "root_async_client", None),
+            getattr(current, "async_client", None),
+            getattr(current, "root_client", None),
+            getattr(current, "client", None),
+        ):
+            if target is None or id(target) in closed_clients:
+                continue
+            close_method = getattr(target, "aclose", None) or getattr(target, "close", None)
+            if not callable(close_method):
+                continue
+            closed_clients.add(id(target))
+            result = close_method()
+            if inspect.isawaitable(result):
+                await result
 
 
 class RotatingChatModel:
@@ -229,8 +352,16 @@ class RotatingChatModel:
                 if error_kind is None:
                     # Non-key error (network, timeout, model error, etc.) —
                     # propagate immediately; rotation will not help.
+                    details = describe_provider_error(exc)
                     self._logger.warning(
-                        f"Non-key error for profile '{self._profile_id}': {exc}"
+                        "Non-key error for profile '%s': type=%s http_status=%s "
+                        "url_host=%s request_error_id=%s message=%s",
+                        self._profile_id,
+                        details["error_type"],
+                        details["http_status"] or "-",
+                        details["url_host"] or "-",
+                        details["request_error_id"] or "-",
+                        details["message"],
                     )
                     raise
 
@@ -259,10 +390,14 @@ class RotatingChatModel:
             f"All {total} keys exhausted for profile '{self._profile_id}' "
             f"[{tried_summary}]. Last error: {last_error_text}"
         )
+        exhausted_error_kind = classify_api_key_error(last_error) if last_error is not None else None
         raise ApiKeyRotationExhaustedError(
             f"Все API-ключи для '{model_label}' исчерпаны за один полный цикл. "
             f"Последняя ошибка: {last_error_text}. "
-            "Проверьте лимиты и действительность ключей, либо повторите запрос позже."
+            "Проверьте лимиты и действительность ключей, либо повторите запрос позже.",
+            error_kind=exhausted_error_kind,
+            keys_tried=total,
+            pool_size=total,
         ) from last_error
 
     def _build_model(self, api_key: str) -> Any:

@@ -34,7 +34,8 @@ def gemini_model_supports_thinking_budget(model_name: str | None) -> bool:
 
 def gemini_model_supports_thinking_level(model_name: str | None) -> bool:
     """Whether a Gemini model accepts the ``thinking_level`` parameter."""
-    return normalized_gemini_model_name(model_name).startswith("gemini-3")
+    normalized = normalized_gemini_model_name(model_name)
+    return normalized.startswith("gemini-3") or normalized.startswith("gemma-4")
 
 
 def chat_model_accepts_kwarg(model_cls: type, name: str) -> bool:

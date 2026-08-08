@@ -642,21 +642,30 @@ def format_exception_friendly(e: Exception) -> str:
 
 class TokenTracker:
     __slots__ = (
-        "total_input",
-        "total_output",
         "_streaming_len",
-        "_seen_msg_ids",
-        "_last_usage_fingerprint",
-        "_last_usage_source",
+        "_step_usage",
+        "_unkeyed_step_index",
+        "_active_step_has_data",
     )
 
     def __init__(self):
-        self.total_input = 0
-        self.total_output = 0
         self._streaming_len = 0
-        self._seen_msg_ids: set = set()
-        self._last_usage_fingerprint: tuple[int, int] | None = None
-        self._last_usage_source = ""
+        self._step_usage: dict[str, tuple[int, int]] = {}
+        self._unkeyed_step_index = 0
+        self._active_step_has_data = False
+
+    @property
+    def total_input(self) -> int:
+        return sum(in_t for in_t, _ in self._step_usage.values())
+
+    @property
+    def total_output(self) -> int:
+        return sum(out_t for _, out_t in self._step_usage.values())
+
+    def advance_step(self):
+        if self._active_step_has_data:
+            self._unkeyed_step_index += 1
+            self._active_step_has_data = False
 
     def update_from_message(self, msg: Any):
         if isinstance(msg, (AIMessage, AIMessageChunk)):
@@ -673,9 +682,10 @@ class TokenTracker:
                 self._streaming_len = chunk_len
 
         if hasattr(msg, "usage_metadata") and msg.usage_metadata:
+            msg_id = getattr(msg, "id", None)
             self._apply_metadata(
                 msg.usage_metadata,
-                msg_id=getattr(msg, "id", None),
+                msg_id=msg_id,
                 source="message",
             )
 
@@ -683,12 +693,29 @@ class TokenTracker:
         if not isinstance(update, dict):
             return
 
+        applied_any = False
         for node_payload in update.values():
             if not isinstance(node_payload, dict):
                 continue
+
+            node_messages = node_payload.get("messages", [])
+            if not isinstance(node_messages, list):
+                node_messages = [node_messages]
+
+            msg_ids = [
+                str(getattr(m, "id", "")).strip()
+                for m in node_messages
+                if str(getattr(m, "id", "")).strip()
+            ]
+            primary_msg_id = msg_ids[0] if msg_ids else None
+
             usage = node_payload.get("token_usage")
-            if isinstance(usage, dict):
-                self._apply_metadata(usage, source="update")
+            if isinstance(usage, dict) and usage:
+                self._apply_metadata(usage, msg_id=primary_msg_id, source="update")
+                applied_any = True
+
+        if applied_any:
+            self.advance_step()
 
     @staticmethod
     def _coerce_token_int(value: Any) -> int:
@@ -700,47 +727,52 @@ class TokenTracker:
 
     @classmethod
     def _extract_output_tokens(cls, usage: Dict[str, Any]) -> int:
-        for key in ("output_tokens", "completion_tokens", "completion_token_count", "output_token_count"):
-            if key in usage:
+        for key in (
+            "output_tokens",
+            "completion_tokens",
+            "completion_token_count",
+            "output_token_count",
+            "candidates_token_count",
+        ):
+            if key in usage and usage.get(key) is not None:
                 return cls._coerce_token_int(usage.get(key))
         return 0
 
     @classmethod
     def _extract_input_tokens(cls, usage: Dict[str, Any], output_tokens: int) -> int:
-        for key in ("input_tokens", "prompt_tokens", "prompt_token_count", "input_token_count"):
-            if key in usage:
+        for key in (
+            "input_tokens",
+            "prompt_tokens",
+            "prompt_token_count",
+            "input_token_count",
+        ):
+            if key in usage and usage.get(key) is not None:
                 return cls._coerce_token_int(usage.get(key))
         total_tokens = cls._coerce_token_int(usage.get("total_tokens"))
-        if total_tokens > 0 and output_tokens > 0:
+        if total_tokens > 0:
             return max(0, total_tokens - output_tokens)
         return 0
 
-    def _apply_metadata(self, usage: Dict, msg_id: str = None, source: str = ""):
-        if msg_id:
-            if msg_id in self._seen_msg_ids:
-                return
-            self._seen_msg_ids.add(msg_id)
+    def _apply_metadata(self, usage: Dict[str, Any], msg_id: str | None = None, source: str = ""):
+        if not isinstance(usage, dict) or not usage:
+            return
 
         out_t = self._extract_output_tokens(usage)
         in_t = self._extract_input_tokens(usage, out_t)
-        fingerprint = (in_t, out_t)
-        if (
-            self._last_usage_fingerprint == fingerprint
-            and self._last_usage_source
-            and source
-            and self._last_usage_source != source
-        ):
+
+        if in_t == 0 and out_t == 0:
             return
 
-        self.total_input += in_t
-        self.total_output += out_t
-        self._last_usage_fingerprint = fingerprint
-        self._last_usage_source = source
+        msg_key = str(msg_id).strip() if msg_id else ""
+        if not msg_key:
+            msg_key = f"_unkeyed_step_{self._unkeyed_step_index}"
+
+        existing_in, existing_out = self._step_usage.get(msg_key, (0, 0))
+        new_in = max(existing_in, in_t)
+        new_out = max(existing_out, out_t)
+        self._step_usage[msg_key] = (new_in, new_out)
+        self._active_step_has_data = True
 
     def render(self, duration: float) -> str:
-        display_out = self.total_output
-        if self._streaming_len > 10 and display_out < (self._streaming_len // 10):
-            display_out = self._streaming_len // 3
-
         in_display = str(self.total_input if self.total_input > 0 else 0)
-        return f"{duration:.1f}s  ↓ {in_display}  ↑ {display_out}"
+        return f"{duration:.1f}s  ↓ {in_display}  ↑ {self.total_output}"

@@ -420,11 +420,11 @@ class AgentConfig(BaseSettings):
     def validate_provider_keys(self) -> "AgentConfig":
         if self.provider == "anthropic":
             reasoning = str(self.anthropic_reasoning or "").strip().lower()
-            allowed = {"", "off", "none", "low", "medium", "high", "xhigh", "max"}
+            allowed = {"", "adaptive", "off", "none", "low", "medium", "high", "xhigh", "max"}
             if reasoning not in allowed:
                 raise ValueError(
                     f"ANTHROPIC_REASONING='{self.anthropic_reasoning}' is invalid. "
-                    "Allowed: low, medium, high, xhigh, max, off, none, or empty."
+                    "Allowed: adaptive, off, none, or empty. Legacy effort values are accepted as adaptive."
                 )
             self.anthropic_reasoning = reasoning
             if not self.anthropic_api_key and not self.anthropic_base_url:

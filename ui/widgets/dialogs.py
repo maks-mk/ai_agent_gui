@@ -170,7 +170,7 @@ class ModelSettingsDialog(QDialog):
         self.setModal(False)
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
-        self.resize(1070, 680)
+        self.resize(950, 680)
         self.setMinimumSize(850, 450)
 
         normalized = normalize_profiles_payload(payload or {})
@@ -282,9 +282,10 @@ class ModelSettingsDialog(QDialog):
         right_header = QHBoxLayout()
         right_header.setContentsMargins(0, 0, 0, 0)
         right_header.setSpacing(4)
-        right_label = QLabel("Profile")
-        right_label.setObjectName("ModelSettingsSectionTitle")
-        right_header.addWidget(right_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        self.selected_profile_title = QLabel("No profile selected")
+        self.selected_profile_title.setObjectName("ModelSettingsSectionTitle")
+        self.selected_profile_title.setWordWrap(True)
+        right_header.addWidget(self.selected_profile_title, 0, Qt.AlignLeft | Qt.AlignVCenter)
         right_header.addStretch(1)
 
         self.duplicate_button = QPushButton("Duplicate")
@@ -293,6 +294,11 @@ class ModelSettingsDialog(QDialog):
         self.duplicate_button.setEnabled(False)
         right_header.addWidget(self.duplicate_button, 0, Qt.AlignRight | Qt.AlignVCenter)
         right.addLayout(right_header)
+
+        self.form_hint = QLabel("Add a profile to start configuring models.")
+        self.form_hint.setObjectName("ModelSettingsMeta")
+        self.form_hint.setWordWrap(True)
+        right.addWidget(self.form_hint)
 
         self.save_state_label = QLabel("")
         self.save_state_label.setObjectName("ModelSettingsMeta")
@@ -491,7 +497,7 @@ class ModelSettingsDialog(QDialog):
         self.advanced_section = CollapsibleSection(
             "Additional settings",
             advanced_content,
-            expanded=False,
+            expanded=True,
             content_margins=(0, 0, 0, 0),
         )
         editor_layout.addWidget(self.advanced_section)
@@ -500,11 +506,11 @@ class ModelSettingsDialog(QDialog):
         editor_scroll.setWidget(editor_content)
         right.addWidget(editor_scroll, 1)
 
-        left_container.setMinimumWidth(300)
+        left_container.setMinimumWidth(285)
         right_container.setMinimumWidth(500)
         self.body_splitter.addWidget(left_container)
         self.body_splitter.addWidget(right_container)
-        self.body_splitter.setSizes([420, 720])
+        self.body_splitter.setSizes([285, 665])
         root.addWidget(self.body_splitter, 1)
 
         actions = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
@@ -1023,6 +1029,22 @@ class ModelSettingsDialog(QDialog):
         self.save_state_label.setText(text)
         self.save_state_label.setVisible(bool(text))
 
+    def _update_selected_profile_context(self, row: int) -> None:
+        if row < 0 or row >= len(self._profiles):
+            self.selected_profile_title.setText("No profile selected")
+            hint = (
+                "Add a profile to start configuring models."
+                if not self._profiles
+                else "Select a profile to edit its model settings."
+            )
+            self.form_hint.setText(hint)
+            return
+        profile = self._profiles[row]
+        profile_id = str(profile.get("id") or "").strip() or "(unnamed)"
+        status = "enabled" if bool(profile.get("enabled", True)) else "disabled"
+        self.selected_profile_title.setText(profile_id)
+        self.form_hint.setText(f"Editing profile: {profile_id} ({status})")
+
     def _profile_id_for_row(self, row: int) -> str:
         if row < 0 or row >= len(self._profiles):
             return ""
@@ -1178,6 +1200,17 @@ class ModelSettingsDialog(QDialog):
             self._loading_form = False
             self._update_api_key_rotation_summary(api_keys=cleaned_keys, active_key=active_api_key)
 
+    def _edit_api_key_rotation(self) -> None:
+        """Reveal and focus the inline API-key rotation editor."""
+        row = self._current_row()
+        if row < 0 or row >= len(self._profiles):
+            return
+        self.advanced_section.set_expanded(True)
+        self.api_key_rotation_section.set_expanded(True)
+        self.api_key_rotation_editor.setFocus(Qt.OtherFocusReason)
+        self.api_key_rotation_editor.ensureCursorVisible()
+        self._set_save_state("Edit the rotation pool inline and press Save to persist.")
+
     def _build_profile_item_widget(self, profile: dict[str, Any], row: int) -> QWidget:
         container = QWidget()
         container.setObjectName("ModelProfileRowCard")
@@ -1297,6 +1330,7 @@ class ModelSettingsDialog(QDialog):
             self._selected_row = -1
             self._set_form_enabled(False)
             self.duplicate_button.setEnabled(False)
+            self._update_selected_profile_context(-1)
             return
 
         row = preferred_row
@@ -1330,6 +1364,7 @@ class ModelSettingsDialog(QDialog):
             self._set_form_enabled(False)
             self._set_model_state(ModelLoadState.IDLE)
             self.duplicate_button.setEnabled(False)
+            self._update_selected_profile_context(-1)
             self._refresh_profile_item_states()
             return
         profile = self._profiles[row]
@@ -1356,6 +1391,7 @@ class ModelSettingsDialog(QDialog):
         self._loading_form = False
         self._selected_row = row
         self.duplicate_button.setEnabled(True)
+        self._update_selected_profile_context(row)
         self._refresh_profile_counts()
         self._refresh_profile_item_states()
         if self._current_fetch_inputs() is not None:
@@ -1389,7 +1425,7 @@ class ModelSettingsDialog(QDialog):
             current_key=current_api_key,
             preferred_index=existing_index,
         )
-        self._profiles[target_row] = {
+        updated_profile = {
             "id": str(self.name_edit.text() or "").strip(),
             "provider": provider,
             "model": self._get_current_model_value(),
@@ -1402,6 +1438,11 @@ class ModelSettingsDialog(QDialog):
             "supports_image_input": self.supports_images_checkbox.isChecked(),
             "enabled": bool(existing_profile.get("enabled", True)),
         }
+        if isinstance(existing_profile.get("reasoning"), dict):
+            updated_profile["reasoning"] = dict(existing_profile["reasoning"])
+        self._profiles[target_row] = updated_profile
+        if target_row == self._selected_row:
+            self._update_selected_profile_context(target_row)
         item = self.profile_list.item(target_row)
         if item is not None:
             item.setData(Qt.UserRole, self._display_name(self._profiles[target_row]))
@@ -1586,21 +1627,22 @@ class ModelSettingsDialog(QDialog):
             if not requested_id:
                 requested_id = model_name
             profile_id = generate_profile_id(requested_id, used_ids)
-            profiles.append(
-                {
-                    "id": profile_id,
-                    "provider": provider,
-                    "model": model_name,
-                    "api_key": str(profile.get("api_key") or "").strip(),
-                    "api_keys": list(profile.get("api_keys") or []),
-                    "api_key_index": int(profile.get("api_key_index") or 0),
-                    "invalid_api_keys": list(profile.get("invalid_api_keys") or []),
-                    "key_error_timestamps": dict(profile.get("key_error_timestamps") or {}),
-                    "base_url": str(profile.get("base_url") or "").strip(),
-                    "supports_image_input": bool(profile.get("supports_image_input")),
-                    "enabled": bool(profile.get("enabled", True)),
-                }
-            )
+            validated_profile = {
+                "id": profile_id,
+                "provider": provider,
+                "model": model_name,
+                "api_key": str(profile.get("api_key") or "").strip(),
+                "api_keys": list(profile.get("api_keys") or []),
+                "api_key_index": int(profile.get("api_key_index") or 0),
+                "invalid_api_keys": list(profile.get("invalid_api_keys") or []),
+                "key_error_timestamps": dict(profile.get("key_error_timestamps") or {}),
+                "base_url": str(profile.get("base_url") or "").strip(),
+                "supports_image_input": bool(profile.get("supports_image_input")),
+                "enabled": bool(profile.get("enabled", True)),
+            }
+            if isinstance(profile.get("reasoning"), dict):
+                validated_profile["reasoning"] = dict(profile["reasoning"])
+            profiles.append(validated_profile)
 
         active = str(self._active_profile or "").strip()
         enabled_ids = [item["id"] for item in profiles if bool(item.get("enabled", True))]

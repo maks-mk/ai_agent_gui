@@ -1,0 +1,169 @@
+"""Provider-aware reasoning controls used by the model-profile UI.
+The UI stores a small, provider-neutral ``reasoning`` object on a profile and
+this module translates it to the configuration fields consumed by the native
+provider adapters. OpenAI-compatible options deliberately come from the
+provider registry, because the accepted vocabulary differs by endpoint.
+"""
+
+from __future__ import annotations
+
+from pathlib import Path
+from typing import Any, Mapping
+
+from core.constants import BASE_DIR
+from core.provider_registry import ProviderRegistry, provider_supports_reasoning_for_model
+
+
+def _clean_text(value: Any) -> str:
+    return str(value or "").strip()
+
+
+def _title(value: str) -> str:
+    return value.replace("xhigh", "X-High").replace("_", " ").title()
+
+
+def _option(value: str, label: str, config: dict[str, Any]) -> dict[str, Any]:
+    return {"value": value, "label": label, "config": config}
+
+
+def _normalized_gemini_model_name(model_name: str) -> str:
+    normalized = _clean_text(model_name).lower()
+    return normalized[len("models/") :] if normalized.startswith("models/") else normalized
+
+
+def _gemini_model_supports_thinking_budget(model_name: str) -> bool:
+    normalized = _normalized_gemini_model_name(model_name)
+    return normalized.startswith("gemini-2.5") or normalized in {
+        "gemini-flash-latest",
+        "gemini-flash-lite-latest",
+        "gemini-pro-latest",
+    }
+
+
+def _gemini_model_supports_thinking_level(model_name: str) -> bool:
+    normalized = _normalized_gemini_model_name(model_name)
+    return normalized.startswith("gemini-3") or normalized.startswith("gemma-4")
+
+
+def _anthropic_model_uses_adaptive_thinking(model_name: str) -> bool:
+    normalized = _clean_text(model_name).lower()
+    families = ("claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5")
+    return any(normalized == family or normalized.startswith(f"{family}-") for family in families)
+
+
+def reasoning_options_for_profile(
+    profile: Mapping[str, Any] | None,
+    *,
+    registry_path: str | Path | None = None,
+) -> list[dict[str, Any]]:
+    """Return only the reasoning controls supported by *profile*."""
+    data = profile if isinstance(profile, Mapping) else {}
+    provider = _clean_text(data.get("provider")).lower()
+    model = _clean_text(data.get("model"))
+    off = _option("off", "Off", {"enabled": False})
+
+    if provider == "openai":
+        try:
+            registry = ProviderRegistry.from_path(registry_path or (BASE_DIR / "provider_registry.json"))
+            provider_config = registry.match(_clean_text(data.get("base_url")))
+        except Exception:
+            return []
+        if not provider_supports_reasoning_for_model(provider_config, model):
+            return []
+        reasoning = provider_config.get("reasoning", {}) if isinstance(provider_config, Mapping) else {}
+        values = reasoning.get("allowed_values", []) if isinstance(reasoning, Mapping) else []
+        allowed = [_clean_text(value).lower() for value in values if _clean_text(value)]
+        return [off, *[_option(value, _title(value), {"enabled": True, "effort": value}) for value in allowed]]
+
+    if provider == "gemini":
+        if _gemini_model_supports_thinking_level(model):
+            normalized_model = _normalized_gemini_model_name(model)
+            if normalized_model.startswith("gemma-4"):
+                values = ("minimal", "high")
+            elif normalized_model.startswith(("gemini-3.1-pro", "gemini-3-pro")):
+                values = ("low", "medium", "high") if "3.1" in normalized_model else ("low", "high")
+            elif normalized_model.startswith("gemini-3.1-flash-lite-image"):
+                values = ("minimal", "high")
+            else:
+                values = ("minimal", "low", "medium", "high")
+            return [_option(value, _title(value), {"enabled": True, "effort": value}) for value in values]
+        if _gemini_model_supports_thinking_budget(model):
+            budgets = (1024, 4096, 8192)
+            return [
+                off,
+                *[
+                    _option(f"budget:{budget}", f"Thinking: {budget:,}", {"enabled": True, "thinking_budget": budget})
+                    for budget in budgets
+                ],
+            ]
+        return []
+
+    if provider == "anthropic":
+        if _anthropic_model_uses_adaptive_thinking(model):
+            return [off, _option("adaptive", "Adaptive", {"enabled": True, "mode": "adaptive"})]
+        budgets = (1024, 4096, 8192)
+        return [
+            off,
+            *[
+                _option(f"budget:{budget}", f"Thinking: {budget:,}", {"enabled": True, "thinking_budget": budget})
+                for budget in budgets
+            ],
+        ]
+    return []
+
+
+def normalize_profile_reasoning(value: Any) -> dict[str, Any]:
+    """Keep the persisted profile reasoning payload small and well-formed."""
+    raw = value if isinstance(value, Mapping) else {}
+    if not raw:
+        return {}
+    result: dict[str, Any] = {"enabled": bool(raw.get("enabled", True))}
+    mode = _clean_text(raw.get("mode")).lower()
+    if mode == "adaptive":
+        result["mode"] = mode
+    effort = _clean_text(raw.get("effort")).lower()
+    if effort in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+        result["effort"] = effort
+    try:
+        budget = int(raw.get("thinking_budget"))
+    except (TypeError, ValueError):
+        budget = 0
+    if budget > 0:
+        result["thinking_budget"] = budget
+    return result
+
+
+def profile_reasoning_overrides(profile: Mapping[str, Any] | None) -> dict[str, Any]:
+    """Translate a persisted profile setting into ``AgentConfig`` overrides."""
+    data = profile if isinstance(profile, Mapping) else {}
+    reasoning = normalize_profile_reasoning(data.get("reasoning"))
+    if not reasoning:
+        return {}
+    provider = _clean_text(data.get("provider")).lower()
+    enabled = bool(reasoning.get("enabled", True))
+    overrides: dict[str, Any] = {"enable_model_reasoning": enabled}
+    effort = _clean_text(reasoning.get("effort")).lower()
+    if provider == "gemini" and not enabled:
+        # Gemini 3 treats an omitted thinking config as its model default, not as
+        # disabled. Preserve the meaning of old saved "Off" choices explicitly.
+        overrides["enable_model_reasoning"] = True
+        model = _clean_text(data.get("model"))
+        if _gemini_model_supports_thinking_level(model):
+            overrides["model_reasoning_effort"] = "minimal"
+        elif _gemini_model_supports_thinking_budget(model):
+            overrides["gemini_thinking_budget"] = 0
+        return overrides
+    if provider in {"openai", "gemini"} and effort:
+        overrides["model_reasoning_effort"] = effort
+    if provider == "gemini" and "thinking_budget" in reasoning:
+        overrides["gemini_thinking_budget"] = int(reasoning["thinking_budget"])
+    if provider == "anthropic":
+        if not enabled:
+            overrides["anthropic_reasoning"] = "off"
+        elif reasoning.get("mode") == "adaptive" or effort:
+            # Older persisted profiles used an undocumented effort value. Keep them
+            # working by selecting the official adaptive mode without forwarding it.
+            overrides["anthropic_reasoning"] = "adaptive"
+        elif "thinking_budget" in reasoning:
+            overrides["anthropic_thinking_budget"] = int(reasoning["thinking_budget"])
+    return overrides

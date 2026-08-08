@@ -296,10 +296,14 @@ class ApiKeyRotationTests(unittest.TestCase):
             llm_factory=factory,
         )
 
-        with self.assertRaises(ApiKeyRotationExhaustedError):
+        with self.assertRaises(ApiKeyRotationExhaustedError) as captured:
             asyncio.run(model.ainvoke("hello"))
 
         self.assertEqual(calls, ["sk-1", "sk-2"])
+        self.assertEqual(captured.exception.error_kind, "rate_limit")
+        self.assertEqual(captured.exception.keys_tried, 2)
+        self.assertEqual(captured.exception.pool_size, 2)
+        self.assertTrue(captured.exception.llm_retry_exhausted)
 
     def test_rotating_model_raises_exhausted_error_when_all_keys_fail_auth(self):
         profile_path = self._tmpdir / "config.json"

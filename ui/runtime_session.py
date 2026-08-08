@@ -8,6 +8,7 @@ from pydantic import SecretStr
 
 from core.constants import BASE_DIR
 from core.model_profiles import ModelProfileStore, find_active_profile
+from core.reasoning_controls import profile_reasoning_overrides
 from core.multimodal import normalize_model_capabilities, resolve_model_capabilities
 from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, normalize_project_path
@@ -259,7 +260,7 @@ class RuntimeSessionCoordinator:
         }
 
     @staticmethod
-    def config_overrides_for_profile(profile: dict[str, str]) -> dict[str, Any]:
+    def config_overrides_for_profile(profile: dict[str, Any]) -> dict[str, Any]:
         provider = str(profile.get("provider") or "").strip().lower()
         model_name = str(profile.get("model") or "").strip()
         api_key = str(profile.get("api_key") or "").strip()
@@ -281,6 +282,7 @@ class RuntimeSessionCoordinator:
         else:
             overrides["gemini_model"] = model_name
             overrides["gemini_api_key"] = SecretStr(api_key) if api_key else None
+        overrides.update(profile_reasoning_overrides(profile))
         return overrides
 
     def resolve_base_config(self):

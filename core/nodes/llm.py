@@ -11,10 +11,14 @@ from langgraph.config import get_stream_writer
 from langchain_core.language_models import BaseChatModel
 from langchain_core.messages import SystemMessage
 
-from core.api_key_rotation import ApiKeyRotationExhaustedError, classify_api_key_error
+from core.api_key_rotation import (
+    ApiKeyRotationExhaustedError,
+    classify_api_key_error,
+    describe_provider_error,
+)
 from core.state import AgentState
 from core.node_errors import EmptyLLMResponseError
-from core.message_utils import compact_text, stringify_content
+from core.message_utils import stringify_content
 
 logger = logging.getLogger("agent")
 
@@ -140,7 +144,17 @@ class LLMMixin:
 
                 is_transient = self._is_transient_llm_error(e)
                 is_fatal = self._is_fatal_llm_error(e) and not is_transient
-                logger.warning("LLM Error (Attempt %s): %s", invocation_attempt, e)
+                error_details = describe_provider_error(e)
+                logger.warning(
+                    "LLM Error (Attempt %s): type=%s http_status=%s url_host=%s "
+                    "request_error_id=%s message=%s",
+                    invocation_attempt,
+                    error_details["error_type"],
+                    error_details["http_status"] or "-",
+                    error_details["url_host"] or "-",
+                    error_details["request_error_id"] or "-",
+                    error_details["message"],
+                )
 
                 if is_transient and transient_retry_count < len(_TRANSIENT_RETRY_DELAYS):
                     transient_retry_count += 1
@@ -155,9 +169,13 @@ class LLMMixin:
                         retry_kind="transient",
                         backoff_seconds=backoff_delay,
                         fatal=False,
-                        error=str(e),
+                        error_type=error_details["error_type"],
+                        http_status=error_details["http_status"],
+                        url_host=error_details["url_host"],
+                        request_error_id=error_details["request_error_id"],
+                        error=error_details["message"],
                     )
-                    self._emit_reconnecting_status(node_name, transient_retry_count)
+                    self._emit_provider_retry_status(node_name, transient_retry_count)
                     await asyncio.sleep(backoff_delay)
                     continue
 
@@ -169,20 +187,34 @@ class LLMMixin:
                         run_id=None if state is None else state.get("run_id", ""),
                         node=node_name,
                         attempt=invocation_attempt,
-                        error_type=type(e).__name__,
-                        error=compact_text(str(e), 400),
+                        retry_exhausted=error_details["retry_exhausted"],
+                        rotation_error_kind=error_details["rotation_error_kind"],
+                        rotation_keys_tried=error_details["rotation_keys_tried"],
+                        rotation_pool_size=error_details["rotation_pool_size"],
+                        http_status=error_details["http_status"],
+                        error_type=error_details["error_type"],
+                        error=error_details["message"],
                     )
                     raise
 
-                if is_transient or configured_retry_count >= configured_max_attempts - 1:
+                is_permanent_client_error = self._is_permanent_client_error(e)
+                if is_transient or is_permanent_client_error or configured_retry_count >= configured_max_attempts - 1:
+                    if is_transient:
+                        try:
+                            setattr(e, "llm_retry_exhausted", True)
+                        except Exception:
+                            pass
                     self._log_run_event(
                         state,
                         "llm_invoke_exhausted",
                         run_id=None if state is None else state.get("run_id", ""),
                         node=node_name,
                         attempt=invocation_attempt,
-                        error_type=type(e).__name__,
-                        error=compact_text(str(e), 400),
+                        retryable=is_transient,
+                        retry_exhausted=is_transient,
+                        http_status=error_details["http_status"],
+                        error_type=error_details["error_type"],
+                        error=error_details["message"],
                     )
                     raise
 
@@ -203,13 +235,13 @@ class LLMMixin:
                 await asyncio.sleep(backoff_delay)
 
     @staticmethod
-    def _emit_reconnecting_status(node_name: str, retry_number: int) -> None:
+    def _emit_provider_retry_status(node_name: str, retry_number: int) -> None:
         try:
             writer = get_stream_writer()
             writer(
                 {
                     "type": "status_changed",
-                    "label": f"Reconnecting... {retry_number}/{len(_TRANSIENT_RETRY_DELAYS)}",
+                    "label": f"Retrying provider request... {retry_number}/{len(_TRANSIENT_RETRY_DELAYS)}",
                     "node": node_name or "agent",
                 }
             )
@@ -219,6 +251,8 @@ class LLMMixin:
 
     @staticmethod
     def _is_transient_llm_error(error: Exception) -> bool:
+        if isinstance(error, ApiKeyRotationExhaustedError):
+            return False
         if classify_api_key_error(error) == "rate_limit":
             return True
 
@@ -237,6 +271,11 @@ class LLMMixin:
         if re.search(rf"(?<!\d)(?:{status_pattern})(?!\d)", error_text):
             return True
         return any(marker in error_text for marker in _TRANSIENT_ERROR_MARKERS)
+
+    @staticmethod
+    def _is_permanent_client_error(error: Exception) -> bool:
+        status = describe_provider_error(error)["http_status"]
+        return status is not None and 400 <= status < 500 and status not in {408, 429}
 
     def _is_fatal_llm_error(self, error: Exception) -> bool:
         if isinstance(error, ApiKeyRotationExhaustedError):

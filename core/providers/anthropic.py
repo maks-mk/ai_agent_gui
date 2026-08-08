@@ -163,10 +163,9 @@ def create_anthropic_chat_model(
         effort = None
     elif reasoning_level:
         kwargs["thinking"] = {"type": "adaptive"}
-        kwargs["effort"] = reasoning_level
-        mode = "effort"
+        mode = "adaptive"
         budget = None
-        effort = reasoning_level
+        effort = None
     elif _anthropic_model_uses_adaptive_thinking(config.anthropic_model):
         # These models require adaptive thinking rather than a manual budget.
         kwargs["thinking"] = {"type": "adaptive"}

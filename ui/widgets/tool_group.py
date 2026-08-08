@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from collections import Counter
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QAbstractAnimation, QEasingCurve, QPropertyAnimation, QSize, Qt
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 
 from .foundation import _fa_icon
@@ -19,6 +19,7 @@ class ToolGroupWidget(QFrame):
         self._collapsed = False
         self._completed = False
         self._completion_announced = False
+        self._animation_target_expanded = True
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 5, 0, 5)
@@ -62,8 +63,13 @@ class ToolGroupWidget(QFrame):
         self.container.setObjectName("ToolGroupContainer")
         self.inner = QVBoxLayout(self.container)
         self.inner.setContentsMargins(10, 1, 0, 0)
-        self.inner.setSpacing(5)
+        self.inner.setSpacing(1)
         layout.addWidget(self.container)
+
+        self._container_animation = QPropertyAnimation(self.container, b"maximumHeight", self)
+        self._container_animation.setDuration(180)
+        self._container_animation.setEasingCurve(QEasingCurve.OutCubic)
+        self._container_animation.finished.connect(self._finish_container_animation)
 
         self._sync_header()
 
@@ -189,11 +195,49 @@ class ToolGroupWidget(QFrame):
         if self._completed and auto_collapse:
             self._completion_announced = True
             self._collapsed = True
-            self.container.hide()
+            self._set_container_expanded(False)
             self.header_btn.setChecked(False)
         elif self._completed:
             self._completion_announced = True
         self._sync_header()
+
+    def _set_container_expanded(self, expanded: bool, *, animated: bool = True) -> None:
+        target_height = self.container.sizeHint().height()
+        if target_height <= 0:
+            self.container.setMaximumHeight(0 if not expanded else 16777215)
+            self.container.setVisible(expanded)
+            return
+
+        animation = self._container_animation
+        if animation.state() != QAbstractAnimation.Stopped:
+            animation.stop()
+
+        was_visible = self.container.isVisible()
+        current_height = self.container.height()
+        self._animation_target_expanded = expanded
+        if not animated or not self.isVisible():
+            self.container.setMaximumHeight(16777215 if expanded else 0)
+            self.container.setVisible(expanded)
+            return
+
+        if expanded:
+            self.container.setVisible(True)
+            start_height = max(0, current_height) if was_visible else 0
+            self.container.setMaximumHeight(start_height)
+            end_height = target_height
+        else:
+            start_height = max(0, current_height)
+            end_height = 0
+            self.container.setMaximumHeight(start_height)
+
+        animation.setStartValue(start_height)
+        animation.setEndValue(end_height)
+        animation.start()
+
+    def _finish_container_animation(self) -> None:
+        expanded = self._animation_target_expanded
+        self.container.setMaximumHeight(16777215 if expanded else 0)
+        self.container.setVisible(expanded)
 
     def collapse(self) -> None:
         self._completed = bool(self._tools) and all(self._tool_is_finished(tool) for tool in self._tools)
@@ -203,19 +247,19 @@ class ToolGroupWidget(QFrame):
             self._sync_header()
             return
         self._collapsed = True
-        self.container.hide()
+        self._set_container_expanded(False)
         self.header_btn.setChecked(False)
         self._sync_header()
 
     def expand(self) -> None:
         self._collapsed = False
-        self.container.show()
+        self._set_container_expanded(True)
         self.header_btn.setChecked(True)
         self._sync_header()
 
     def _toggle(self, checked: bool = False) -> None:
         self._collapsed = not checked
-        self.container.setVisible(checked)
+        self._set_container_expanded(checked)
         if self._collapsed and self._completed:
             self._completion_announced = True
         self._sync_header()

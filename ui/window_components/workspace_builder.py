@@ -60,6 +60,9 @@ class WorkspaceBuildResult:
     model_chip: QToolButton
     model_chip_menu: QMenu
     model_chip_group: QActionGroup
+    reasoning_chip: QToolButton
+    reasoning_chip_menu: QMenu
+    reasoning_chip_group: QActionGroup
     model_image_badge: QLabel
     no_models_label: QLabel
     open_settings_inline_button: QPushButton
@@ -198,6 +201,23 @@ class WorkspaceBuilder:
         apply_popup_shadow(model_chip_menu)
         control_row.addWidget(model_chip, 0, Qt.AlignVCenter)
 
+        reasoning_chip = QToolButton()
+        reasoning_chip.setObjectName("ComposerMetaChipButton")
+        reasoning_chip.setPopupMode(QToolButton.ToolButtonPopupMode.InstantPopup)
+        reasoning_chip.setToolButtonStyle(Qt.ToolButtonTextOnly)
+        reasoning_chip.setText("Reasoning")
+        reasoning_chip.setCursor(Qt.PointingHandCursor)
+        reasoning_chip.setFocusPolicy(Qt.NoFocus)
+        reasoning_chip.setAccessibleName("Reasoning level selector")
+        reasoning_chip.setAccessibleDescription("Select the reasoning level for the active model")
+        reasoning_chip_menu = QMenu(reasoning_chip)
+        reasoning_chip_menu.setObjectName("ComposerPopupMenu")
+        reasoning_chip.setMenu(reasoning_chip_menu)
+        reasoning_chip_group = QActionGroup(reasoning_chip_menu)
+        reasoning_chip_group.setExclusive(True)
+        apply_popup_shadow(reasoning_chip_menu)
+        control_row.addWidget(reasoning_chip, 0, Qt.AlignVCenter)
+
         model_image_badge = QLabel()
         model_image_badge.setObjectName("ComposerCapabilityBadge")
         model_image_badge.setPixmap(_fa_icon("mdi6.image-off-outline", color=TEXT_MUTED, size=14).pixmap(14, 14))
@@ -291,6 +311,9 @@ class WorkspaceBuilder:
             model_chip=model_chip,
             model_chip_menu=model_chip_menu,
             model_chip_group=model_chip_group,
+            reasoning_chip=reasoning_chip,
+            reasoning_chip_menu=reasoning_chip_menu,
+            reasoning_chip_group=reasoning_chip_group,
             model_image_badge=model_image_badge,
             no_models_label=no_models_label,
             open_settings_inline_button=open_settings_inline_button,

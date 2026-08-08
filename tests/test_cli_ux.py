@@ -19,7 +19,7 @@ from core.text_utils import prepare_markdown_for_render, split_markdown_segments
 from core.model_profiles import normalize_profiles_payload
 from core.tool_policy import ToolMetadata
 from ui.runtime import build_runtime_snapshot, summarize_approval_request
-from ui.runtime_worker import AgentRuntimeController
+from ui.runtime_worker import AgentRunWorker, AgentRuntimeController
 from ui.streaming import StreamEvent
 from ui.theme import AMBER_WARNING, BORDER, ERROR_RED, SUCCESS_GREEN, SURFACE_BG, SURFACE_CARD, TEXT_MUTED, build_stylesheet
 from ui.widgets.composer import _ComposerMentionItemWidget
@@ -171,6 +171,50 @@ class RuntimeControllerStopTests(unittest.TestCase):
             controller._worker = real_worker
             controller._stop_worker_thread = real_stop_worker_thread
             controller._start_worker_thread = real_start_worker_thread
+            if real_thread is not None and real_thread.isRunning():
+                real_thread.quit()
+                real_thread.wait(1000)
+
+    def test_worker_shutdown_finalizes_async_generators_before_closing_loop(self):
+        worker = AgentRunWorker()
+        client = mock.AsyncMock()
+
+        async def _stream_resource():
+            try:
+                yield "ready"
+            finally:
+                await client.aclose()
+
+        loop = worker._ensure_loop()
+        stream_holder = {}
+
+        async def _start_stream():
+            stream_holder["stream"] = _stream_resource()
+            return await anext(stream_holder["stream"])
+
+        self.assertEqual(loop.run_until_complete(_start_stream()), "ready")
+
+        worker.shutdown()
+
+        client.aclose.assert_awaited_once()
+        self.assertTrue(loop.is_closed())
+        self.assertIsNone(worker._loop)
+
+    def test_controller_shutdown_requests_cancellation_before_stopping_thread(self):
+        controller = AgentRuntimeController()
+        real_thread = controller._thread
+        real_worker = controller._worker
+        calls = []
+        try:
+            controller.stop_run = lambda: calls.append("stop")
+            controller._stop_worker_thread = lambda *, force: calls.append(("shutdown", force))
+
+            controller.shutdown()
+
+            self.assertEqual(calls, ["stop", ("shutdown", False)])
+        finally:
+            controller._thread = real_thread
+            controller._worker = real_worker
             if real_thread is not None and real_thread.isRunning():
                 real_thread.quit()
                 real_thread.wait(1000)
@@ -716,6 +760,19 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(len(widget.parts_widgets), 2)
         self.assertIs(widget.parts_widgets[0], first_widget)
         first_widget.setMarkdown.assert_not_called()
+
+    def test_assistant_message_widget_closes_compound_block_before_following_prose(self):
+        widget = AssistantMessageWidget()
+        self.addCleanup(widget.deleteLater)
+
+        widget.set_content("- First item\n- Second item\n\nFollowing paragraph")
+        self._process_events()
+
+        self.assertEqual(len(widget.parts_widgets), 2)
+        self.assertIsInstance(widget.parts_widgets[0], AutoTextBrowser)
+        self.assertIsInstance(widget.parts_widgets[1], AutoTextBrowser)
+        self.assertIn("Second item", widget.parts_widgets[0].toPlainText())
+        self.assertEqual(widget.parts_widgets[1].toPlainText(), "Following paragraph")
 
     def test_assistant_message_widget_does_not_plain_text_draft_while_streaming(self):
         widget = AssistantMessageWidget()
@@ -2911,6 +2968,22 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(self.controller.set_active_profile_calls, ["gemini-1-5-flash"])
 
+    def test_reasoning_selector_uses_registry_options_and_saves_selection(self):
+        payload = self._snapshot_payload()
+        profile = payload["model_profiles"]["profiles"][0]
+        profile.update({"model": "gpt-5.6", "base_url": "https://api.openai.com/v1"})
+        self.window._handle_initialized(payload)
+
+        self.assertFalse(self.window.reasoning_chip.isHidden())
+        action = next(action for action in self.window.reasoning_chip_menu.actions() if action.text() == "High")
+        action.trigger()
+
+        self.assertEqual(self.window.reasoning_chip.text(), "Reasoning: High")
+        self.assertEqual(
+            self.controller.save_profiles_calls[-1]["profiles"][0]["reasoning"],
+            {"enabled": True, "effort": "high"},
+        )
+
     def test_no_models_cta_is_visible_and_send_is_disabled(self):
         payload = self._snapshot_payload()
         payload["model_profiles"] = {"active_profile": None, "profiles": []}
@@ -2978,6 +3051,25 @@ class GuiUxTests(unittest.TestCase):
             [normalize_profiles_payload(payload)],
         )
         self.assertEqual(self.window.model_profiles_payload["active_profile"], "gemini-1-5-flash")
+
+    def test_model_settings_dialog_preserves_reasoning_profile_setting(self):
+        payload = {
+            "active_profile": "gpt-5",
+            "profiles": [
+                {
+                    "id": "gpt-5",
+                    "provider": "openai",
+                    "model": "gpt-5.6",
+                    "api_key": "sk-demo",
+                    "base_url": "https://api.openai.com/v1",
+                    "reasoning": {"enabled": True, "effort": "high"},
+                }
+            ],
+        }
+        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.deleteLater)
+
+        self.assertEqual(dialog._validated_payload()["profiles"][0]["reasoning"], {"enabled": True, "effort": "high"})
 
     def test_model_settings_panel_reopens_with_content_and_toggles_from_settings_action(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -3971,10 +4063,11 @@ class GuiUxTests(unittest.TestCase):
 
     def test_composer_bottom_controls_match_new_layout(self):
         self.assertTrue(hasattr(self.window, "model_chip"))
-        self.assertFalse(hasattr(self.window, "effort_chip"))
+        self.assertTrue(hasattr(self.window, "reasoning_chip"))
         self.assertFalse(hasattr(self.window, "voice_button"))
         self.assertEqual(self.window.stop_action_button.objectName(), "ComposerStopButton")
         self.assertEqual(self.window.model_chip.accessibleName(), "Model selector")
+        self.assertEqual(self.window.reasoning_chip.accessibleName(), "Reasoning level selector")
 
     def test_primary_widgets_expose_accessible_names(self):
         self.assertFalse(hasattr(self.window.sidebar, "search_field"))

@@ -13,6 +13,8 @@ from core.constants import AGENT_VERSION
 from core.input_sanitizer import build_user_input_notice, sanitize_user_text
 from core.multimodal import DEFAULT_MODEL_CAPABILITIES, can_read_image_file, resolve_model_capabilities
 from core.model_profiles import normalize_profiles_payload
+from core.reasoning_controls import normalize_profile_reasoning, reasoning_options_for_profile
+from core.text_utils import prepare_markdown_for_render
 from ui.main_window_state import ComposerStateController, RunStatusController, StreamEventRouter
 from ui.runtime import AgentRuntimeController
 from ui.theme import ACCENT_BLUE, build_stylesheet
@@ -199,6 +201,9 @@ class MainWindow(QMainWindow):
         self.model_chip = refs.model_chip
         self.model_chip_menu = refs.model_chip_menu
         self.model_chip_group = refs.model_chip_group
+        self.reasoning_chip = refs.reasoning_chip
+        self.reasoning_chip_menu = refs.reasoning_chip_menu
+        self.reasoning_chip_group = refs.reasoning_chip_group
         self.model_image_badge = refs.model_image_badge
         self.no_models_label = refs.no_models_label
         self.open_settings_inline_button = refs.open_settings_inline_button
@@ -233,6 +238,7 @@ class MainWindow(QMainWindow):
         self.add_image_action.triggered.connect(self._attach_images)
         self.insert_file_path_action.triggered.connect(self._insert_file_paths)
         self.model_chip_menu.triggered.connect(self._on_model_action_triggered)
+        self.reasoning_chip_menu.triggered.connect(self._on_reasoning_action_triggered)
         self.composer.submit_requested.connect(self._submit_request)
         self.composer.image_pasted.connect(self._handle_pasted_image)
         self.composer.image_files_pasted.connect(self._handle_pasted_image_files)
@@ -257,6 +263,7 @@ class MainWindow(QMainWindow):
                 "run_started": self._on_run_started,
                 "status_changed": self._on_status_changed,
                 "assistant_delta": self._on_assistant_delta,
+                "assistant_commit": self._on_assistant_commit,
                 "assistant_boundary": self._on_assistant_boundary,
                 "tool_started": self._on_tool_started,
                 "cli_output": self._on_cli_output,
@@ -364,6 +371,16 @@ class MainWindow(QMainWindow):
         self._last_assistant_delta_text = full_text
         self._queue_assistant_delta({"full_text": full_text}, force=sequence_reset)
 
+    def _on_assistant_commit(self, payload: dict) -> None:
+        """Render the terminal stream state before run_finished changes layout."""
+        if self.current_turn is None:
+            return
+        full_text = str(payload.get("full_text", "") or "")
+        if not full_text:
+            return
+        self._last_assistant_delta_text = full_text
+        self._queue_assistant_delta({"full_text": full_text}, force=True)
+
     def _on_assistant_boundary(self, _payload: dict) -> None:
         self._flush_pending_assistant_delta()
         self._last_assistant_delta_text = ""
@@ -408,12 +425,14 @@ class MainWindow(QMainWindow):
         if timer := getattr(self, "_assistant_delta_flush_timer", None):
             timer.stop()
         full_text = str(payload.get("full_text", "") or "")
+        rendered_markdown = prepare_markdown_for_render(full_text) if full_text else ""
         logger.debug(
-            "Stream main_window_assistant_delta full_len=%s",
+            "Stream main_window_assistant_delta full_len=%s rendered_len=%s",
             len(full_text),
+            len(rendered_markdown),
         )
         self.current_turn.set_assistant_markdown(
-            full_text,
+            rendered_markdown,
         )
         self.current_turn.set_assistant_streaming(True)
         self.transcript.notify_content_changed()
@@ -552,7 +571,8 @@ class MainWindow(QMainWindow):
         self.add_image_action.setEnabled(attach_enabled and self._has_active_model and self._active_model_supports_images())
         self.insert_file_path_action.setEnabled(attach_enabled)
         self.model_chip.setEnabled(can_edit and self._has_active_model)
-        model_settings_open = self._model_settings_window is not None and not self._model_settings_window.isHidden()
+        self.reasoning_chip.setEnabled(can_edit and self._has_active_model and not self.reasoning_chip.isHidden())
+        model_settings_open = self._model_settings_window_is_visible()
         can_open_model_settings = enabled and not has_pending_interrupt and not self.is_busy
         self.open_settings_inline_button.setEnabled(can_open_model_settings)
         self.settings_button.setEnabled(can_open_model_settings or model_settings_open)
@@ -562,6 +582,18 @@ class MainWindow(QMainWindow):
         self.user_choice_card.set_actions_enabled(
             enabled and self.awaiting_user_choice and not self.awaiting_approval and not self.is_busy
         )
+
+    def _model_settings_window_is_visible(self) -> bool:
+        window = self._model_settings_window
+        if window is None:
+            return False
+        is_hidden = getattr(window, "isHidden", None)
+        if callable(is_hidden):
+            return not bool(is_hidden())
+        is_visible = getattr(window, "isVisible", None)
+        if callable(is_visible):
+            return bool(is_visible())
+        return True
 
     def _handle_initialized(self, payload: dict) -> None:
         self.tools_panel.clear_server_pending()
@@ -594,6 +626,7 @@ class MainWindow(QMainWindow):
 
         if not profiles:
             self.model_chip.setVisible(False)
+            self.reasoning_chip.setVisible(False)
             self.no_models_label.setText("No models configured")
             self.no_models_label.setVisible(True)
             self.open_settings_inline_button.setVisible(True)
@@ -602,6 +635,7 @@ class MainWindow(QMainWindow):
 
         if not enabled_profiles:
             self.model_chip.setVisible(False)
+            self.reasoning_chip.setVisible(False)
             self.no_models_label.setText("All models disabled")
             self.no_models_label.setVisible(True)
             self.open_settings_inline_button.setVisible(True)
@@ -635,7 +669,66 @@ class MainWindow(QMainWindow):
             self.model_chip.setText("No models")
             self.model_chip.setToolTip("No enabled active model selected")
         self.model_image_badge.setVisible(self._has_active_model and not self._active_model_supports_images())
+        self._refresh_reasoning_selector()
         self._refresh_submit_controls()
+
+    def _refresh_reasoning_selector(self) -> None:
+        profile = self._active_model_profile()
+        options = reasoning_options_for_profile(profile)
+        self.reasoning_chip_menu.clear()
+        for action in self.reasoning_chip_group.actions():
+            self.reasoning_chip_group.removeAction(action)
+        if not options:
+            self.reasoning_chip.setVisible(False)
+            return
+
+        self.reasoning_chip.setVisible(True)
+        current = normalize_profile_reasoning((profile or {}).get("reasoning"))
+        selected_value = "off" if current and not current.get("enabled", True) else ""
+        provider = str((profile or {}).get("provider") or "").strip().lower()
+        model = str((profile or {}).get("model") or "").strip().lower()
+        if selected_value == "off" and provider == "gemini" and model.startswith(("gemini-3", "gemma-4")):
+            selected_value = "minimal"
+        if current.get("thinking_budget"):
+            selected_value = f"budget:{current['thinking_budget']}"
+        elif current.get("effort"):
+            selected_value = str(current["effort"])
+        elif provider == "anthropic" and current.get("mode"):
+            selected_value = str(current["mode"])
+
+        selected_label = "Default"
+        for option in options:
+            action = self.reasoning_chip_menu.addAction(str(option["label"]))
+            action.setCheckable(True)
+            action.setData(dict(option))
+            action.setToolTip(f"Reasoning level: {option['label']}")
+            is_selected = bool(selected_value and option["value"] == selected_value)
+            action.setChecked(is_selected)
+            self.reasoning_chip_group.addAction(action)
+            if is_selected:
+                selected_label = str(option["label"])
+        self.reasoning_chip.setText(selected_label)
+        self.reasoning_chip.setToolTip("Reasoning settings are saved with the active model profile")
+
+    def _on_reasoning_action_triggered(self, action: QAction) -> None:
+        option = action.data()
+        profile = self._active_model_profile()
+        if not isinstance(option, dict) or not isinstance(profile, dict):
+            return
+        profile_id = str(profile.get("id") or "").strip()
+        reasoning = normalize_profile_reasoning(option.get("config"))
+        if not profile_id or not reasoning:
+            return
+
+        payload = normalize_profiles_payload(self.model_profiles_payload)
+        for candidate in payload.get("profiles", []):
+            if str(candidate.get("id") or "").strip() == profile_id:
+                candidate["reasoning"] = reasoning
+                break
+        else:
+            return
+        self._apply_model_profiles_payload(payload)
+        self.controller.save_profiles(payload)
 
     def _apply_model_profiles_payload(self, payload: dict | None) -> None:
         self.model_profiles_payload = payload if isinstance(payload, dict) else {"active_profile": None, "profiles": []}

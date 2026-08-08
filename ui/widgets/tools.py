@@ -172,7 +172,7 @@ class ToolCardWidget(QFrame):
         self._preview_token = 0
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 1, 0, 3)
+        layout.setContentsMargins(0, 0, 0, 1)
         layout.setSpacing(2)
 
         self.header_container = QWidget(self)

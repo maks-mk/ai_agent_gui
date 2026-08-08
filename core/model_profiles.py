@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any, Mapping
 
+from core.reasoning_controls import normalize_profile_reasoning
+
 ALLOWED_PROVIDERS = {"openai", "gemini", "anthropic"}
 _ID_ALLOWED_RE = re.compile(r"[^a-z0-9_-]+")
 
@@ -127,7 +129,7 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
         raw_profiles = []
 
     used_ids: set[str] = set()
-    seen_profiles: set[tuple[str, str, tuple[str, ...], str, bool, bool]] = set()
+    seen_profiles: set[tuple[str, str, tuple[str, ...], str, bool, bool, str]] = set()
     profiles: list[dict[str, Any]] = []
     for raw in raw_profiles:
         if not isinstance(raw, dict):
@@ -140,6 +142,7 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
         base_url = _clean_text(raw.get("base_url")) if provider in {"openai", "anthropic"} else ""
         supports_image_input = _normalize_bool(raw.get("supports_image_input"))
         enabled = _normalize_bool(raw.get("enabled")) if "enabled" in raw else True
+        reasoning = normalize_profile_reasoning(raw.get("reasoning"))
 
         # Deduplicate exact same profile payloads to keep env bootstrap/import idempotent.
         profile_fingerprint = (
@@ -149,6 +152,7 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
             base_url,
             supports_image_input,
             enabled,
+            json.dumps(reasoning, sort_keys=True),
         )
         if profile_fingerprint in seen_profiles:
             continue
@@ -156,21 +160,22 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
 
         requested_id = sanitize_profile_id(raw.get("id"))
         profile_id = _ensure_unique_id(requested_id or model_name, used_ids)
-        profiles.append(
-            {
-                "id": profile_id,
-                "provider": provider,
-                "model": model_name,
-                "api_key": api_key,
-                "api_keys": api_keys,
-                "api_key_index": api_key_index,
-                "invalid_api_keys": invalid_api_keys,
-                "key_error_timestamps": key_error_timestamps,
-                "base_url": base_url,
-                "supports_image_input": supports_image_input,
-                "enabled": enabled,
-            }
-        )
+        profile = {
+            "id": profile_id,
+            "provider": provider,
+            "model": model_name,
+            "api_key": api_key,
+            "api_keys": api_keys,
+            "api_key_index": api_key_index,
+            "invalid_api_keys": invalid_api_keys,
+            "key_error_timestamps": key_error_timestamps,
+            "base_url": base_url,
+            "supports_image_input": supports_image_input,
+            "enabled": enabled,
+        }
+        if reasoning:
+            profile["reasoning"] = reasoning
+        profiles.append(profile)
 
     active_raw = raw_payload.get("active_profile")
     active_profile = _clean_text(active_raw) if active_raw is not None else ""

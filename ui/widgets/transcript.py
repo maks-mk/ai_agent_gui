@@ -259,7 +259,10 @@ class ConversationTurnWidget(QWidget):
         )
 
     def complete(self, stats: str) -> None:
-        self._append_block("stats", RunStatsWidget(stats, parent=self))
+        # Для скрытия отображения статистики поменять на False   
+        show_run_stats = True
+        if show_run_stats and stats:
+            self._append_block("stats", RunStatsWidget(stats, parent=self))
 
     def restore_blocks(self, blocks: list[dict[str, Any]]) -> None:
         for block in blocks:
