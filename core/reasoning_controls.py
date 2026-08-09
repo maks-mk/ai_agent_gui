@@ -60,7 +60,8 @@ def reasoning_options_for_profile(
     data = profile if isinstance(profile, Mapping) else {}
     provider = _clean_text(data.get("provider")).lower()
     model = _clean_text(data.get("model"))
-    off = _option("off", "Off", {"enabled": False})
+    off_label = "Default" if provider == "openai" else "Off"
+    off = _option("off", off_label, {"enabled": False})
 
     if provider == "openai":
         try:

@@ -70,6 +70,8 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         catalog_names = {tool.name for tool in registry.builtin_tools}
         self.assertIn("read_file", catalog_names)
         self.assertIn("batch_web_search", catalog_names)
+        self.assertIn("fetch_content", catalog_names)
+        self.assertNotIn("web_search", catalog_names)
         self.assertIn("cli_exec", catalog_names)
         self.assertNotIn("read_file", {tool.name for tool in registry.active_tools()})
 

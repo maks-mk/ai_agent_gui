@@ -63,7 +63,6 @@ class AgentNodes(
         {
             "read_file",
             "list_directory",
-            "web_search",
             "fetch_content",
             "batch_web_search",
             "find_process_by_port",
@@ -74,7 +73,6 @@ class AgentNodes(
         {
             "read_file",
             "list_directory",
-            "web_search",
             "fetch_content",
             "batch_web_search",
         }

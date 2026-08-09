@@ -18,7 +18,7 @@ def format_elapsed_seconds(seconds: int) -> str:
     if whole_seconds <= 60:
         return f"{whole_seconds}s"
     minutes, remaining_seconds = divmod(whole_seconds, 60)
-    return f"{minutes}m{remaining_seconds}s"
+    return f"{minutes}m {remaining_seconds}s"
 
 
 @dataclass(frozen=True)
@@ -285,7 +285,7 @@ def _format_url_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
 
 DISPLAY_RULES: tuple[tuple[set[str], Callable[[str, Dict[str, Any]], str | None]], ...] = (
     ({"read_file", "write_file", "edit_file", "Read", "Write", "SearchReplace"}, _format_path_tool),
-    ({"web_search", "WebSearch", "batch_web_search"}, _format_query_tool),
+    ({"batch_web_search"}, _format_query_tool),
     ({"grep", "Grep", "glob", "Glob"}, _format_pattern_tool),
     ({"execute", "RunCommand", "cli_exec"}, _format_command_tool),
     ({"ls", "LS", "list_directory"}, _format_list_tool),
@@ -313,8 +313,6 @@ def classify_tool_args_state(tool_name: str, tool_args: Dict[str, Any]) -> str:
     anchor_keys: tuple[str, ...] = ()
     if tool_name in {"read_file", "write_file", "edit_file", "Read", "Write", "SearchReplace"}:
         anchor_keys = ("path", "file_path")
-    elif tool_name in {"web_search", "WebSearch"}:
-        anchor_keys = ("query",)
     elif tool_name == "batch_web_search":
         anchor_keys = ("queries",)
     elif tool_name in {"grep", "Grep", "glob", "Glob"}:
@@ -401,9 +399,6 @@ def tool_target_summary(tool_name: str, tool_args: Dict[str, Any]) -> str:
     if normalized_name in {"ls", "LS", "list_directory"}:
         path_value = args.get("path")
         return abbreviate_path(str(path_value)) if path_value else "current directory"
-    if normalized_name in {"web_search", "WebSearch"}:
-        query = args.get("query")
-        return truncate_value(_single_line_preview(query), 80) if query else ""
     if normalized_name == "batch_web_search":
         query = _first_non_empty_item(args.get("queries"))
         return truncate_value(_single_line_preview(query), 80) if query else ""
@@ -441,8 +436,6 @@ def build_tool_ui_labels(
         "ls": "Listing directory",
         "LS": "Listing directory",
         "list_directory": "Listing directory",
-        "web_search": "Searching web",
-        "WebSearch": "Searching web",
         "batch_web_search": "Searching web",
         "grep": "Searching files",
         "Grep": "Searching files",
@@ -466,8 +459,6 @@ def build_tool_ui_labels(
         "ls": "Preparing directory listing",
         "LS": "Preparing directory listing",
         "list_directory": "Preparing directory listing",
-        "web_search": "Preparing search",
-        "WebSearch": "Preparing search",
         "batch_web_search": "Preparing search",
         "grep": "Preparing search",
         "Grep": "Preparing search",
@@ -548,7 +539,7 @@ def _hint_for_error(content: str) -> str:
     return ""
 
 
-def _format_web_search_output(content: str) -> str:
+def _format_search_output(content: str) -> str:
     count = content.count("http")
     return f"Found {count} results" if count > 0 else "No results found"
 
@@ -585,7 +576,7 @@ def _format_list_output(content: str) -> str:
 
 
 OUTPUT_RULES: tuple[tuple[Callable[[str], bool], Callable[[str], str]], ...] = (
-    (lambda name: "web_search" in name, _format_web_search_output),
+    (lambda name: name == "batch_web_search", _format_search_output),
     (lambda name: "crawl_site" in name, _format_crawl_output),
     (lambda name: "cli_exec" in name or "shell" in name, _format_cli_output),
     (lambda name: "list" in name and "directory" in name, _format_list_output),
@@ -775,4 +766,9 @@ class TokenTracker:
 
     def render(self, duration: float) -> str:
         in_display = str(self.total_input if self.total_input > 0 else 0)
-        return f"{duration:.1f}s  ↓ {in_display}  ↑ {self.total_output}"
+        if duration <= 60:
+            duration_display = f"{duration:.1f}s"
+        else:
+            minutes, remaining_seconds = divmod(round(duration), 60)
+            duration_display = f"{minutes}m {remaining_seconds}s"
+        return f"{duration_display}  ↓ {in_display}  ↑ {self.total_output}"

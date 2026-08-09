@@ -57,15 +57,23 @@ class StreamAndFilesystemTests(unittest.TestCase):
 
     def test_elapsed_seconds_uses_minutes_only_above_sixty_seconds(self):
         self.assertEqual(format_elapsed_seconds(60), "60s")
-        self.assertEqual(format_elapsed_seconds(61), "1m1s")
-        self.assertEqual(format_elapsed_seconds(120), "2m0s")
+        self.assertEqual(format_elapsed_seconds(61), "1m 1s")
+        self.assertEqual(format_elapsed_seconds(120), "2m 0s")
 
     def test_stream_status_elapsed_text_uses_minutes_after_rounding(self):
         processor = StreamProcessor()
         with mock.patch.object(StreamProcessor, "_elapsed_seconds", return_value=60.4):
             self.assertEqual(processor._status_elapsed_text(), "60s")
         with mock.patch.object(StreamProcessor, "_elapsed_seconds", return_value=60.6):
-            self.assertEqual(processor._status_elapsed_text(), "1m1s")
+            self.assertEqual(processor._status_elapsed_text(), "1m 1s")
+
+    def test_final_stats_use_minutes_above_sixty_seconds(self):
+        processor = StreamProcessor()
+
+        self.assertEqual(processor.tracker.render(60), "60.0s  ↓ 0  ↑ 0")
+        self.assertEqual(processor.tracker.render(60.1), "1m 0s  ↓ 0  ↑ 0")
+        self.assertEqual(processor.tracker.render(61), "1m 1s  ↓ 0  ↑ 0")
+        self.assertEqual(processor.tracker.render(120), "2m 0s  ↓ 0  ↑ 0")
 
     def test_prepare_markdown_does_not_guess_code_blocks_from_plain_text(self):
         source = 'Пример (файл main.go):\npackage main\nimport "fmt"\nfunc main() {\n    fmt.Println("hi")\n}'
@@ -519,7 +527,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIsNotNone(result.stats)
         self.assertAlmostEqual(result.elapsed_seconds, 89.7, places=1)
         assert result.stats is not None
-        self.assertIn("89.7s", result.stats)
+        self.assertIn("1m 30s", result.stats)
 
     def test_stream_processor_renders_recovery_handoff_messages(self):
         events = []
@@ -1053,7 +1061,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
 
         processor._handle_agent_message(AIMessageChunk(content="Проверю информацию."), source="messages")
         processor._handle_tool_result(
-            ToolMessage(content="ok", name="web_search", tool_call_id="call-search")
+            ToolMessage(content="ok", name="batch_web_search", tool_call_id="call-search")
         )
         processor._handle_agent_message(
             AIMessageChunk(content="Открою официальные страницы Zhipu AI."),
@@ -1102,7 +1110,7 @@ class StreamAndFilesystemTests(unittest.TestCase):
 
         # Simulate: tool already active (e.g. from a prior tool_call in the same turn)
         processor._emit_tool_started(
-            {"id": "call-search", "name": "web_search", "args": {"query": "test"}}
+            {"id": "call-search", "name": "batch_web_search", "args": {"queries": ["test"]}}
         )
         # Text streamed via messages while tool is active → deferred, _visible_full_text stays ""
         processor._handle_agent_message(
@@ -1132,9 +1140,9 @@ class StreamAndFilesystemTests(unittest.TestCase):
         processor = StreamProcessor(events.append)
 
         processor._handle_agent_message(AIMessageChunk(content="Проверю источники."), source="messages")
-        processor._emit_tool_started({"id": "call-search", "name": "web_search", "args": {"query": "gpt-5.4"}})
+        processor._emit_tool_started({"id": "call-search", "name": "batch_web_search", "args": {"queries": ["gpt-5.4"]}})
         processor._handle_tool_result(
-            ToolMessage(content="ok", name="web_search", tool_call_id="call-search")
+            ToolMessage(content="ok", name="batch_web_search", tool_call_id="call-search")
         )
         processor._handle_agent_message(AIMessageChunk(content="Открою официальные страницы."), source="messages")
         processor._emit_tool_started(

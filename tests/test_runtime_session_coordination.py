@@ -65,9 +65,13 @@ class RuntimeSessionCoordinationTests(unittest.IsolatedAsyncioTestCase):
         worker.model_capabilities = {"image_input_supported": False}
         worker.tool_registry = mock.Mock(
             tools=[],
+            builtin_tools=[],
             tool_metadata={},
+            mcp_config={},
             mcp_server_status=[],
+            disabled_local_tools=set(),
             checkpoint_info={"resolved_backend": "sqlite"},
+            active_tools=mock.Mock(return_value=[]),
             get_runtime_status_lines=mock.Mock(return_value=[]),
         )
         worker.agent_app = None

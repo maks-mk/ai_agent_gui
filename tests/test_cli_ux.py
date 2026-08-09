@@ -1395,7 +1395,7 @@ class GuiUxTests(unittest.TestCase):
         with mock.patch("ui.main_window_state.time.time", return_value=1061.2):
             self.window._update_realtime_elapsed()
 
-        self.assertEqual(self.window.current_turn.status_widget.meta_label.text(), "1m1s")
+        self.assertEqual(self.window.current_turn.status_widget.meta_label.text(), "1m 1s")
 
     def test_run_started_shows_inline_status_before_output(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -2975,10 +2975,12 @@ class GuiUxTests(unittest.TestCase):
         self.window._handle_initialized(payload)
 
         self.assertFalse(self.window.reasoning_chip.isHidden())
+        self.assertEqual(self.window.reasoning_chip.text(), "Default")
+        self.assertIn("Default", [action.text() for action in self.window.reasoning_chip_menu.actions()])
         action = next(action for action in self.window.reasoning_chip_menu.actions() if action.text() == "High")
         action.trigger()
 
-        self.assertEqual(self.window.reasoning_chip.text(), "Reasoning: High")
+        self.assertEqual(self.window.reasoning_chip.text(), "High")
         self.assertEqual(
             self.controller.save_profiles_calls[-1]["profiles"][0]["reasoning"],
             {"enabled": True, "effort": "high"},

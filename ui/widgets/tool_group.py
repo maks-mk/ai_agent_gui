@@ -95,7 +95,7 @@ class ToolGroupWidget(QFrame):
             return "command"
         if name in {"grep", "Grep", "glob", "Glob"}:
             return "search"
-        if name in {"web_search", "WebSearch", "batch_web_search"}:
+        if name == "batch_web_search":
             return "network"
         if name in {"fetch_url", "WebFetch", "fetch_content"}:
             return "fetch"

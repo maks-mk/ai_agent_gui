@@ -270,7 +270,7 @@ class ToolCardWidget(QFrame):
             return "search"
         if normalized in {"ls", "LS", "list_directory"}:
             return "list"
-        if normalized in {"web_search", "WebSearch", "batch_web_search"}:
+        if normalized == "batch_web_search":
             return "network"
         if normalized in {"fetch_url", "WebFetch", "fetch_content"}:
             return "fetch"

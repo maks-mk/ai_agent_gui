@@ -169,6 +169,23 @@ class ModelProfilesTests(unittest.TestCase):
         )
         self.assertIn({"value": "adaptive", "label": "Adaptive", "config": {"enabled": True, "mode": "adaptive"}}, anthropic_options)
 
+    def test_reasoning_off_label_reflects_provider_behavior(self):
+        openai_options = reasoning_options_for_profile(
+            {"provider": "openai", "model": "gpt-5.6", "base_url": "https://api.openai.com/v1"}
+        )
+        compatible_options = reasoning_options_for_profile(
+            {"provider": "openai", "model": "openai/gpt-oss-120b", "base_url": "https://openrouter.ai/api/v1"}
+        )
+        gemini_options = reasoning_options_for_profile({"provider": "gemini", "model": "gemini-2.5-flash"})
+        anthropic_options = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-sonnet-5"})
+
+        default_option = {"value": "off", "label": "Default", "config": {"enabled": False}}
+        off_option = {"value": "off", "label": "Off", "config": {"enabled": False}}
+        self.assertEqual(openai_options[0], default_option)
+        self.assertEqual(compatible_options[0], default_option)
+        self.assertEqual(gemini_options[0], off_option)
+        self.assertEqual(anthropic_options[0], off_option)
+
     def test_profile_reasoning_overrides_use_provider_specific_fields(self):
         self.assertEqual(
             profile_reasoning_overrides({"provider": "gemini", "reasoning": {"enabled": True, "thinking_budget": 4096}}),

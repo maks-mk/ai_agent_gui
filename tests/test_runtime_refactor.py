@@ -278,7 +278,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(missing, [])
 
     def test_build_agent_result_does_not_invent_gemini_thought_signature(self):
-        tool = FakeTool("web_search", "ok")
+        tool = FakeTool("batch_web_search", "ok")
         nodes = AgentNodes(
             config=self._make_config(
                 PROVIDER="gemini",
@@ -292,7 +292,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         response = AIMessage(content="").model_copy(
             update={
                 "tool_calls": [
-                    {"id": "tc-1", "name": "web_search", "args": {"query": "latest Claude Opus 4.7"}},
+                    {"id": "tc-1", "name": "batch_web_search", "args": {"queries": ["latest Claude Opus 4.7"]}},
                 ]
             }
         )
@@ -303,7 +303,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             tools_available=True,
             turn_id=1,
             messages=[HumanMessage(content="Найди последнюю информацию")],
-            allowed_tool_names=["web_search"],
+            allowed_tool_names=["batch_web_search"],
         )
 
         message = next(item for item in result["messages"] if isinstance(item, AIMessage))
@@ -377,7 +377,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(normalize_turn_outcome("unexpected"), TURN_OUTCOME_FINISH_TURN)
 
     def test_build_agent_result_preserves_existing_gemini_thought_signature(self):
-        tool = FakeTool("web_search", "ok")
+        tool = FakeTool("batch_web_search", "ok")
         nodes = AgentNodes(
             config=self._make_config(
                 PROVIDER="gemini",
@@ -398,7 +398,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         ).model_copy(
             update={
                 "tool_calls": [
-                    {"id": "tc-1", "name": "web_search", "args": {"query": "latest Claude Opus 4.7"}},
+                    {"id": "tc-1", "name": "batch_web_search", "args": {"queries": ["latest Claude Opus 4.7"]}},
                 ]
             }
         )
@@ -409,7 +409,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             tools_available=True,
             turn_id=1,
             messages=[HumanMessage(content="Найди последнюю информацию")],
-            allowed_tool_names=["web_search"],
+            allowed_tool_names=["batch_web_search"],
         )
 
         message = next(item for item in result["messages"] if isinstance(item, AIMessage))
@@ -417,7 +417,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(signature_map["tc-1"], "existing-signature")
 
     def test_sanitize_messages_for_model_remaps_gemini_thought_signature_keys_with_tool_ids(self):
-        tool = FakeTool("web_search", "ok")
+        tool = FakeTool("batch_web_search", "ok")
         nodes = AgentNodes(
             config=self._make_config(
                 PROVIDER="gemini",
@@ -439,10 +439,10 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     }
                 },
                 tool_calls=[
-                    {"id": long_tool_id, "name": "web_search", "args": {"query": "latest Claude Opus 4.7"}},
+                    {"id": long_tool_id, "name": "batch_web_search", "args": {"queries": ["latest Claude Opus 4.7"]}},
                 ],
             ),
-            ToolMessage(content="ok", tool_call_id=long_tool_id, name="web_search"),
+            ToolMessage(content="ok", tool_call_id=long_tool_id, name="batch_web_search"),
         ]
 
         sanitized = nodes._sanitize_messages_for_model(messages)
@@ -3522,13 +3522,13 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_agent_node_clears_open_tool_issue_after_final_prose_response(self):
         agent_llm = FakeLLM([AIMessage(content="Не нашёл docs, поэтому даю вывод по доступным данным.")])
-        read_tool = FakeTool("web_search", "ignored")
+        read_tool = FakeTool("batch_web_search", "ignored")
         nodes = AgentNodes(
             config=self._make_config(),
             llm=agent_llm,
             tools=[read_tool],
             llm_with_tools=agent_llm,
-            tool_metadata={"web_search": ToolMetadata(name="web_search", read_only=True)},
+            tool_metadata={"batch_web_search": ToolMetadata(name="batch_web_search", read_only=True)},
         )
         state = {
             **self._initial_state("проверь провайдера"),
@@ -3539,23 +3539,23 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     tool_calls=[
                         {
                             "id": "call-search",
-                            "name": "web_search",
-                            "args": {"query": "provider docs"},
+                            "name": "batch_web_search",
+                            "args": {"queries": ["provider docs"]},
                         }
                     ],
                 ),
                 ToolMessage(
                     content="ERROR[NOT_FOUND]: No results found.",
                     tool_call_id="call-search",
-                    name="web_search",
+                    name="batch_web_search",
                 ),
             ],
             "open_tool_issue": {
                 "turn_id": 1,
                 "kind": "tool_error",
                 "summary": "No results found.",
-                "tool_names": ["web_search"],
-                "tool_args": {"query": "provider docs"},
+                "tool_names": ["batch_web_search"],
+                "tool_args": {"queries": ["provider docs"]},
                 "source": "tools",
                 "error_type": "NOT_FOUND",
                 "fingerprint": "fp-search",
@@ -3869,14 +3869,14 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_agent_node_binds_tools_without_keyword_intent_scoping(self):
         base_llm = FakeLLM([AIMessage(content="Понял, не буду выполнять установку.")])
-        tools_llm = FakeBindableLLM([AIMessage(content="", tool_calls=[{"name": "web_search", "args": {"query": "npcap"}, "id": "tc-web"}])])
-        search_tool = FakeTool("web_search", "ok")
+        tools_llm = FakeBindableLLM([AIMessage(content="", tool_calls=[{"name": "batch_web_search", "args": {"queries": ["npcap"]}, "id": "tc-web"}])])
+        search_tool = FakeTool("batch_web_search", "ok")
         nodes = AgentNodes(
             config=self._make_config(),
             llm=base_llm,
             tools=[search_tool],
             llm_with_tools=tools_llm,
-            tool_metadata={"web_search": ToolMetadata(name="web_search", read_only=True)},
+            tool_metadata={"batch_web_search": ToolMetadata(name="batch_web_search", read_only=True)},
         )
         state = self._initial_state("Не пытайся установить, он требует pcap")
 
@@ -3887,7 +3887,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(tools_llm.invocations), 1)
         response = result["messages"][-1]
         self.assertIsInstance(response, AIMessage)
-        self.assertEqual(response.tool_calls[0]["name"], "web_search")
+        self.assertEqual(response.tool_calls[0]["name"], "batch_web_search")
 
     async def test_agent_node_handles_repeated_empty_llm_response_without_ui_error(self):
         llm = FakeLLM([AIMessage(content="")])

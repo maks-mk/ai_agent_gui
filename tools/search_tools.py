@@ -326,7 +326,7 @@ def _format_tavily_error(exc: Exception) -> str:
 
 
 @_RUNTIME.with_cache(ttl=600)
-async def _web_search_impl(
+async def _search_impl(
     query: str,
     max_results: int = 5,
     search_depth: str = "basic",
@@ -392,12 +392,6 @@ async def _web_search_impl(
         parts.append(f"Usage: {usage}")
     parts.append("[Search completed. Use the context above.]")
     return "\n".join(parts)
-
-
-@tool("web_search")
-async def web_search(query: str, max_results: int = 5, search_depth: str = "basic", topic: str = "general") -> str:
-    """Search web snippets with an AI summary. search_depth: basic/advanced/fast/ultra-fast; topic: general/news/finance."""
-    return await _web_search_impl(query, max_results, search_depth, topic)
 
 
 @tool("fetch_content", args_schema=FetchContentInput)
@@ -489,7 +483,7 @@ async def batch_web_search(
         )
 
     results = await asyncio.gather(
-        *(_web_search_impl(query, max_results=max_results, search_depth=search_depth, topic=topic) for query in selected),
+        *(_search_impl(query, max_results=max_results, search_depth=search_depth, topic=topic) for query in selected),
         return_exceptions=True,
     )
     for query, result in zip(selected, results):
