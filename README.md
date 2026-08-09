@@ -41,7 +41,7 @@
 - Live CLI output streaming: вывод shell-команд отображается в карточке инструмента в реальном времени, а не только после завершения
 - Exit-code-neutral команды: `grep`, `rg`, `vulture`, `pytest`, `diff` и др. с ненулевым exit code не помечаются как ошибка — вывод возвращается с префиксом `Exit Code: N`
 - Stream-interruption recovery с классификацией ошибок (`rate_limit` / `timeout` / `server_error` / `network`) и экспоненциальным backoff с джиттером перед авто-продолжением
-- Инструменты: filesystem (включая `download_file`), shell, web search, process management, MCP
+- Инструменты: filesystem (включая `download_file`), shell, Tavily web search/fetch, process management, MCP
 - Approval-паузы перед мутирующими и деструктивными действиями
 - Автосуммаризация контекста при длинных сессиях
 - Настраиваемые HTTP-заголовки для OpenAI-compatible и Anthropic LLM через `headers.json` (эмуляция совместимых клиентов и прокси)
@@ -53,13 +53,14 @@
 
 ## Быстрый старт
 
-Требования: **Python 3.10+**, API-ключ Gemini, OpenAI или Anthropic.
+Требования: **Python 3.10+**, API-ключ Gemini, OpenAI или Anthropic. Web search/fetch — опционально: для них нужны пакет `tavily-python` из `requirements.txt` и `TAVILY_API_KEY` в `.env`.
 
 ```powershell
 python -m venv venv
 venv\Scripts\pip.exe install -r requirements.txt
 Copy-Item env_example.txt .env
-# Открой .env и укажи API-ключ
+# Открой .env и укажи API-ключ выбранного LLM-провайдера
+# Для Tavily-поиска также укажи TAVILY_API_KEY
 python main.py
 ```
 

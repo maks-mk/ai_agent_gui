@@ -59,7 +59,15 @@
 | `ENABLE_PROCESS_TOOLS` | Управление процессами |
 | `ENABLE_APPROVALS` | Approval-паузы перед рискованными действиями |
 | `ALLOW_EXTERNAL_PROCESS_CONTROL` | Разрешить управление внешними процессами |
-| `TAVILY_API_KEY` | Ключ Tavily для web search |
+| `TAVILY_API_KEY` | Ключ Tavily для web search и извлечения содержимого |
+
+### Tavily search tools
+
+При `ENABLE_SEARCH_TOOLS=true` реестр подключает два read-only сетевых инструмента: `batch_web_search` и `fetch_content`. Для обоих требуется установленный пакет `tavily-python` и непустой `TAVILY_API_KEY`; при отсутствии ключа или SDK инструмент возвращает конфигурационную ошибку.
+
+- `batch_web_search` принимает до 5 уникальных запросов за вызов и выполняет их параллельно. Допустимые `search_depth`: `basic`, `advanced`, `fast`, `ultra-fast`; допустимые `topic`: `general`, `news`, `finance`.
+- `fetch_content` принимает HTTP(S)-адреса, максимум 20 после нормализации, и возвращает извлечённый текст. Допустимые `content_format`: `markdown` и `text`; параметр `advanced=true` включает углублённое извлечение.
+- Результаты поиска и извлечения ограничиваются `MAX_SEARCH_CHARS`; успешные результаты кешируются в памяти процесса.
 
 ---
 
@@ -67,7 +75,7 @@
 
 | Переменная | Описание |
 |---|---|
-| `MAX_FILE_SIZE` | Максимальный размер файла (поддерживает `300MB`, `4096`) |
+| `MAX_FILE_SIZE` | Максимальный размер файла в байтах; строки могут содержать единицы `KB`, `MB`, `GB`, а также двоичные `KiB`, `MiB`, `GiB` (например, `300MiB`) |
 | `MAX_READ_LINES` | Лимит строк при чтении файла |
 | `MAX_TOOL_OUTPUT` | Лимит символов в выводе инструмента |
 | `MAX_SEARCH_CHARS` | Лимит символов в результатах поиска |
