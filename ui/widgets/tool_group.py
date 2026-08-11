@@ -74,20 +74,15 @@ class ToolGroupWidget(QFrame):
         self._sync_header()
 
     @staticmethod
-    def _plural_ru(value: int, one: str, few: str, many: str) -> str:
-        value = abs(int(value))
-        if value % 100 in {11, 12, 13, 14}:
-            return many
-        if value % 10 == 1:
-            return one
-        if value % 10 in {2, 3, 4}:
-            return few
-        return many
+    def _pluralize(value: int, singular: str, plural: str) -> str:
+        return singular if abs(int(value)) == 1 else plural
 
     @staticmethod
     def _tool_role(card: ToolCardWidget) -> str:
         name = str(card.payload.get("name", "") or "").strip()
-        if name in {"write_file", "edit_file", "Write", "SearchReplace"}:
+        if name in {"write_file", "Write"}:
+            return "write"
+        if name in {"edit_file", "SearchReplace"}:
             return "edit"
         if name in {"read_file", "Read"}:
             return "read"
@@ -103,6 +98,16 @@ class ToolGroupWidget(QFrame):
             return "download"
         if name in {"ls", "LS", "list_directory"}:
             return "list"
+        if name in {"safe_delete_file", "safe_delete_directory"}:
+            return "delete"
+        if name == "run_background_process":
+            return "start_process"
+        if name == "stop_background_process":
+            return "stop_process"
+        if name == "find_process_by_port":
+            return "find_process"
+        if name == "request_user_input":
+            return "input"
         return "tool"
 
     def _group_role(self) -> str:
@@ -111,7 +116,7 @@ class ToolGroupWidget(QFrame):
             return "tool"
         if len(roles) == 1:
             return next(iter(roles))
-        if roles.get("edit", 0) == len(self._tools):
+        if roles.get("write", 0) + roles.get("edit", 0) == len(self._tools):
             return "edit"
         if roles.get("command", 0) == len(self._tools):
             return "command"
@@ -120,48 +125,72 @@ class ToolGroupWidget(QFrame):
     def _header_text(self, *, completed: bool) -> str:
         total = len(self._tools)
         if total <= 0:
-            return "Выполняется"
+            return "Running"
         role = self._group_role()
-        if role == "edit":
-            noun = self._plural_ru(total, "файл", "файла", "файлов")
-            return f"{'Изменён' if total == 1 else 'Изменено'} {total} {noun}" if completed else f"Редактирование {total} {noun}"
-        if role == "read":
-            noun = self._plural_ru(total, "файл", "файла", "файлов")
-            return f"{'Прочитан' if total == 1 else 'Прочитано'} {total} {noun}" if completed else f"Чтение {total} {noun}"
-        if role == "command":
-            if total == 1:
-                return "Команда выполнена" if completed else "Запущена команда"
-            noun = self._plural_ru(total, "команда", "команды", "команд")
-            return f"Выполнено {total} {noun}" if completed else f"Запущено {total} {noun}"
-        if role == "search":
-            return "Поиск завершён" if completed else "Поиск по файлам"
-        if role == "network":
-            return "Поиск в интернете завершён" if completed else "Ищу в интернете"
-        if role == "fetch":
-            return "Страницы получены" if completed else "Получаю страницы"
-        if role == "download":
-            return "Файлы скачаны" if completed else "Скачиваю файлы"
-        if role == "list":
-            return "Список получен" if completed else "Просмотр каталога"
-        noun = self._plural_ru(total, "инструмент", "инструмента", "инструментов")
-        return f"Выполнено {total} {noun}" if completed else f"Выполняется {total} {noun}"
+        role_titles = {
+            "write": ("Writing", "Wrote", "file", "files"),
+            "edit": ("Editing", "Edited", "file", "files"),
+            "read": ("Reading", "Read", "file", "files"),
+            "command": ("Running", "Ran", "command", "commands"),
+        }
+        titles = role_titles.get(role)
+        if titles:
+            action_title, completed_title, singular, plural = titles
+            title = completed_title if completed else action_title
+            noun = self._pluralize(total, singular, plural)
+            return f"{title} {total} {noun}"
+        action_titles = {
+            "search": "Searching",
+            "network": "Searching",
+            "fetch": "Fetching",
+            "download": "Downloading",
+            "list": "Listing",
+            "delete": "Deleting",
+            "start_process": "Starting process",
+            "stop_process": "Stopping process",
+            "find_process": "Finding process",
+            "input": "Requesting input",
+        }
+        completed_titles = {
+            "search": "Searched",
+            "network": "Searched",
+            "fetch": "Fetched",
+            "download": "Downloaded",
+            "list": "Listed",
+            "delete": "Deleted",
+            "start_process": "Started process",
+            "stop_process": "Stopped process",
+            "find_process": "Found process",
+            "input": "Requested input",
+        }
+        title = (completed_titles if completed else action_titles).get(role)
+        if title:
+            return title
+        noun = self._pluralize(total, "tool", "tools")
+        return f"Completed {total} {noun}" if completed else f"Running {total} {noun}"
 
     def _error_header_text(self, errors: int) -> str:
         total = len(self._tools)
         role = self._group_role()
         if total == 1:
             return {
-                "edit": "Редактирование не удалось",
-                "read": "Чтение не удалось",
-                "command": "Команда не выполнена",
-                "search": "Поиск не удался",
-                "network": "Запрос не выполнен",
-                "fetch": "Страницу получить не удалось",
-                "download": "Файл скачать не удалось",
-                "list": "Просмотр не удался",
-            }.get(role, "Инструмент завершился ошибкой")
-        noun = self._plural_ru(errors, "ошибка", "ошибки", "ошибок")
-        return f"Выполнено с ошибками: {errors} {noun}"
+                "write": "Writing failed",
+                "edit": "Editing failed",
+                "read": "Reading failed",
+                "command": "Running failed",
+                "search": "Searching failed",
+                "network": "Searching failed",
+                "fetch": "Fetching failed",
+                "download": "Downloading failed",
+                "list": "Listing failed",
+                "delete": "Deleting failed",
+                "start_process": "Starting process failed",
+                "stop_process": "Stopping process failed",
+                "find_process": "Finding process failed",
+                "input": "Requesting input failed",
+            }.get(role, "Tool failed")
+        noun = self._pluralize(errors, "error", "errors")
+        return f"Completed with errors: {errors} {noun}"
 
     def _set_header_state(self, *, state: str) -> None:
         if self.header_btn.property("state") == state:

@@ -129,7 +129,7 @@ Provider-адаптеры, вынесенные из `agent.py`. Изолиру�
 - `filesystem.py` - filesystem tools: `read_file`, `write_file`, `edit_file`, `list_directory`, `safe_delete_file`, `safe_delete_directory`, `download_file`.
 - `local_shell.py` - `cli_exec`, streaming stdout/stderr в реальном времени, exit-code-neutral команды (`grep`/`rg`/`vulture`/`pytest`/`diff` и др. с ненулевым exit code не помечаются как ошибка), управление shell-командами.
 - `process_tools.py` - фоновые процессы: запуск, остановка, поиск по порту.
-- `search_tools.py` - Tavily-инструменты `batch_web_search` и `fetch_content`, опциональный `crawl_site`, кеширование и runtime-конфигурация поиска. `batch_web_search` выполняет до 5 уникальных запросов параллельно; `fetch_content` извлекает текст только из HTTP(S)-URL.
+- `search_tools.py` - Tavily-инструменты `batch_web_search` и `fetch_content`, кеширование и runtime-конфигурация поиска. `batch_web_search` выполняет до 5 уникальных запросов параллельно; `fetch_content` извлекает текст только из HTTP(S)-URL.
 - `user_input_tool.py` - запрос уточняющего выбора у пользователя.
 
 ### `tools/filesystem_impl/`

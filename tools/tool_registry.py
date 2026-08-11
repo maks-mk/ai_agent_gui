@@ -32,9 +32,7 @@ class ToolLoaderSpec:
     module_name: str
     tool_names: Sequence[str]
     configure: Callable[[Any, AgentConfig], None] | None = None
-    optional_tool_names: Sequence[str] = ()
     metadata: Dict[str, ToolMetadata] | None = None
-    optional_metadata: Dict[str, ToolMetadata] | None = None
 
 
 class ToolRegistry:
@@ -269,7 +267,6 @@ class ToolRegistry:
                 enabled=lambda config: config.enable_search_tools,
                 module_name="tools.search_tools",
                 tool_names=("batch_web_search", "fetch_content"),
-                optional_tool_names=("crawl_site",),
                 configure=self._configure_search,
                 metadata={
                     "batch_web_search": ToolMetadata(
@@ -278,9 +275,6 @@ class ToolRegistry:
                     "fetch_content": ToolMetadata(
                         name="fetch_content", read_only=True, networked=True
                     ),
-                },
-                optional_metadata={
-                    "crawl_site": ToolMetadata(name="crawl_site", read_only=True, networked=True)
                 },
             ),
             ToolLoaderSpec(
@@ -334,14 +328,9 @@ class ToolRegistry:
             ),
         ]
 
-    def _iter_spec_tool_names(self, spec: ToolLoaderSpec, module: Any) -> List[str]:
-        names = list(spec.tool_names)
-        names.extend(name for name in spec.optional_tool_names if hasattr(module, name))
-        return names
-
     @staticmethod
     def _metadata_for_spec_attr(spec: ToolLoaderSpec, attr_name: str, tool_name: str) -> ToolMetadata:
-        metadata = (spec.metadata or {}).get(attr_name) or (spec.optional_metadata or {}).get(attr_name)
+        metadata = (spec.metadata or {}).get(attr_name)
         if metadata:
             return metadata
         return default_tool_metadata(tool_name)
@@ -389,7 +378,7 @@ class ToolRegistry:
             catalog_tools: List[BaseTool] = []
             loaded_tools: List[BaseTool] = []
             existing_names = {tool.name for tool in self.tools}
-            for attr_name in self._iter_spec_tool_names(spec, module):
+            for attr_name in spec.tool_names:
                 tool = getattr(module, attr_name)
                 self._optimize_tool_description(tool)
                 catalog_tools.append(tool)

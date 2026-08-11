@@ -6,8 +6,6 @@ from typing import Any, Callable, Dict
 from langchain_core.messages import AIMessage, AIMessageChunk
 
 _CLEAN_MD_RE = re.compile(r"\n{3,}")
-_CRAWL_PAGES_RE = re.compile(r"(\d+) pages processed")
-_CRAWL_DEPTH_RE = re.compile(r"max_depth: (\d+)")
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
 _SIMPLE_LATEX_INLINE_RE = re.compile(r"\$\s*(\\[A-Za-z]+)\s*\$")
 _MARKDOWN_FENCE_RE = re.compile(r"^(?P<indent>[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>[^`~\r\n]*)[ \t]*(?:\r?\n)?$")
@@ -544,16 +542,6 @@ def _format_search_output(content: str) -> str:
     return f"Found {count} results" if count > 0 else "No results found"
 
 
-def _format_crawl_output(content: str) -> str:
-    pages_match = _CRAWL_PAGES_RE.search(content)
-    depth_match = _CRAWL_DEPTH_RE.search(content)
-    pages = pages_match.group(1) if pages_match else "?"
-    depth = depth_match.group(1) if depth_match else "?"
-    if pages != "?" or depth != "?":
-        return f"Crawled {pages} pages (depth: {depth})"
-    return "Crawl completed"
-
-
 def _format_cli_output(content: str) -> str:
     lines = [line.strip() for line in content.splitlines() if line.strip()]
     if not lines:
@@ -577,7 +565,6 @@ def _format_list_output(content: str) -> str:
 
 OUTPUT_RULES: tuple[tuple[Callable[[str], bool], Callable[[str], str]], ...] = (
     (lambda name: name == "batch_web_search", _format_search_output),
-    (lambda name: "crawl_site" in name, _format_crawl_output),
     (lambda name: "cli_exec" in name or "shell" in name, _format_cli_output),
     (lambda name: "list" in name and "directory" in name, _format_list_output),
     (lambda name: "read" in name, lambda content: f"Read {len(content.splitlines())} lines ({len(content)} chars)"),

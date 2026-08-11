@@ -259,7 +259,7 @@ class ConversationTurnWidget(QWidget):
         )
 
     def complete(self, stats: str) -> None:
-        # Для скрытия отображения статистики поменять на False   
+        # Set to False to hide run statistics.
         show_run_stats = True
         if show_run_stats and stats:
             self._append_block("stats", RunStatsWidget(stats, parent=self))

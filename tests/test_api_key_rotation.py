@@ -345,8 +345,8 @@ class ApiKeyRotationTests(unittest.TestCase):
             asyncio.run(model.ainvoke("hello"))
 
         message = str(ctx.exception)
-        self.assertIn("Все API-ключи", message)
-        self.assertIn("Последняя ошибка", message)
+        self.assertIn("All API keys", message)
+        self.assertIn("Last error", message)
         self.assertIn("_FakeProviderError", message)
         self.assertIn("HTTP 403", message)
         self.assertIn("Forbidden", message)

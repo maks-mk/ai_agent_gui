@@ -260,7 +260,9 @@ class ToolCardWidget(QFrame):
     @staticmethod
     def _tool_role(name: Any) -> str:
         normalized = str(name or "").strip()
-        if normalized in {"write_file", "edit_file", "Write", "SearchReplace"}:
+        if normalized in {"write_file", "Write"}:
+            return "write"
+        if normalized in {"edit_file", "SearchReplace"}:
             return "edit"
         if normalized in {"read_file", "Read"}:
             return "read"
@@ -276,6 +278,16 @@ class ToolCardWidget(QFrame):
             return "fetch"
         if normalized == "download_file":
             return "download"
+        if normalized in {"safe_delete_file", "safe_delete_directory"}:
+            return "delete"
+        if normalized == "run_background_process":
+            return "start_process"
+        if normalized == "stop_background_process":
+            return "stop_process"
+        if normalized == "find_process_by_port":
+            return "find_process"
+        if normalized == "request_user_input":
+            return "input"
         return "tool"
 
     @classmethod
@@ -284,38 +296,47 @@ class ToolCardWidget(QFrame):
         if str(payload.get("source_kind", "") or "") == "mcp":
             return str(payload.get("display", "") or normalized_name or "MCP")
         role = cls._tool_role(name)
-        phase = str(payload.get("phase", "running") or "running")
         is_error = bool(payload.get("is_error", False))
+        action_titles = {
+            "write": "Writing",
+            "edit": "Editing",
+            "read": "Reading",
+            "command": "Running",
+            "search": "Searching",
+            "list": "Listing",
+            "network": "Searching",
+            "fetch": "Fetching",
+            "download": "Downloading",
+            "delete": "Deleting",
+            "start_process": "Starting process",
+            "stop_process": "Stopping process",
+            "find_process": "Finding process",
+            "input": "Requesting input",
+        }
+        completed_titles = {
+            "write": "Wrote",
+            "edit": "Edited",
+            "read": "Read",
+            "command": "Ran",
+            "search": "Searched",
+            "list": "Listed",
+            "network": "Searched",
+            "fetch": "Fetched",
+            "download": "Downloaded",
+            "delete": "Deleted",
+            "start_process": "Started process",
+            "stop_process": "Stopped process",
+            "find_process": "Found process",
+            "input": "Requested input",
+        }
+        phase = str(payload.get("phase", "running") or "running")
+        titles = action_titles if is_error or phase != "finished" else completed_titles
+        title = titles.get(role)
+        if title:
+            return f"{title} failed" if is_error else title
         if is_error:
-            return {
-                "edit": "Редактирование не удалось",
-                "read": "Чтение не удалось",
-                "command": "Команда не выполнена",
-                "search": "Поиск не удался",
-                "list": "Просмотр не удался",
-                "network": "Запрос не выполнен",
-                "fetch": "Страницу получить не удалось",
-                "download": "Файл скачать не удалось",
-            }.get(role, "Инструмент завершился ошибкой")
-        if role == "edit":
-            if normalized_name in {"write_file", "Write"}:
-                return "Файл создан" if phase == "finished" else "Создание файла"
-            return "Файл изменён" if phase == "finished" else "Редактирование файла"
-        if role == "read":
-            return "Файл прочитан" if phase == "finished" else "Чтение файла"
-        if role == "command":
-            return "Команда выполнена" if phase == "finished" else "Выполнение команды"
-        if role == "search":
-            return "Поиск завершён" if phase == "finished" else "Поиск по файлам"
-        if role == "list":
-            return "Каталог просмотрен" if phase == "finished" else "Просмотр каталога"
-        if role == "network":
-            return "Поиск в интернете завершён" if phase == "finished" else "Ищу в интернете"
-        if role == "fetch":
-            return "Страница получена" if phase == "finished" else "Получаю страницу"
-        if role == "download":
-            return "Файл скачан" if phase == "finished" else "Скачиваю файл"
-        return str(payload.get("display", "") or name or "Инструмент")
+            return "Tool failed"
+        return str(payload.get("display", "") or name or "Tool")
 
     def _set_visual_property(self, widget: QWidget, name: str, value: str) -> None:
         if widget.property(name) == value:
@@ -396,7 +417,7 @@ class ToolCardWidget(QFrame):
         subtitle = self._compact_single_line(payload.get("subtitle", ""))
         if self._is_argument_placeholder(subtitle):
             subtitle = ""
-        if role == "edit":
+        if role in {"write", "edit"}:
             stats = self._diff_stats(payload.get("diff", ""))
             return f"{subtitle} {stats}".strip() if stats else subtitle
         if role in {"network", "fetch", "download"}:
@@ -424,7 +445,7 @@ class ToolCardWidget(QFrame):
         normalized_args: dict[str, Any],
     ) -> list[tuple[str, str]]:
         role = self._tool_role(payload.get("name", ""))
-        if role not in {"edit", "read", "list"}:
+        if role not in {"write", "edit", "read", "list"}:
             return []
         target = self._compact_single_line(payload.get("subtitle", ""))
         if self._is_argument_placeholder(target):
@@ -435,7 +456,7 @@ class ToolCardWidget(QFrame):
         if not target:
             return []
         segments: list[tuple[str, str]] = [(f"{self._compact_single_line(title)} ", ""), (target, FILE_ACCENT_BLUE)]
-        if role == "edit":
+        if role in {"write", "edit"}:
             added, removed = self._diff_stat_parts(payload.get("diff", ""))
             if added:
                 segments.extend([(" ", ""), (added, SUCCESS_GREEN)])
@@ -467,14 +488,14 @@ class ToolCardWidget(QFrame):
     @staticmethod
     def _phase_badge_text(payload: dict[str, Any]) -> str:
         if payload.get("is_error"):
-            return "Ошибка"
+            return "Error"
         phase = str(payload.get("phase", "running") or "running")
         args_state = str(payload.get("args_state", "complete") or "complete")
         if phase == "finished":
             return "✓"
         if phase == "preparing" and args_state in {"pending", "partial"}:
-            return "Подготовка"
-        return "Выполняется"
+            return "Preparing"
+        return "Running"
 
     @staticmethod
     def _phase_variant(payload: dict[str, Any]) -> str:
@@ -588,7 +609,7 @@ class ToolCardWidget(QFrame):
         _sync_plain_text_height(self.args_view, min_lines=4, max_lines=10, extra_padding=14)
 
     def _uses_diff_only_output(self) -> bool:
-        return self._tool_role(self.payload.get("name", "")) == "edit" and bool(self.payload.get("diff", ""))
+        return self._tool_role(self.payload.get("name", "")) in {"write", "edit"} and bool(self.payload.get("diff", ""))
 
     def _diff_expanded_by_default(self) -> bool:
         return str(self.payload.get("name", "") or "").strip() in {"write_file", "Write"}
@@ -661,7 +682,7 @@ class ToolCardWidget(QFrame):
                 parent=self,
             )
             self.diff_section = CollapsibleSection(
-                "Отредактированный файл",
+                "Edited file",
                 diff_widget,
                 expanded=diff_expanded,
                 content_margins=(0, 2, 0, 8),

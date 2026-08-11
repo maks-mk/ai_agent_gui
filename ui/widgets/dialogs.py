@@ -109,18 +109,18 @@ class ImageSupportCheckBox(QCheckBox):
 
 def _fetch_error_message(error: FetchError) -> str:
     if isinstance(error, AuthError):
-        return "Неверный API Key. Проверьте ключ."
+        return "Invalid API key. Check the key and try again."
     if isinstance(error, RateLimitError):
-        return "Превышен лимит запросов. Подождите."
+        return "Rate limit exceeded. Please wait and try again."
     if isinstance(error, ServerError):
-        return "Ошибка сервера. Попробуйте позже."
+        return "Server error. Please try again later."
     if isinstance(error, NetworkError):
-        return "Нет соединения. Проверьте сеть."
+        return "No connection. Check your network."
     if isinstance(error, EmptyResultError):
-        return "Нет доступных моделей для этого ключа."
+        return "No models are available for this API key."
     if isinstance(error, InvalidResponseError):
-        return "Провайдер вернул не JSON. Проверьте Base URL и поддержку /models."
-    return "Не удалось загрузить модели."
+        return "The provider returned a non-JSON response. Check the Base URL and /models support."
+    return "Failed to load models."
 
 
 class ModelFetchWorker(QThread):
@@ -148,7 +148,7 @@ class ModelFetchWorker(QThread):
             self.failed.emit(self._request_id, _fetch_error_message(error))
             return
         except Exception:
-            self.failed.emit(self._request_id, "Не удалось загрузить модели.")
+            self.failed.emit(self._request_id, "Failed to load models.")
             return
         self.fetched.emit(self._request_id, result)
 
@@ -345,7 +345,7 @@ class ModelSettingsDialog(QDialog):
         self.model_combo.setMaxVisibleItems(14)
 
         self.model_text_edit = QLineEdit()
-        self.model_text_edit.setPlaceholderText("Введите название модели вручную")
+        self.model_text_edit.setPlaceholderText("Enter a model name manually")
         self.model_text_edit.setClearButtonEnabled(True)
         self.model_text_edit.setAccessibleName("Model")
         self.model_edit = self.model_text_edit
@@ -353,14 +353,14 @@ class ModelSettingsDialog(QDialog):
         self.model_reload_button = QToolButton()
         self.model_reload_button.setObjectName("ModelSettingsInlineToolButton")
         self.model_reload_button.setIcon(_fa_icon("fa5s.redo-alt", color=TEXT_MUTED, size=10))
-        self.model_reload_button.setToolTip("Повторить загрузку")
+        self.model_reload_button.setToolTip("Retry loading models")
         self.model_reload_button.setAccessibleName("Retry model loading")
         self.model_reload_button.setCursor(Qt.PointingHandCursor)
 
         self.model_popup_button = QToolButton()
         self.model_popup_button.setObjectName("ModelSettingsInlineToolButton")
         self.model_popup_button.setIcon(_fa_icon("fa5s.caret-down", color=TEXT_MUTED, size=10))
-        self.model_popup_button.setToolTip("Показать список моделей")
+        self.model_popup_button.setToolTip("Show model list")
         self.model_popup_button.setAccessibleName("Show model list")
         self.model_popup_button.setCursor(Qt.PointingHandCursor)
 
@@ -702,7 +702,7 @@ class ModelSettingsDialog(QDialog):
 
         search = QLineEdit(popup)
         search.setObjectName("ModelSettingsSearchField")
-        search.setPlaceholderText("Быстрый поиск модели")
+        search.setPlaceholderText("Quick model search")
         search.setClearButtonEnabled(True)
         search.setAccessibleName("Model list search")
         search.setAccessibleDescription("Filter available models returned by the current API URL")
@@ -888,7 +888,7 @@ class ModelSettingsDialog(QDialog):
         if not selected_model and provider == "openai":
             self._set_model_state(
                 ModelLoadState.LOADED,
-                message="Список моделей пуст. Введите название модели вручную.",
+                message="The model list is empty. Enter a model name manually.",
             )
         else:
             self._set_model_state(ModelLoadState.LOADED)
@@ -910,8 +910,8 @@ class ModelSettingsDialog(QDialog):
 
         self._fetch_request_id += 1
         request_id = self._fetch_request_id
-        self._set_combo_placeholder("Загрузка моделей…")
-        self._set_model_state(ModelLoadState.LOADING, message="Загрузка…")
+        self._set_combo_placeholder("Loading models...")
+        self._set_model_state(ModelLoadState.LOADING, message="Loading...")
 
         worker = ModelFetchWorker(request_id, fetcher, api_key, base_url)
         self._model_workers.append(worker)
@@ -939,7 +939,7 @@ class ModelSettingsDialog(QDialog):
         if self._normalized_provider() in {"openai", "anthropic"}:
             self._set_model_state(ModelLoadState.FALLBACK, message=message)
             return
-        self._set_combo_placeholder(current_value or "Модели недоступны")
+        self._set_combo_placeholder(current_value or "Models unavailable")
         self._set_model_state(ModelLoadState.ERROR, message=message)
 
     def _reload_models(self) -> None:

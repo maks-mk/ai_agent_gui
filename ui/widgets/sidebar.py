@@ -32,21 +32,21 @@ def _format_sidebar_time(value: str) -> str:
     now = datetime.now(local_dt.tzinfo or timezone.utc)
     delta = now - local_dt
     if delta.total_seconds() < 0:
-        return "сейчас"
+        return "now"
     minutes = int(delta.total_seconds() // 60)
     if minutes < 1:
-        return "сейчас"
+        return "now"
     if minutes < 60:
-        return f"{minutes}м"
+        return f"{minutes}m"
     hours = minutes // 60
     if hours < 24:
-        return f"{hours}ч"
+        return f"{hours}h"
     days = hours // 24
     if days < 7:
-        return f"{days}д"
+        return f"{days}d"
     weeks = days // 7
     if weeks < 5:
-        return f"{weeks}н"
+        return f"{weeks}w"
     return local_dt.strftime("%d %b")
 
 
@@ -205,7 +205,7 @@ class SessionListModel(QAbstractListModel):
                         "kind": "more",
                         "project_path": project_path,
                         "project_title": _sidebar_project_name(project_path),
-                        "title": "Свернуть",
+                        "title": "Show less",
                         "session_id": "",
                         "updated_at": "",
                         "preview": "",
@@ -217,7 +217,7 @@ class SessionListModel(QAbstractListModel):
                         "kind": "more",
                         "project_path": project_path,
                         "project_title": _sidebar_project_name(project_path),
-                        "title": "Показать больше",
+                        "title": "Show more",
                         "session_id": "",
                         "updated_at": "",
                         "preview": str(hidden_count),
@@ -289,7 +289,7 @@ class SessionItemDelegate(QStyledItemDelegate):
             font.setWeight(QFont.Medium)
             painter.setFont(font)
             painter.setPen(QColor(TEXT_MUTED))
-            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, str(index.data(SessionListModel.TitleRole) or "Показать больше"))
+            painter.drawText(text_rect, Qt.AlignLeft | Qt.AlignVCenter, str(index.data(SessionListModel.TitleRole) or "Show more"))
             painter.restore()
             return
 
@@ -360,7 +360,7 @@ class SessionSidebarWidget(QWidget):
         header_row.setContentsMargins(0, 0, 0, 0)
         header_row.setSpacing(8)
 
-        title = QLabel("Проекты")
+        title = QLabel("Projects")
         title.setObjectName("SidebarSectionTitle")
         header_row.addWidget(title, 1)
 
@@ -417,7 +417,7 @@ class SessionSidebarWidget(QWidget):
             self.list_view.setVisible(True)
             return
         self.list_view.setVisible(False)
-        self.empty_label.setText("Чатов пока нет" if not self.model.has_source_sessions() else "Нет доступных чатов")
+        self.empty_label.setText("No chats yet" if not self.model.has_source_sessions() else "No chats available")
         self.empty_label.setVisible(True)
 
     def _emit_clicked_session(self, index: QModelIndex) -> None:

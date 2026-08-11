@@ -150,11 +150,11 @@ def _extract_provider_code_text(error: Exception) -> str:
 
 def _format_error_for_user(error: Exception | None, error_kind: str | None = None) -> str:
     if error is None:
-        return "неизвестная ошибка"
+        return "unknown error"
     parts = [type(error).__name__]
     status_code = _extract_status_code(error)
     if error_kind:
-        parts.append(f"тип: {error_kind}")
+        parts.append(f"type: {error_kind}")
     if status_code is not None:
         parts.append(f"HTTP {status_code}")
     message = " ".join(str(error or "").split())
@@ -392,9 +392,9 @@ class RotatingChatModel:
         )
         exhausted_error_kind = classify_api_key_error(last_error) if last_error is not None else None
         raise ApiKeyRotationExhaustedError(
-            f"Все API-ключи для '{model_label}' исчерпаны за один полный цикл. "
-            f"Последняя ошибка: {last_error_text}. "
-            "Проверьте лимиты и действительность ключей, либо повторите запрос позже.",
+            f"All API keys for '{model_label}' were exhausted in one full rotation. "
+            f"Last error: {last_error_text}. "
+            "Check the keys and their limits, or try again later.",
             error_kind=exhausted_error_kind,
             keys_tried=total,
             pool_size=total,

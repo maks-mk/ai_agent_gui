@@ -28,6 +28,7 @@ from ui.widgets.messages import AssistantMessageWidget
 from ui.widgets.sidebar import SessionListModel
 from ui.widgets.transcript import ConversationTurnWidget
 from ui.widgets.tool_group import ToolGroupWidget
+from ui.widgets.tools import ToolCardWidget
 
 
 class FakeTool:
@@ -238,6 +239,58 @@ class GuiUxTests(unittest.TestCase):
     def _wait_for_gui(self, ms: int):
         QTest.qWait(ms)
         self._process_events()
+
+    def test_tool_titles_change_to_past_tense_after_successful_completion(self):
+        title_cases = {
+            "read_file": ("Reading", "Read"),
+            "write_file": ("Writing", "Wrote"),
+            "edit_file": ("Editing", "Edited"),
+            "list_directory": ("Listing", "Listed"),
+            "batch_web_search": ("Searching", "Searched"),
+            "fetch_content": ("Fetching", "Fetched"),
+            "cli_exec": ("Running", "Ran"),
+            "safe_delete_file": ("Deleting", "Deleted"),
+            "download_file": ("Downloading", "Downloaded"),
+            "run_background_process": ("Starting process", "Started process"),
+            "stop_background_process": ("Stopping process", "Stopped process"),
+            "find_process_by_port": ("Finding process", "Found process"),
+            "request_user_input": ("Requesting input", "Requested input"),
+        }
+
+        for name, (active_title, completed_title) in title_cases.items():
+            with self.subTest(name=name):
+                card = ToolCardWidget({"name": name, "phase": "running"})
+                self.assertEqual(card.action_label.full_text(), active_title)
+                card.finish({"name": name})
+                self.assertEqual(card.action_label.full_text(), completed_title)
+                card.deleteLater()
+
+    def test_tool_title_keeps_action_form_for_errors(self):
+        card = ToolCardWidget({"name": "read_file", "phase": "running", "is_error": True})
+        self.assertEqual(card.action_label.full_text(), "Reading failed")
+        card.finish({"name": "read_file", "is_error": True})
+        self.assertEqual(card.action_label.full_text(), "Reading failed")
+        card.deleteLater()
+
+    def test_tool_group_titles_include_file_and_command_counts(self):
+        cases = (
+            (["write_file", "write_file"], "Wrote 2 files"),
+            (["write_file", "edit_file"], "Edited 2 files"),
+            (["read_file", "read_file"], "Read 2 files"),
+            (["cli_exec", "cli_exec"], "Ran 2 commands"),
+        )
+        for names, expected_title in cases:
+            with self.subTest(names=names):
+                group = ToolGroupWidget(parent=self.window)
+                for index, name in enumerate(names):
+                    card = ToolCardWidget(
+                        {"tool_id": f"group-{index}", "name": name, "phase": "finished"},
+                        parent=group.container,
+                    )
+                    group.add_tool(card)
+                group.refresh_completion()
+                self.assertEqual(group.header_btn.text(), expected_title)
+                group.deleteLater()
 
     def test_transcript_does_not_duplicate_preface_after_tool_group_with_minor_text_drift(self):
         turn = ConversationTurnWidget("user", parent=self.window)
@@ -1567,12 +1620,12 @@ class GuiUxTests(unittest.TestCase):
         ]
         self.assertEqual(transcript_text_labels, [])
         self.assertIsInstance(self.window.current_turn.tool_group, ToolGroupWidget)
-        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Изменён 1 файл")
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Edited 1 file")
         self.assertTrue(self.window.current_turn.tool_group.container.isHidden())
         tool_card = self.window.current_turn.tool_cards["call-1"]
         self.assertEqual(tool_card.frameShape(), QFrame.NoFrame)
         self.assertEqual(tool_card.tool_button.text(), "")
-        self.assertEqual(tool_card.action_label.full_text(), "Файл изменён demo.txt +1 -1")
+        self.assertEqual(tool_card.action_label.full_text(), "Edited demo.txt +1 -1")
         action_markup = tool_card.action_label.text()
         self.assertIn('color:#7CC7FF', action_markup)
         self.assertIn(f'color:{SUCCESS_GREEN}', action_markup)
@@ -1581,7 +1634,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertTrue(tool_card.args_container.isHidden())
         self.assertIsNone(tool_card.output_section)
         self.assertIsNotNone(tool_card.diff_section)
-        self.assertEqual(tool_card.diff_section.toggle_button.text(), "Отредактированный файл")
+        self.assertEqual(tool_card.diff_section.toggle_button.text(), "Edited file")
         self.assertTrue(tool_card.diff_section.toggle_button.isHidden())
         self.assertFalse(tool_card.diff_section.toggle_button.isChecked())
         self.assertTrue(tool_card.diff_section.content_container.isHidden())
@@ -1654,7 +1707,7 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertFalse(tool_card.isHidden())
         self.assertEqual(tool_card.tool_button.text(), "")
-        self.assertEqual(tool_card.action_label.full_text(), "Создание файла notes.md")
+        self.assertEqual(tool_card.action_label.full_text(), "Writing notes.md")
         self.assertTrue(tool_card.subtitle_label.isHidden())
         self.assertTrue(tool_card.phase_badge.isHidden())
         self.assertNotIn("write_file()", tool_card.action_label.full_text())
@@ -1678,8 +1731,8 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         tool_card = self.window.current_turn.tool_cards["call-write"]
-        self.assertEqual(tool_card.action_label.full_text(), "Файл создан notes.md +1 -0")
-        self.assertNotIn("Файл изменён", tool_card.action_label.full_text())
+        self.assertEqual(tool_card.action_label.full_text(), "Wrote notes.md +1 -0")
+        self.assertNotIn("Editing", tool_card.action_label.full_text())
         self.assertTrue(tool_card.tool_button.isChecked())
         self.assertFalse(tool_card.diff_section.content_container.isHidden())
 
@@ -1712,7 +1765,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertTrue(tool_card.tool_button.isCheckable())
         self.assertTrue(tool_card.tool_button.isChecked())
         self.assertEqual(tool_card.tool_button.text(), "")
-        self.assertEqual(tool_card.action_label.full_text(), "Выполнение команды echo hello")
+        self.assertEqual(tool_card.action_label.full_text(), "Running echo hello")
         self.assertIsNotNone(tool_card.cli_exec_widget)
         self.assertFalse(tool_card.cli_exec_widget.isHidden())
         self.assertEqual(tool_card.cli_exec_widget.command_label.text(), "$ echo hello")
@@ -1801,7 +1854,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         tool_card = self.window.current_turn.tool_cards["call-race"]
-        self.assertEqual(tool_card.action_label.full_text(), "Выполнение команды echo race")
+        self.assertEqual(tool_card.action_label.full_text(), "Running echo race")
         self.assertEqual(tool_card.cli_exec_widget.command_label.text(), "$ echo race")
 
     def test_cli_exec_output_autofollow_respects_manual_scroll(self):
@@ -1971,12 +2024,12 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(restored_turn.block_kinds(), ["user", "tool_group"])
         self.assertIsInstance(restored_turn.tool_group, ToolGroupWidget)
         self.assertTrue(restored_turn.tool_group.container.isHidden())
-        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Команда выполнена")
+        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Ran 1 command")
         tool_card = restored_turn.tool_cards["call-cli-restored"]
         self.assertFalse(tool_card.tool_button.isChecked())
         self.assertIsNotNone(tool_card.cli_exec_widget)
         self.assertTrue(tool_card.cli_exec_widget.isHidden())
-        self.assertEqual(tool_card.action_label.full_text(), "Команда выполнена python --version")
+        self.assertEqual(tool_card.action_label.full_text(), "Ran python --version")
         self.assertTrue(tool_card.phase_badge.isHidden())
 
     def test_restored_tool_widgets_are_parented_under_tool_group(self):
@@ -2055,7 +2108,7 @@ class GuiUxTests(unittest.TestCase):
         restored_turn = self.window.transcript.layout.itemAt(0).widget()
         tool_card = restored_turn.tool_cards["call-restored-finished"]
         self.assertEqual(tool_card.tool_button.text(), "")
-        self.assertEqual(tool_card.action_label.full_text(), "Файл прочитан index.html")
+        self.assertEqual(tool_card.action_label.full_text(), "Read index.html")
         self.assertEqual(tool_card.action_label.toolTip(), "read_file(index.html)")
         self.assertTrue(tool_card.subtitle_label.isHidden())
         self.assertTrue(tool_card.phase_badge.isHidden())
@@ -2102,7 +2155,7 @@ class GuiUxTests(unittest.TestCase):
         groups = restored_turn.findChildren(ToolGroupWidget)
         self.assertEqual(len(groups), 2)
         self.assertTrue(all(group.container.isHidden() for group in groups))
-        self.assertEqual([group.header_btn.text() for group in groups], ["Прочитан 1 файл", "Изменён 1 файл"])
+        self.assertEqual([group.header_btn.text() for group in groups], ["Read 1 file", "Edited 1 file"])
 
     def test_tool_error_output_is_collapsed_by_default(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -2128,7 +2181,7 @@ class GuiUxTests(unittest.TestCase):
         tool_card.tool_button.click()
         self._process_events()
         self.assertIn("error[access_denied]", tool_card.args_view.toPlainText().lower())
-        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Редактирование не удалось ·")
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Editing failed ·")
         self.assertFalse(self.window.current_turn.tool_group.error_icon_label.isHidden())
         self.assertEqual(self.window.current_turn.tool_group.error_count_label.text(), "1")
 
@@ -2165,7 +2218,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         tool_card = self.window.current_turn.tool_cards["call-missing-path"]
-        self.assertEqual(tool_card.action_label.full_text(), "Чтение не удалось")
+        self.assertEqual(tool_card.action_label.full_text(), "Reading failed")
         self.assertNotIn("Waiting for arguments", tool_card.action_label.full_text())
         self.assertNotIn("Waiting for arguments", tool_card.action_label.toolTip())
 
@@ -2200,7 +2253,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         restored_turn = self.window.transcript.layout.itemAt(0).widget()
-        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Редактирование не удалось ·")
+        self.assertEqual(restored_turn.tool_group.header_btn.text(), "Editing failed ·")
         self.assertFalse(restored_turn.tool_group.error_icon_label.isHidden())
         self.assertEqual(restored_turn.tool_group.error_count_label.text(), "1")
         self.assertTrue(restored_turn.tool_group.container.isHidden())
@@ -2222,7 +2275,7 @@ class GuiUxTests(unittest.TestCase):
         )
         self._process_events()
         tool_card = self.window.current_turn.tool_cards["call-read"]
-        self.assertEqual(tool_card.action_label.full_text(), "Чтение файла main.py")
+        self.assertEqual(tool_card.action_label.full_text(), "Reading main.py")
         self.assertTrue(tool_card.phase_badge.isHidden())
 
         tool_card.tool_button.click()
@@ -2242,12 +2295,12 @@ class GuiUxTests(unittest.TestCase):
             )
         )
         self._process_events()
-        self.assertEqual(tool_card.action_label.full_text(), "Файл прочитан main.py")
+        self.assertEqual(tool_card.action_label.full_text(), "Read main.py")
         self.assertTrue(tool_card.phase_badge.isHidden())
         self.assertFalse(tool_card.tool_button.isChecked())
         self.assertTrue(tool_card.args_container.isHidden())
         self.assertFalse(self.window.current_turn.tool_group.container.isHidden())
-        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Прочитан 1 файл")
+        self.assertEqual(self.window.current_turn.tool_group.header_btn.text(), "Read 1 file")
 
     def test_finished_tool_group_stays_open_until_assistant_text_even_after_manual_expand(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -2291,7 +2344,7 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Изменён 1 файл")
+        self.assertEqual(group.header_btn.text(), "Edited 1 file")
 
         self.window._handle_event(
             StreamEvent(
@@ -2307,7 +2360,7 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertTrue(group.container.isHidden())
         self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group", "assistant"])
-        self.assertEqual(group.header_btn.text(), "Изменён 1 файл")
+        self.assertEqual(group.header_btn.text(), "Edited 1 file")
 
     def test_approval_notice_after_tool_finish_keeps_group_completed(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -2328,7 +2381,7 @@ class GuiUxTests(unittest.TestCase):
 
         group = self.window.current_turn.tool_group
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Изменён 1 файл")
+        self.assertEqual(group.header_btn.text(), "Edited 1 file")
 
         self.window._handle_event(
             StreamEvent("approval_resolved", {"approved": True, "always": False, "auto": False})
@@ -2338,7 +2391,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group"])
         self.assertIn("approved", self.window.statusBar().currentMessage().lower())
         self.assertFalse(group.container.isHidden())
-        self.assertEqual(group.header_btn.text(), "Изменён 1 файл")
+        self.assertEqual(group.header_btn.text(), "Edited 1 file")
 
     def test_run_finished_keeps_completed_tool_group_open_without_assistant_text(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -2361,7 +2414,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertIsNotNone(group)
         self.assertFalse(group.container.isHidden())
         self.assertEqual(self.window.current_turn.block_kinds(), ["user", "tool_group", "stats"])
-        self.assertEqual(group.header_btn.text(), "Прочитан 1 файл")
+        self.assertEqual(group.header_btn.text(), "Read 1 file")
 
     def test_assistant_comment_after_tool_group_does_not_repeat_previous_prefix(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -2430,7 +2483,7 @@ class GuiUxTests(unittest.TestCase):
         )
         self._process_events()
         tool_card = self.window.current_turn.tool_cards["call-cli-run"]
-        self.assertEqual(tool_card.action_label.full_text(), "Выполнение команды echo hi")
+        self.assertEqual(tool_card.action_label.full_text(), "Running echo hi")
         self.assertTrue(tool_card.phase_badge.isHidden())
         self.assertTrue(tool_card.tool_button.isChecked())
         self.assertFalse(tool_card.cli_exec_widget.isHidden())
@@ -2457,7 +2510,7 @@ class GuiUxTests(unittest.TestCase):
             )
         )
         self._process_events()
-        self.assertEqual(tool_card.action_label.full_text(), "Команда выполнена echo hi")
+        self.assertEqual(tool_card.action_label.full_text(), "Ran echo hi")
         self.assertTrue(tool_card.phase_badge.isHidden())
         self.assertFalse(tool_card.tool_button.isChecked())
         self.assertTrue(tool_card.cli_exec_widget.isHidden())
@@ -2800,7 +2853,7 @@ class GuiUxTests(unittest.TestCase):
                 more_index = candidate
                 break
         self.assertTrue(more_index.isValid())
-        self.assertEqual(more_index.data(SessionListModel.TitleRole), "Показать больше")
+        self.assertEqual(more_index.data(SessionListModel.TitleRole), "Show more")
 
         self.window.sidebar._emit_clicked_session(more_index)
         self._process_events()
@@ -2811,7 +2864,7 @@ class GuiUxTests(unittest.TestCase):
         collapse_index = QModelIndex()
         for row in range(self.window.sidebar.model.rowCount()):
             candidate = self.window.sidebar.model.index(row, 0)
-            if candidate.data(SessionListModel.KindRole) == "more" and candidate.data(SessionListModel.TitleRole) == "Свернуть":
+            if candidate.data(SessionListModel.KindRole) == "more" and candidate.data(SessionListModel.TitleRole) == "Show less":
                 collapse_index = candidate
                 break
         self.assertTrue(collapse_index.isValid())
@@ -2825,7 +2878,7 @@ class GuiUxTests(unittest.TestCase):
             for row in range(self.window.sidebar.model.rowCount())
             if self.window.sidebar.model.index(row, 0).data(SessionListModel.KindRole) == "more"
         ]
-        self.assertIn("Показать больше", more_titles)
+        self.assertIn("Show more", more_titles)
 
     def test_delete_session_requests_controller_after_confirmation(self):
         payload = self._snapshot_payload()

@@ -238,7 +238,7 @@ class ModelFetcherTests(unittest.TestCase):
 
         worker.run()
 
-        self.assertEqual(captured, [(42, "Не удалось загрузить модели.")])
+        self.assertEqual(captured, [(42, "Failed to load models.")])
 
     def test_anthropic_returns_models_from_data(self):
         response = _openai_response(
