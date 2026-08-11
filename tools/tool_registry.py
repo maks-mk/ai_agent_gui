@@ -47,6 +47,7 @@ class ToolRegistry:
         "checkpoint_info",
         "checkpoint_runtime",
         "_cleanup_callbacks",
+        "_cleanup_callback_keys",
         "disabled_mcp_servers",
         "disabled_local_tools",
         "builtin_tools",
@@ -64,6 +65,7 @@ class ToolRegistry:
         self.checkpoint_info: Dict[str, Any] = {}
         self.checkpoint_runtime: Any = None
         self._cleanup_callbacks: List[Callable[[], Any]] = []
+        self._cleanup_callback_keys: set[tuple[int, int]] = set()
         self.disabled_mcp_servers: set[str] = set()
         self.disabled_local_tools: set[str] = set()
         self.builtin_tools: List[BaseTool] = []
@@ -673,6 +675,12 @@ class ToolRegistry:
             logger.exception(f"Failed to load MCP tools: {e}")
 
     def register_cleanup_callback(self, callback: Callable[[], Any]) -> None:
+        target = getattr(callback, "__self__", None)
+        function = getattr(callback, "__func__", callback)
+        key = (id(target), id(function))
+        if key in self._cleanup_callback_keys:
+            return
+        self._cleanup_callback_keys.add(key)
         self._cleanup_callbacks.append(callback)
 
     def get_runtime_status_lines(self) -> List[str]:
@@ -734,7 +742,10 @@ class ToolRegistry:
             except Exception as e:
                 logger.error("Error closing MCP client: %s", e)
 
-        for callback in self._cleanup_callbacks:
+        callbacks = self._cleanup_callbacks
+        self._cleanup_callbacks = []
+        self._cleanup_callback_keys.clear()
+        for callback in callbacks:
             try:
                 result = callback()
                 if inspect.isawaitable(result):

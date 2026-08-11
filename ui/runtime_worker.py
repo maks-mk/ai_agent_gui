@@ -1089,9 +1089,12 @@ class AgentRunWorker(QObject):
 
     async def _shutdown_async(self) -> None:
         self._clear_cli_output_bridge()
-        await close_runtime_resources(self.tool_registry)
+        tool_registry = self.tool_registry
+        self.tool_registry = None
+        self.agent_app = None
         self.checkpoint_runtime = None
         self.ui_run_logger = None
+        await close_runtime_resources(tool_registry)
 
 
 class AgentRuntimeController(QObject):

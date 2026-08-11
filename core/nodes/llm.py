@@ -24,6 +24,26 @@ logger = logging.getLogger("agent")
 
 _TRANSIENT_RETRY_DELAYS = (2, 4, 8)
 _TRANSIENT_HTTP_STATUS_CODES = {408, 429, 500, 502, 503, 504}
+_CLOSED_CLIENT_ERROR_MARKERS = (
+    "client has been closed",
+    "client is closed",
+    "cannot send a request, as the client has been closed",
+)
+
+def _exception_chain_text(error: Exception) -> str:
+    parts: list[str] = []
+    pending: list[BaseException | None] = [error]
+    seen: set[int] = set()
+    while pending:
+        current = pending.pop()
+        if current is None or id(current) in seen:
+            continue
+        seen.add(id(current))
+        parts.append(str(current))
+        pending.extend((getattr(current, "__cause__", None), getattr(current, "__context__", None)))
+    return " ".join(" ".join(parts).lower().split())
+
+
 _TRANSIENT_ERROR_MARKERS = (
     "rate limit",
     "rate_limit",
@@ -197,7 +217,9 @@ class LLMMixin:
                     )
                     raise
 
-                is_permanent_client_error = self._is_permanent_client_error(e)
+                is_permanent_client_error = (
+                    self._is_permanent_client_error(e) or self._is_closed_client_error(e)
+                )
                 if is_transient or is_permanent_client_error or configured_retry_count >= configured_max_attempts - 1:
                     if is_transient:
                         try:
@@ -250,6 +272,11 @@ class LLMMixin:
             return
 
     @staticmethod
+    def _is_closed_client_error(error: Exception) -> bool:
+        error_text = _exception_chain_text(error)
+        return any(marker in error_text for marker in _CLOSED_CLIENT_ERROR_MARKERS)
+
+    @staticmethod
     def _is_transient_llm_error(error: Exception) -> bool:
         if isinstance(error, ApiKeyRotationExhaustedError):
             return False
@@ -266,7 +293,9 @@ class LLMMixin:
             except (TypeError, ValueError):
                 continue
 
-        error_text = " ".join(str(error).lower().split())
+        error_text = _exception_chain_text(error)
+        if any(marker in error_text for marker in _CLOSED_CLIENT_ERROR_MARKERS):
+            return False
         status_pattern = "|".join(str(code) for code in sorted(_TRANSIENT_HTTP_STATUS_CODES))
         if re.search(rf"(?<!\d)(?:{status_pattern})(?!\d)", error_text):
             return True

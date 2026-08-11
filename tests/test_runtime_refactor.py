@@ -961,6 +961,20 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         await registry.cleanup()
         fake_client.aclose.assert_awaited_once()
 
+    async def test_registry_cleanup_deduplicates_shared_llm_client_and_is_idempotent(self):
+        registry = ToolRegistry(self._make_config())
+        shared_client = mock.AsyncMock()
+        llm = SimpleNamespace(root_async_client=shared_client)
+        bound_llm = SimpleNamespace(root_async_client=shared_client)
+
+        self.assertTrue(_register_llm_cleanup_callback(registry, llm))
+        self.assertTrue(_register_llm_cleanup_callback(registry, bound_llm))
+
+        await registry.cleanup()
+        await registry.cleanup()
+
+        shared_client.aclose.assert_awaited_once()
+
     async def test_rotating_chat_model_reuses_cached_model_and_closes_clients(self):
         tmp = Path.cwd() / ".tmp_tests" / uuid4().hex
         tmp.mkdir(parents=True, exist_ok=True)
@@ -2099,6 +2113,29 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(llm.invocations), 1)
         sleep_mock.assert_not_awaited()
+
+    async def test_invoke_llm_with_retry_does_not_retry_closed_client_cause(self):
+        config = self._make_config(MAX_RETRIES=3, RETRY_DELAY=0)
+        error = RuntimeError("Connection error.")
+        error.__cause__ = RuntimeError("Cannot send a request, as the client has been closed.")
+        llm = FakeLLM([error, AIMessage(content="must not be used")])
+        nodes = AgentNodes(config=config, llm=llm, tools=[], llm_with_tools=llm)
+
+        with (
+            mock.patch("core.nodes.llm.asyncio.sleep", new=mock.AsyncMock()) as sleep_mock,
+            mock.patch("core.nodes.llm.get_stream_writer", return_value=mock.Mock()) as writer_mock,
+        ):
+            with self.assertRaisesRegex(RuntimeError, "Connection error"):
+                await nodes._invoke_llm_with_retry(
+                    llm,
+                    [HumanMessage(content="Проверь задачу")],
+                    state=self._initial_state(),
+                    node_name="agent",
+                )
+
+        self.assertEqual(len(llm.invocations), 1)
+        sleep_mock.assert_not_awaited()
+        writer_mock.return_value.assert_not_called()
 
     async def test_invoke_llm_with_retry_marks_exhausted_transient_error(self):
         config = self._make_config(MAX_RETRIES=3, RETRY_DELAY=0)
