@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Optional, Tuple
 from pydantic import ValidationError
 
 from core.tool_policy import ToolMetadata, default_tool_metadata
+from core.state import OpenToolIssue, RecoveryState
 from core.tool_args import canonicalize_tool_args, inspect_tool_args_payload
 from core.tool_issues import build_tool_issue
 from core.policy_engine import classify_shell_command, shell_command_requires_approval, tool_requires_approval
@@ -325,9 +326,9 @@ class ToolPreflightMixin:
         messages: List[Any],
         *,
         current_turn_id: int,
-        open_tool_issue: Dict[str, Any] | None,
-        recovery_state: Dict[str, Any] | None,
-    ) -> Dict[str, Any] | None:
+        open_tool_issue: OpenToolIssue | None,
+        recovery_state: RecoveryState | None,
+    ) -> OpenToolIssue | None:
         if not isinstance(open_tool_issue, dict):
             return None
         if not isinstance(recovery_state, dict):

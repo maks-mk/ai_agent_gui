@@ -523,6 +523,7 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
     """Build an OpenAI-compatible chat model with reasoning-debug instrumentation."""
     # Lazy import to avoid loading both providers on startup.
     from langchain_openai import ChatOpenAI as BaseChatOpenAI
+    from openai import DefaultAsyncHttpxClient, DefaultHttpxClient
 
     ReasoningDebugChatOpenAI = _build_reasoning_debug_chat_openai(BaseChatOpenAI)
     ChatOpenAI = ReasoningDebugChatOpenAI
@@ -537,6 +538,8 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
         "api_key": api_key,
         "base_url": config.openai_base_url,
         "default_headers": load_openai_headers(),
+        "http_client": DefaultHttpxClient(),
+        "http_async_client": DefaultAsyncHttpxClient(),
         "max_retries": 0,
         "stream_usage": True,
     }

@@ -110,7 +110,14 @@ def build_tools_snapshot(tool_registry) -> list[dict[str, Any]]:
         for name, cfg in getattr(tool_registry, "mcp_config", {}).items()
         if name != "_builtin_tools"
     }
-    disabled_local_tools = getattr(tool_registry, "disabled_local_tools", set())
+    active_tool_names = {
+        tool.name
+        for tool in (
+            tool_registry.active_tools()
+            if hasattr(tool_registry, "active_tools")
+            else tools
+        )
+    }
     mcp_tool_names = {
         str(tool_name)
         for status in statuses.values()
@@ -175,7 +182,7 @@ def build_tools_snapshot(tool_registry) -> list[dict[str, Any]]:
                     "kind": "tool",
                     "name": tool.name,
                     "description": tool.description or "No description",
-                    "enabled": tool.name not in disabled_local_tools,
+                    "enabled": tool.name in active_tool_names,
                 }
             )
     return rows

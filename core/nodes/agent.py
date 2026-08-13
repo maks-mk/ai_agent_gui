@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import AIMessage
 
-from core.state import AgentState
+from core.state import AgentState, OpenToolIssue, RecoveryState
 from core.tool_args import canonicalize_tool_args
 from core.constants import TOOL_ISSUE_UI_NOTICE
 from core.message_utils import stringify_content
@@ -23,32 +23,6 @@ class AgentMixin:
     async def agent_node(self, state: AgentState):
         return await self.agent_turn.run(state)
 
-    def _normalized_allowed_tool_name_set(self, allowed_tool_names: List[str] | None) -> set[str]:
-        return {self._normalize_tool_name(name) for name in (allowed_tool_names or [])}
-
-    def _build_protocol_issue(
-        self,
-        *,
-        current_turn_id: int,
-        summary: str,
-        reason: str,
-        source: str,
-        tool_names: List[str] | None = None,
-        tool_args: Dict[str, Any] | None = None,
-        details: Dict[str, Any] | None = None,
-        response_preview: str = "",
-    ) -> Dict[str, Any]:
-        return self._build_protocol_open_tool_issue(
-            current_turn_id=current_turn_id,
-            summary=summary,
-            reason=reason,
-            source=source,
-            tool_names=tool_names,
-            tool_args=tool_args,
-            details=details,
-            response_preview=response_preview,
-        )
-
     def _new_ai_message_with_tool_calls(self, response: AIMessage, tool_calls: List[Dict[str, Any]]) -> AIMessage:
         return response.model_copy(update={"tool_calls": tool_calls})
 
@@ -65,28 +39,6 @@ class AgentMixin:
         self, response: AIMessage, content: Any, tool_calls: List[Dict[str, Any]]
     ) -> AIMessage:
         return response.model_copy(update={"content": content, "tool_calls": tool_calls})
-
-    def _build_agent_protocol_issue(
-        self,
-        *,
-        current_turn_id: int,
-        summary: str,
-        reason: str,
-        tool_names: List[str] | None = None,
-        tool_args: Dict[str, Any] | None = None,
-        details: Dict[str, Any] | None = None,
-        response_preview: str = "",
-    ) -> Dict[str, Any]:
-        return self._build_protocol_issue(
-            current_turn_id=current_turn_id,
-            summary=summary,
-            reason=reason,
-            source="agent",
-            tool_names=tool_names,
-            tool_args=tool_args,
-            details=details,
-            response_preview=response_preview,
-        )
 
     def _ensure_gemini_tool_call_signatures(
         self,
@@ -123,8 +75,8 @@ class AgentMixin:
         tools_available: bool,
         turn_id: int,
         messages: List[Any],
-        open_tool_issue: Dict[str, Any] | None = None,
-        recovery_state: Dict[str, Any] | None = None,
+        open_tool_issue: OpenToolIssue | None = None,
+        recovery_state: RecoveryState | None = None,
         allowed_tool_names: List[str] | None = None,
     ) -> Dict[str, Any]:
         token_usage_update = {}
@@ -175,10 +127,11 @@ class AgentMixin:
                             "a structured tool_calls payload. Textual tool-call recovery is disabled. If a tool is "
                             "still needed, retry with a fresh structured tool call only."
                         )
-                        protocol_issue = self._build_agent_protocol_issue(
+                        protocol_issue = self._build_protocol_open_tool_issue(
                             current_turn_id=turn_id,
                             summary=protocol_error,
                             reason="textual_tool_call_disabled",
+                            source="agent",
                             tool_names=tool_names,
                             tool_args=first_args,
                             details={"recovered_textual_tool_call_count": len(recovered_tool_calls.tool_calls)},
@@ -204,10 +157,11 @@ class AgentMixin:
                     if parsed_args:
                         first_args = parsed_args
                         break
-                protocol_issue = self._build_agent_protocol_issue(
+                protocol_issue = self._build_protocol_open_tool_issue(
                     current_turn_id=turn_id,
                     summary=protocol_error,
                     reason="tool_protocol_error",
+                    source="agent",
                     tool_names=tool_names,
                     tool_args=first_args,
                     details={
@@ -244,7 +198,10 @@ class AgentMixin:
                     response = self._new_ai_message_with_tool_calls(response, t_calls)
                 filtered_out_count = len(original_tool_calls) - len(t_calls)
                 if filtered_out_count:
-                    allowed_tool_name_set = self._normalized_allowed_tool_name_set(allowed_tool_names)
+                    allowed_tool_name_set = {
+                        self._normalize_tool_name(name)
+                        for name in (allowed_tool_names or [])
+                    }
                     dropped_names = [
                         str(tool_call.get("name") or "").strip()
                         for tool_call in original_tool_calls
@@ -257,10 +214,11 @@ class AgentMixin:
                     )
                     protocol_error = self._merge_protocol_error_text(protocol_error, dropped_error)
                     if not t_calls:
-                        protocol_issue = self._build_agent_protocol_issue(
+                        protocol_issue = self._build_protocol_open_tool_issue(
                             current_turn_id=turn_id,
                             summary=dropped_error,
                             reason="tool_not_allowed_for_turn",
+                            source="agent",
                             tool_names=dropped_names,
                             tool_args={},
                             details={"allowed_tool_names": list(allowed_tool_names or [])},
@@ -323,7 +281,6 @@ class AgentMixin:
             "recovery_state": recovery_state,
             "pending_approval": None,
             "open_tool_issue": next_open_tool_issue,
-            "has_protocol_error": bool(protocol_error),
             "last_tool_error": protocol_error,
             "last_tool_result": "",
             "_retry_user_input_turn": retry_user_input_turn,

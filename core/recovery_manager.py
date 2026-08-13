@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from typing import Any, Dict, List
+from typing import Any, Dict, List, cast
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
@@ -10,6 +10,7 @@ from core import constants
 from core.fast_copy import copy_jsonish
 from core.message_utils import compact_text, stringify_content
 from core.self_correction_engine import RepairPlan, build_repair_plan
+from core.state import AgentState, OpenToolIssue, RecoveryPlanResult, RecoveryState, RecoveryStrategy
 from core.tool_results import parse_tool_execution_result
 from core.turn_outcomes import (
     TURN_OUTCOME_CONTINUE_AGENT,
@@ -33,9 +34,12 @@ def _compact_json_payload(payload: Dict[str, Any], *, limit: int = 180) -> str:
 
 
 class RecoveryManager:
-    def empty_state(self, *, turn_id: int) -> Dict[str, Any]:
+    def empty_state(self, *, turn_id: int) -> RecoveryState:
         return {
             "turn_id": int(turn_id or 0),
+            "retry_count": 0,
+            "retry_fingerprint_history": [],
+            "last_reason": "",
             "active_issue": None,
             "active_strategy": None,
             "strategy_queue": [],
@@ -46,14 +50,48 @@ class RecoveryManager:
             "llm_replan_attempted_for": [],
         }
 
-    def get_recovery_state(self, raw: Any, *, current_turn_id: int) -> Dict[str, Any]:
-        if not isinstance(raw, dict):
-            return self.empty_state(turn_id=current_turn_id)
+    def get_recovery_state(
+        self,
+        raw: Any,
+        *,
+        current_turn_id: int,
+        legacy_state: AgentState | None = None,
+    ) -> RecoveryState:
         recovery = self.empty_state(turn_id=current_turn_id)
-        recovery.update({k: v for k, v in raw.items() if k in recovery})
-        if int(recovery.get("turn_id", 0) or 0) != current_turn_id:
-            return self.empty_state(turn_id=current_turn_id)
+        raw_keys: set[str] = set()
+        if isinstance(raw, dict):
+            raw_turn_id = int(raw.get("turn_id", 0) or 0)
+            if raw_turn_id == current_turn_id:
+                raw_keys = {str(key) for key in raw}
+                recovery.update({k: v for k, v in raw.items() if k in recovery})
+
+        legacy_retry_turn_id = int((legacy_state or {}).get("self_correction_retry_turn_id", 0) or 0)
+        legacy_applies = legacy_retry_turn_id == current_turn_id or (
+            legacy_retry_turn_id == 0 and bool(raw_keys)
+        )
+        if legacy_applies and "retry_count" not in raw_keys:
+            recovery["retry_count"] = int((legacy_state or {}).get("self_correction_retry_count", 0) or 0)
+        if legacy_applies and "retry_fingerprint_history" not in raw_keys:
+            legacy_history = (legacy_state or {}).get("self_correction_fingerprint_history") or []
+            recovery["retry_fingerprint_history"] = [
+                str(item).strip()
+                for item in legacy_history
+                if str(item).strip()
+            ]
+        if legacy_applies and "last_reason" not in raw_keys:
+            recovery["last_reason"] = str((legacy_state or {}).get("self_correction_last_reason") or "").strip()
+
         recovery["turn_id"] = current_turn_id
+        recovery["retry_count"] = max(0, int(recovery.get("retry_count", 0) or 0))
+        if not isinstance(recovery.get("retry_fingerprint_history"), list):
+            recovery["retry_fingerprint_history"] = []
+        else:
+            recovery["retry_fingerprint_history"] = [
+                str(item).strip()
+                for item in (recovery.get("retry_fingerprint_history") or [])
+                if str(item).strip()
+            ]
+        recovery["last_reason"] = str(recovery.get("last_reason") or "").strip()
         if not isinstance(recovery.get("llm_replan_attempted_for"), list):
             recovery["llm_replan_attempted_for"] = []
         if not isinstance(recovery.get("strategy_queue"), list):
@@ -69,7 +107,7 @@ class RecoveryManager:
         *,
         current_turn_id: int,
         successful_evidence: str = "",
-    ) -> Dict[str, Any]:
+    ) -> RecoveryState:
         next_state = self.empty_state(turn_id=current_turn_id)
         evidence = str(successful_evidence or "").strip()
         if evidence:
@@ -96,10 +134,10 @@ class RecoveryManager:
         self,
         *,
         repair_plan: RepairPlan,
-        open_tool_issue: Dict[str, Any] | None,
+        open_tool_issue: OpenToolIssue | None,
         current_task: str,
         strategy_id: str,
-    ) -> Dict[str, Any]:
+    ) -> RecoveryStrategy:
         return {
             "id": strategy_id,
             "strategy": repair_plan.strategy,
@@ -116,7 +154,7 @@ class RecoveryManager:
             "progress_fingerprint": repair_plan.progress_fingerprint or repair_plan.fingerprint,
         }
 
-    def build_recovery_system_message(self, recovery_state: Dict[str, Any] | None) -> SystemMessage | None:
+    def build_recovery_system_message(self, recovery_state: RecoveryState | None) -> SystemMessage | None:
         if not isinstance(recovery_state, dict):
             return None
         strategy = recovery_state.get("active_strategy")
@@ -151,7 +189,7 @@ class RecoveryManager:
 
     def build_tool_issue_handoff_text(
         self,
-        open_tool_issue: Dict[str, Any] | None,
+        open_tool_issue: OpenToolIssue | None,
         *,
         repair_plan: RepairPlan | None = None,
     ) -> str:
@@ -249,7 +287,7 @@ class RecoveryManager:
 
     def _get_strategy_attempt_count(
         self,
-        recovery_state: Dict[str, Any],
+        recovery_state: RecoveryState,
         *,
         issue_fingerprint: str,
         strategy: str,
@@ -259,7 +297,7 @@ class RecoveryManager:
 
     def _record_strategy_attempt(
         self,
-        recovery_state: Dict[str, Any],
+        recovery_state: RecoveryState,
         *,
         issue_fingerprint: str,
         strategy: str,
@@ -271,7 +309,7 @@ class RecoveryManager:
         recovery_state["attempts_by_strategy"] = attempts
         return next_count
 
-    def _append_progress_marker(self, recovery_state: Dict[str, Any], *, issue_fingerprint: str) -> bool:
+    def _append_progress_marker(self, recovery_state: RecoveryState, *, issue_fingerprint: str) -> bool:
         marker = str(issue_fingerprint or "").strip()
         if not marker:
             return False
@@ -340,12 +378,12 @@ class RecoveryManager:
     def plan_recovery(
         self,
         *,
-        state: Dict[str, Any],
+        state: AgentState,
         messages: List[BaseMessage],
         current_task: str,
         current_turn_id: int,
-        open_tool_issue: Dict[str, Any] | None,
-        recovery_state: Dict[str, Any],
+        open_tool_issue: OpenToolIssue | None,
+        recovery_state: RecoveryState,
         last_ai: BaseMessage | None,
         last_message: BaseMessage | None,
         step_count: int,
@@ -353,18 +391,22 @@ class RecoveryManager:
         hard_loop_ceiling: int,
         max_auto_repairs: int,
         successful_tool_stagnation_limit: int,
-    ) -> Dict[str, Any]:
+    ) -> RecoveryPlanResult:
         loop_budget_reached = step_count >= int(max_loops or 0)
         pending_tool_calls = bool(last_ai and getattr(last_ai, "tool_calls", None))
-        next_retry_turn_id = current_turn_id
-        next_retry_count = int(state.get("self_correction_retry_count", 0) or 0)
+        next_recovery_state = self.get_recovery_state(
+            recovery_state,
+            current_turn_id=current_turn_id,
+            legacy_state=state,
+        )
+        next_retry_count = int(next_recovery_state.get("retry_count", 0) or 0)
         next_fingerprint_history = [
             str(item).strip()
-            for item in (state.get("self_correction_fingerprint_history") or [])
+            for item in (next_recovery_state.get("retry_fingerprint_history") or [])
             if str(item).strip()
         ]
         next_open_tool_issue = open_tool_issue
-        next_recovery_state = copy_jsonish(recovery_state)
+        next_recovery_state = cast(RecoveryState, copy_jsonish(next_recovery_state))
         completion_reason = "no_open_tool_issue"
         handoff_message = ""
         drop_trailing_tool_call = False
@@ -516,6 +558,9 @@ class RecoveryManager:
         next_open_tool_issue = branch.get("next_open_tool_issue", next_open_tool_issue)
         next_retry_count = int(branch.get("next_retry_count", next_retry_count) or next_retry_count)
         next_fingerprint_history = list(branch.get("next_fingerprint_history") or next_fingerprint_history)
+        next_recovery_state["retry_count"] = next_retry_count
+        next_recovery_state["retry_fingerprint_history"] = next_fingerprint_history
+        next_recovery_state["last_reason"] = completion_reason
 
         return {
             "turn_id": current_turn_id,
@@ -523,11 +568,6 @@ class RecoveryManager:
             "current_task": current_task,
             "recovery_state": next_recovery_state,
             "open_tool_issue": next_open_tool_issue,
-            "has_protocol_error": False,
-            "self_correction_retry_count": next_retry_count,
-            "self_correction_retry_turn_id": next_retry_turn_id,
-            "self_correction_fingerprint_history": next_fingerprint_history,
-            "self_correction_last_reason": completion_reason,
             "handoff_message": handoff_message,
             "completion_reason": completion_reason,
             "drop_trailing_tool_call": drop_trailing_tool_call,
@@ -541,10 +581,10 @@ class RecoveryManager:
         self,
         *,
         current_task: str,
-        open_tool_issue: Dict[str, Any],
+        open_tool_issue: OpenToolIssue,
         repair_plan: RepairPlan | None,
         issue_fingerprint: str,
-        next_recovery_state: Dict[str, Any],
+        next_recovery_state: RecoveryState,
         current_retry_count: int,
         fingerprint_history: List[str],
     ) -> Dict[str, Any]:

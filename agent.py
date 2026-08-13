@@ -107,7 +107,6 @@ def create_agent_workflow(
 
         turn_outcome = normalize_turn_outcome(state.get("turn_outcome"))
         has_open_tool_issue = bool(state.get("open_tool_issue"))
-        has_protocol_error = bool(state.get("has_protocol_error"))
         if tools_enabled and turn_outcome == TURN_OUTCOME_RUN_TOOLS:
             if steps >= config.max_loops:
                 logger.warning(
@@ -130,7 +129,7 @@ def create_agent_workflow(
             )
             return "recovery"
 
-        if turn_outcome == TURN_OUTCOME_RECOVER_AGENT or has_open_tool_issue or has_protocol_error:
+        if turn_outcome == TURN_OUTCOME_RECOVER_AGENT or has_open_tool_issue:
             return "recovery"
 
         return END

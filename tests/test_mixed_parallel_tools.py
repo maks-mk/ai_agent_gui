@@ -6,6 +6,9 @@ and re-assembles ``ToolMessage`` results in the original ``tool_calls`` order.
 """
 
 import asyncio
+import ast
+import inspect
+import textwrap
 import unittest
 from types import SimpleNamespace
 from typing import Any
@@ -13,7 +16,14 @@ from unittest import mock
 
 from langchain_core.messages import AIMessage, ToolMessage
 
-from core.node_orchestrators import ToolBatchCoordinator
+from core.node_orchestrators import (
+    AgentTurnOrchestrator,
+    AgentTurnOwner,
+    RecoveryTurnOrchestrator,
+    RecoveryTurnOwner,
+    ToolBatchCoordinator,
+    ToolBatchOwner,
+)
 from core.nodes import AgentNodes
 from core.tool_policy import ToolMetadata
 
@@ -146,6 +156,40 @@ class _FakeOwner:
             tool_call_id=tool_call.get("id", ""),
         )
         return tool_msg, False, None
+
+
+class OwnerProtocolContractTests(unittest.TestCase):
+    def test_orchestrator_constructors_use_explicit_owner_protocols(self):
+        self.assertEqual(
+            AgentTurnOrchestrator.__init__.__annotations__["owner"],
+            "AgentTurnOwner",
+        )
+        self.assertEqual(
+            RecoveryTurnOrchestrator.__init__.__annotations__["owner"],
+            "RecoveryTurnOwner",
+        )
+        self.assertEqual(
+            ToolBatchCoordinator.__init__.__annotations__["owner"],
+            "ToolBatchOwner",
+        )
+
+    def test_owner_protocols_match_all_orchestrator_owner_accesses(self):
+        pairs = (
+            (AgentTurnOrchestrator, AgentTurnOwner),
+            (RecoveryTurnOrchestrator, RecoveryTurnOwner),
+            (ToolBatchCoordinator, ToolBatchOwner),
+        )
+        for orchestrator, owner_protocol in pairs:
+            with self.subTest(orchestrator=orchestrator.__name__):
+                tree = ast.parse(textwrap.dedent(inspect.getsource(orchestrator)))
+                owner_accesses = {
+                    node.attr
+                    for node in ast.walk(tree)
+                    if isinstance(node, ast.Attribute)
+                    and isinstance(node.value, ast.Name)
+                    and node.value.id == "owner"
+                }
+                self.assertEqual(owner_accesses, owner_protocol.__protocol_attrs__)
 
 
 class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):

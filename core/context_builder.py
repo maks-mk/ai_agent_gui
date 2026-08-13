@@ -28,7 +28,7 @@ from core.multimodal import (
 )
 from core.tool_args import canonicalize_tool_args
 from core.runtime_prompt_policy import RuntimePromptContext, RuntimePromptPolicyBuilder
-from core.state import AgentState
+from core.state import AgentState, OpenToolIssue, RecoveryState
 
 logger = logging.getLogger("agent")
 
@@ -37,7 +37,7 @@ _GEMINI_FUNCTION_CALL_THOUGHT_SIGNATURES_KEY = "__gemini_function_call_thought_s
 IsInternalRetry = Callable[[BaseMessage], bool]
 PromptLoader = Callable[[], str]
 RunLogger = Callable[..., None]
-RecoveryMessageBuilder = Callable[[Dict[str, Any] | None], SystemMessage | None]
+RecoveryMessageBuilder = Callable[[RecoveryState | None], SystemMessage | None]
 
 
 class ContextBuilder:
@@ -75,8 +75,8 @@ class ContextBuilder:
         current_task: str,
         tools_available: bool,
         active_tool_names: List[str],
-        open_tool_issue: Dict[str, Any] | None,
-        recovery_state: Dict[str, Any] | None,
+        open_tool_issue: OpenToolIssue | None,
+        recovery_state: RecoveryState | None,
         user_choice_locked: bool = False,
     ) -> List[BaseMessage]:
         sanitized_messages = self.sanitize_messages(messages, state=state)
@@ -517,7 +517,7 @@ class ContextBuilder:
             )
         return "\n".join(overlay_lines).strip()
 
-    def _build_tool_issue_system_message(self, open_tool_issue: Dict[str, Any] | None) -> SystemMessage | None:
+    def _build_tool_issue_system_message(self, open_tool_issue: OpenToolIssue | None) -> SystemMessage | None:
         if not open_tool_issue:
             return None
 

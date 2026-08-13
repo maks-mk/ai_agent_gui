@@ -2125,6 +2125,63 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual(env.get("CI"), "1")
         self.assertEqual(env.get("npm_config_yes"), "true")
 
+    def test_cli_exec_uses_default_timeout(self):
+        process = self._FakeProcess(
+            stdout_chunks=[b"ok\n"],
+            stderr_chunks=[],
+            returncode=0,
+        )
+        captured_timeouts: list[int | float | None] = []
+        original_wait_for = asyncio.wait_for
+
+        async def _fake_create_subprocess(*_args, **_kwargs):
+            return process
+
+        async def _record_wait_for(awaitable, timeout):
+            captured_timeouts.append(timeout)
+            return await original_wait_for(awaitable, timeout)
+
+        with (
+            mock.patch.object(local_shell.asyncio, "create_subprocess_exec", side_effect=_fake_create_subprocess),
+            mock.patch.object(local_shell.asyncio, "create_subprocess_shell", side_effect=_fake_create_subprocess),
+            mock.patch.object(local_shell.asyncio, "wait_for", side_effect=_record_wait_for),
+        ):
+            result = asyncio.run(local_shell.cli_exec.ainvoke({"command": "demo"}))
+
+        self.assertIn("ok", result)
+        self.assertEqual(captured_timeouts, [local_shell.DEFAULT_TIMEOUT])
+
+    def test_cli_exec_uses_requested_timeout_in_timeout_error(self):
+        process = self._FakeProcess(
+            stdout_chunks=[b"partial\n"],
+            stderr_chunks=[],
+            returncode=0,
+        )
+        captured_timeouts: list[int | float | None] = []
+
+        async def _fake_create_subprocess(*_args, **_kwargs):
+            return process
+
+        async def _fake_wait_for(awaitable, timeout):
+            captured_timeouts.append(timeout)
+            if timeout == 37:
+                awaitable.close()
+                raise asyncio.TimeoutError
+            return await awaitable
+
+        with (
+            mock.patch.object(local_shell.asyncio, "create_subprocess_exec", side_effect=_fake_create_subprocess),
+            mock.patch.object(local_shell.asyncio, "create_subprocess_shell", side_effect=_fake_create_subprocess),
+            mock.patch.object(local_shell.asyncio, "wait_for", side_effect=_fake_wait_for),
+        ):
+            result = asyncio.run(local_shell.cli_exec.ainvoke({"command": "demo", "timeout": 37}))
+
+        self.assertIn("ERROR[TIMEOUT]", result)
+        self.assertIn("timed out after 37 seconds", result)
+        self.assertIn("partial", result)
+        self.assertEqual(captured_timeouts, [37, 3])
+        self.assertTrue(process.killed)
+
     def test_cli_exec_detects_interactive_prompt_and_aborts(self):
         process = self._FakeProcess(
             stdout_chunks=[b"npx@10.2.2\n", b"OK TO PROCEED? (Y)\n"],

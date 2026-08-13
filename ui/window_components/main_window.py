@@ -468,9 +468,12 @@ class MainWindow(QMainWindow):
             self._summarize_in_progress = False
             count = int(payload.get("count", 0) or 0)
             if count > 0:
-                self._show_transient_status_message(f"Context compressed automatically ({count} message(s)).")
+                self._show_transient_status_message(
+                    f"Context compressed automatically ({count} message(s)).",
+                    timeout_ms=5000,
+                )
             else:
-                self._show_transient_status_message("Context compressed")
+                self._show_transient_status_message("Context compressed", timeout_ms=5000)
             return
         if level == "error":
             if self.current_turn is not None:

@@ -30,6 +30,44 @@ class RefactorServicesTests(unittest.TestCase):
         defaults.update(overrides)
         return AgentConfig(**defaults)
 
+    def _run_recovery_plan(
+        self,
+        manager,
+        *,
+        issue=None,
+        recovery_state=None,
+        state_overrides=None,
+        messages=None,
+        last_ai=None,
+        last_message=None,
+        step_count=0,
+        max_loops=50,
+        hard_loop_ceiling=8,
+        max_auto_repairs=8,
+    ):
+        active_messages = messages or [HumanMessage(content="Исправь задачу")]
+        state = {
+            "messages": active_messages,
+            "steps": step_count,
+            "token_usage": {},
+        }
+        state.update(state_overrides or {})
+        return manager.plan_recovery(
+            state=state,
+            messages=active_messages,
+            current_task="Исправь задачу",
+            current_turn_id=1,
+            open_tool_issue=issue,
+            recovery_state=recovery_state or manager.empty_state(turn_id=1),
+            last_ai=last_ai,
+            last_message=last_message,
+            step_count=step_count,
+            max_loops=max_loops,
+            hard_loop_ceiling=hard_loop_ceiling,
+            max_auto_repairs=max_auto_repairs,
+            successful_tool_stagnation_limit=3,
+        )
+
     def test_summary_prompt_explicitly_sets_history_summarization_mode(self):
         self.assertIn("Conversation-history summarization mode", constants.SUMMARY_PROMPT_TEMPLATE)
         self.assertIn("update memory for the main model", constants.SUMMARY_PROMPT_TEMPLATE)
@@ -764,11 +802,129 @@ class RefactorServicesTests(unittest.TestCase):
         self.assertIn("loop", stagnation_notice.lower())
         self.assertIn("paused", fallback_notice.lower())
 
+    def test_recovery_manager_finishes_when_self_correction_is_disabled(self):
+        manager = RecoveryManager()
+        issue = build_tool_issue(
+            current_turn_id=1,
+            kind="tool_error",
+            summary="Missing required field: path",
+            tool_names=["edit_file"],
+            tool_args={"old_string": "a", "new_string": "b"},
+            source="tools",
+            error_type="VALIDATION",
+            fingerprint="fp-disabled",
+            progress_fingerprint="fp-disabled",
+            details={"missing_required_fields": ["path"]},
+        )
+
+        result = self._run_recovery_plan(
+            manager,
+            issue=issue,
+            hard_loop_ceiling=0,
+            max_auto_repairs=0,
+        )
+
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertEqual(result["completion_reason"], "self_correction_disabled")
+        self.assertIsNone(result["open_tool_issue"])
+        self.assertEqual(result["recovery_state"]["active_issue"], issue)
+        self.assertEqual(result["recovery_state"]["external_blocker"]["reason"], "self_correction_disabled")
+        self.assertTrue(result["handoff_message"])
+
+    def test_recovery_manager_finishes_when_recovery_stagnates(self):
+        manager = RecoveryManager()
+        issue = build_tool_issue(
+            current_turn_id=1,
+            kind="protocol_error",
+            summary="Malformed tool payload",
+            tool_names=["read_file"],
+            tool_args={"path": "README.md"},
+            source="agent",
+            error_type="PROTOCOL",
+            fingerprint="fp-stagnated",
+            progress_fingerprint="fp-stagnated",
+            details={"protocol_reason": "tool_protocol_error"},
+        )
+        recovery_state = manager.get_recovery_state(
+            {
+                "turn_id": 1,
+                "retry_count": 3,
+                "progress_markers": ["fp-stagnated"],
+            },
+            current_turn_id=1,
+        )
+
+        result = self._run_recovery_plan(
+            manager,
+            issue=issue,
+            recovery_state=recovery_state,
+            hard_loop_ceiling=3,
+        )
+
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertEqual(result["completion_reason"], "recovery_stagnated")
+        self.assertEqual(result["recovery_state"]["retry_count"], 3)
+        self.assertEqual(result["recovery_state"]["last_reason"], "recovery_stagnated")
+        self.assertIsNone(result["open_tool_issue"])
+        self.assertEqual(result["recovery_state"]["external_blocker"]["reason"], "recovery_stagnated")
+        self.assertTrue(result["handoff_message"])
+
+    def test_recovery_manager_finishes_on_loop_budget_without_pending_tool_call(self):
+        manager = RecoveryManager()
+
+        result = self._run_recovery_plan(
+            manager,
+            step_count=5,
+            max_loops=5,
+        )
+
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertEqual(result["completion_reason"], "loop_budget_exhausted")
+        self.assertTrue(result["loop_budget_reached"])
+        self.assertFalse(result["had_pending_tool_calls"])
+        self.assertFalse(result["drop_trailing_tool_call"])
+        self.assertIsNone(result["open_tool_issue"])
+        self.assertEqual(result["recovery_state"]["external_blocker"]["reason"], "loop_budget_exhausted")
+        self.assertEqual(result["handoff_message"], "")
+
+    def test_recovery_manager_finishes_without_open_issue_or_trailing_tool_message(self):
+        manager = RecoveryManager()
+        recovery_state = manager.get_recovery_state(
+            {
+                "turn_id": 1,
+                "active_issue": {"summary": "stale issue"},
+                "active_strategy": {"strategy": "llm_replan"},
+                "retry_count": 2,
+                "retry_fingerprint_history": ["fp-stale"],
+                "external_blocker": {"reason": "stale blocker"},
+                "llm_replan_attempted_for": ["fp-stale"],
+            },
+            current_turn_id=1,
+        )
+
+        result = self._run_recovery_plan(
+            manager,
+            recovery_state=recovery_state,
+        )
+
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertEqual(result["completion_reason"], "no_open_tool_issue")
+        self.assertEqual(result["recovery_state"]["retry_count"], 0)
+        self.assertEqual(result["recovery_state"]["retry_fingerprint_history"], [])
+        self.assertEqual(result["recovery_state"]["last_reason"], "no_open_tool_issue")
+        self.assertIsNone(result["recovery_state"]["active_issue"])
+        self.assertIsNone(result["recovery_state"]["active_strategy"])
+        self.assertIsNone(result["recovery_state"]["external_blocker"])
+        self.assertEqual(result["recovery_state"]["llm_replan_attempted_for"], [])
+        self.assertEqual(result["handoff_message"], "")
+
     def test_recovery_manager_resets_retry_budget_when_issue_fingerprint_changes(self):
         manager = RecoveryManager()
         recovery_state = manager.get_recovery_state(
             {
                 "turn_id": 1,
+                "retry_count": 5,
+                "retry_fingerprint_history": ["fp-old"],
                 "progress_markers": ["fp-old"],
                 "attempts_by_strategy": {"fp-old::llm_replan": 2},
                 "llm_replan_attempted_for": ["fp-old"],
@@ -789,10 +945,7 @@ class RefactorServicesTests(unittest.TestCase):
         }
 
         result = manager.plan_recovery(
-            state={
-                "self_correction_retry_count": 5,
-                "self_correction_fingerprint_history": ["fp-old"],
-            },
+            state={},
             messages=[HumanMessage(content="Исправь файл")],
             current_task="Исправь файл",
             current_turn_id=1,
@@ -809,7 +962,8 @@ class RefactorServicesTests(unittest.TestCase):
 
         self.assertEqual(result["turn_outcome"], "recover_agent")
         self.assertEqual(result["completion_reason"], "recover_refresh_context")
-        self.assertEqual(result["self_correction_retry_count"], 1)
+        self.assertEqual(result["recovery_state"]["retry_count"], 1)
+        self.assertEqual(result["recovery_state"]["retry_fingerprint_history"], ["fp-old", "fp-new"])
         self.assertEqual(result["recovery_state"]["progress_markers"][-1], "fp-new")
         self.assertEqual(result["recovery_state"]["attempts_by_strategy"]["fp-new::refresh_context"], 1)
 
@@ -818,6 +972,8 @@ class RefactorServicesTests(unittest.TestCase):
         recovery_state = manager.get_recovery_state(
             {
                 "turn_id": 1,
+                "retry_count": 3,
+                "retry_fingerprint_history": ["fp-protocol"],
                 "progress_markers": ["fp-protocol"],
                 "attempts_by_strategy": {"fp-protocol::llm_replan": 2},
                 "llm_replan_attempted_for": ["fp-protocol"],
@@ -838,10 +994,7 @@ class RefactorServicesTests(unittest.TestCase):
         }
 
         result = manager.plan_recovery(
-            state={
-                "self_correction_retry_count": 3,
-                "self_correction_fingerprint_history": ["fp-protocol"],
-            },
+            state={},
             messages=[HumanMessage(content="Прочитай README.md")],
             current_task="Прочитай README.md",
             current_turn_id=1,
@@ -858,9 +1011,70 @@ class RefactorServicesTests(unittest.TestCase):
 
         self.assertEqual(result["turn_outcome"], "recover_agent")
         self.assertEqual(result["completion_reason"], "recover_llm_replan")
-        self.assertEqual(result["self_correction_retry_count"], 4)
+        self.assertEqual(result["recovery_state"]["retry_count"], 4)
         self.assertEqual(result["recovery_state"]["active_strategy"]["strategy"], "llm_replan")
         self.assertEqual(result["recovery_state"]["attempts_by_strategy"]["fp-protocol::llm_replan"], 3)
+
+    def test_recovery_manager_migrates_legacy_retry_checkpoint_fields(self):
+        manager = RecoveryManager()
+
+        migrated = manager.get_recovery_state(
+            {"turn_id": 1, "active_strategy": {"strategy": "llm_replan"}},
+            current_turn_id=1,
+            legacy_state={
+                "self_correction_retry_count": 4,
+                "self_correction_retry_turn_id": 1,
+                "self_correction_fingerprint_history": ["fp-legacy"],
+                "self_correction_last_reason": "recover_llm_replan",
+            },
+        )
+
+        self.assertEqual(migrated["retry_count"], 4)
+        self.assertEqual(migrated["retry_fingerprint_history"], ["fp-legacy"])
+        self.assertEqual(migrated["last_reason"], "recover_llm_replan")
+        self.assertEqual(migrated["active_strategy"]["strategy"], "llm_replan")
+
+    def test_recovery_manager_prefers_nested_retry_state_over_legacy_channels(self):
+        manager = RecoveryManager()
+
+        migrated = manager.get_recovery_state(
+            {
+                "turn_id": 1,
+                "retry_count": 2,
+                "retry_fingerprint_history": ["fp-current"],
+                "last_reason": "recover_refresh_context",
+            },
+            current_turn_id=1,
+            legacy_state={
+                "self_correction_retry_count": 7,
+                "self_correction_retry_turn_id": 1,
+                "self_correction_fingerprint_history": ["fp-legacy"],
+                "self_correction_last_reason": "legacy_reason",
+            },
+        )
+
+        self.assertEqual(migrated["retry_count"], 2)
+        self.assertEqual(migrated["retry_fingerprint_history"], ["fp-current"])
+        self.assertEqual(migrated["last_reason"], "recover_refresh_context")
+
+    def test_recovery_manager_does_not_migrate_legacy_retry_state_to_new_turn(self):
+        manager = RecoveryManager()
+
+        migrated = manager.get_recovery_state(
+            {"turn_id": 1, "retry_count": 4},
+            current_turn_id=2,
+            legacy_state={
+                "self_correction_retry_count": 4,
+                "self_correction_retry_turn_id": 1,
+                "self_correction_fingerprint_history": ["fp-old-turn"],
+                "self_correction_last_reason": "recover_llm_replan",
+            },
+        )
+
+        self.assertEqual(migrated["turn_id"], 2)
+        self.assertEqual(migrated["retry_count"], 0)
+        self.assertEqual(migrated["retry_fingerprint_history"], [])
+        self.assertEqual(migrated["last_reason"], "")
 
     def test_sanitize_strips_openai_reasoning_content_blocks_for_gemini(self):
         """OpenAI Responses API reasoning blocks (type=reasoning, summary=[...])

@@ -79,6 +79,9 @@ def build_initial_state(user_input: Any, session_id: str, safety_mode: str = "de
         "open_tool_issue": None,
         "recovery_state": {
             "turn_id": 1,
+            "retry_count": 0,
+            "retry_fingerprint_history": [],
+            "last_reason": "",
             "active_issue": None,
             "active_strategy": None,
             "strategy_queue": [],
@@ -88,10 +91,6 @@ def build_initial_state(user_input: Any, session_id: str, safety_mode: str = "de
             "external_blocker": None,
             "llm_replan_attempted_for": [],
         },
-        "has_protocol_error": False,
-        "self_correction_retry_count": 0,
-        "self_correction_retry_turn_id": 0,
-        "self_correction_fingerprint_history": [],
         "last_tool_error": "",
         "last_tool_result": "",
         "safety_mode": safety_mode,
@@ -488,11 +487,23 @@ class AgentRunWorker(QObject):
             return
         data = payload if isinstance(payload, dict) else {}
         name = str(data.get("name") or "").strip()
+        enabled = bool(data.get("enabled"))
         if not name:
             return
-        self.tool_registry.set_tool_enabled(name, bool(data.get("enabled")))
-        self._run(self._shutdown_async())
-        self._run(self._initialize_async())
+
+        registry = self.tool_registry
+        previous_enabled = name not in registry.disabled_local_tools
+        try:
+            registry.set_tool_enabled(name, enabled)
+            self._run(self._shutdown_async())
+            self._run(self._initialize_async())
+        except Exception as exc:
+            logger.exception("Failed to update built-in tool state:")
+            try:
+                registry.set_tool_enabled(name, previous_enabled)
+            except Exception:
+                logger.exception("Failed to restore built-in tool state after initialization failure:")
+            self.initialization_failed.emit(f"Failed to apply tool change: {exc}")
 
     @Slot(object)
     def set_mcp_server_enabled(self, payload: object) -> None:

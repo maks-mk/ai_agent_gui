@@ -508,7 +508,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertFalse(details.isHidden())
         self.assertEqual(title.arrowType(), Qt.DownArrow)
 
-    def test_local_tool_switch_uses_local_runtime_api(self):
+    def test_local_tool_switch_stays_pending_until_runtime_is_initialized(self):
         self.window._handle_initialized(self._snapshot_payload())
         switch = next(
             item
@@ -520,6 +520,82 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(self.controller.set_tool_enabled_calls, [("edit_file", False)])
         self.assertEqual(self.controller.set_mcp_server_enabled_calls, [])
+        self.assertTrue(switch.isChecked())
+        self.assertFalse(switch.isEnabled())
+        labels = self.window.tools_panel.findChildren(QLabel, "MCPServerLoadingLabel")
+        self.assertEqual([label.text() for label in labels], ["Applying…"])
+        self.assertIn("Tools: 3", self.window.runtime_meta_label.text())
+
+        payload = self._snapshot_payload()
+        tool = next(item for item in payload["tools"] if item["name"] == "edit_file")
+        tool["enabled"] = False
+        payload["snapshot"]["tools"] = payload["tools"]
+        payload["snapshot"]["tools_count"] = 2
+        self.window._handle_initialized(payload)
+        self._process_events()
+
+        updated_switch = next(
+            item
+            for item in reversed(self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch"))
+            if item.accessibleName() == "edit_file enabled"
+        )
+        self.assertFalse(updated_switch.isChecked())
+        self.assertTrue(updated_switch.isEnabled())
+        self.assertIn("Tools: 2", self.window.runtime_meta_label.text())
+
+    def test_disabled_local_tool_switch_stays_pending_while_enabling(self):
+        payload = self._snapshot_payload()
+        tool = next(item for item in payload["tools"] if item["name"] == "edit_file")
+        tool["enabled"] = False
+        payload["snapshot"]["tools"] = payload["tools"]
+        payload["snapshot"]["tools_count"] = 2
+        self.window._handle_initialized(payload)
+        switch = next(
+            item
+            for item in self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+            if item.accessibleName() == "edit_file enabled"
+        )
+
+        switch.setChecked(True)
+
+        self.assertEqual(self.controller.set_tool_enabled_calls, [("edit_file", True)])
+        self.assertFalse(switch.isChecked())
+        self.assertFalse(switch.isEnabled())
+        labels = self.window.tools_panel.findChildren(QLabel, "MCPServerLoadingLabel")
+        self.assertEqual([label.text() for label in labels], ["Applying…"])
+        self.assertIn("Tools: 2", self.window.runtime_meta_label.text())
+
+        confirmed = self._snapshot_payload()
+        self.window._handle_initialized(confirmed)
+        self._process_events()
+
+        updated_switch = next(
+            item
+            for item in reversed(self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch"))
+            if item.accessibleName() == "edit_file enabled"
+        )
+        self.assertTrue(updated_switch.isChecked())
+        self.assertTrue(updated_switch.isEnabled())
+        self.assertIn("Tools: 3", self.window.runtime_meta_label.text())
+
+    def test_local_tool_switch_error_restores_previous_state(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        switch = next(
+            item
+            for item in self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+            if item.accessibleName() == "edit_file enabled"
+        )
+        switch.setChecked(False)
+
+        with mock.patch.object(QMessageBox, "critical"):
+            self.window._handle_init_failed("Tool runtime did not start")
+
+        self.assertTrue(switch.isChecked())
+        self.assertTrue(switch.isEnabled())
+        label = self.window.tools_panel.findChild(QLabel, "MCPServerLoadingLabel")
+        self.assertIsNotNone(label)
+        self.assertEqual(label.text(), "Failed to apply")
+        self.assertIn("Tool runtime did not start", label.toolTip())
 
     def test_mcp_server_switch_stays_pending_until_runtime_is_initialized(self):
         self.window._handle_initialized(self._snapshot_payload())
@@ -761,6 +837,33 @@ class GuiUxTests(unittest.TestCase):
         self.assertIn("Live", markdown_widget.toPlainText())
         self.assertNotIn("**", markdown_widget.toPlainText())
         self.assertNotIn(r"\**Live\**", markdown_widget.toMarkdown())
+
+    def test_assistant_inline_code_keeps_body_font_size_when_closing_backtick_arrives(self):
+        widget = AssistantMessageWidget()
+        widget.setStyleSheet(build_stylesheet())
+        self.addCleanup(widget.deleteLater)
+
+        widget.set_content("- `tests/test_tooling_refactor.py`: `42 passed")
+        self._process_events()
+        markdown_widget = widget.parts_widgets[0]
+        body_font_size = markdown_widget.font().pointSizeF()
+
+        widget.set_content("- `tests/test_tooling_refactor.py`: `42 passed`")
+        self._process_events()
+
+        code_sizes = []
+        block = markdown_widget.document().begin()
+        while block.isValid():
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                if fragment.isValid() and fragment.charFormat().font().fixedPitch():
+                    code_sizes.append(fragment.charFormat().font().pointSizeF())
+                iterator += 1
+            block = block.next()
+
+        self.assertTrue(code_sizes)
+        self.assertTrue(all(size == body_font_size for size in code_sizes))
 
     def test_assistant_message_widget_renders_overescaped_markdown(self):
         widget = AssistantMessageWidget()

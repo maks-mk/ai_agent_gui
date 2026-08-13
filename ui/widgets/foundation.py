@@ -470,7 +470,33 @@ class AutoTextBrowser(QTextBrowser):
             return
         self._last_markdown = markdown
         super().setMarkdown(markdown)
+        self._normalize_inline_code_font_size()
         self._queue_height_sync()
+
+    def _normalize_inline_code_font_size(self) -> None:
+        self.ensurePolished()
+        point_size = self.font().pointSizeF()
+        if point_size <= 0:
+            return
+        document = self.document()
+        inline_code_ranges: list[tuple[int, int]] = []
+        block = document.begin()
+        while block.isValid():
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                if fragment.isValid() and fragment.charFormat().font().fixedPitch():
+                    inline_code_ranges.append((fragment.position(), fragment.length()))
+                iterator += 1
+            block = block.next()
+
+        size_format = QTextCharFormat()
+        size_format.setFontPointSize(point_size)
+        for position, length in inline_code_ranges:
+            cursor = QTextCursor(document)
+            cursor.setPosition(position)
+            cursor.setPosition(position + length, QTextCursor.KeepAnchor)
+            cursor.mergeCharFormat(size_format)
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)

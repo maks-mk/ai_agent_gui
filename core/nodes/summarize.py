@@ -5,7 +5,7 @@ from typing import List
 
 from langchain_core.messages import RemoveMessage
 
-from core.state import AgentState
+from core.state import AgentState, OpenToolIssue, RecoveryState
 from core.summarize_policy import (
     choose_summary_boundary,
     estimate_context_tokens,
@@ -148,8 +148,8 @@ class SummarizeMixin:
         self,
         *,
         current_task: str,
-        open_tool_issue: dict | None,
-        recovery_state: dict | None,
+        open_tool_issue: OpenToolIssue | None,
+        recovery_state: RecoveryState | None,
     ) -> str:
         parts: List[str] = []
         if str(current_task or "").strip():

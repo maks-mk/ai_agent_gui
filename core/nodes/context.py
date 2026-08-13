@@ -4,7 +4,7 @@ from typing import Any, Dict, List, Optional
 
 from langchain_core.messages import BaseMessage
 
-from core.state import AgentState
+from core.state import AgentState, OpenToolIssue, RecoveryState
 from core.node_errors import ProviderContextError
 
 
@@ -18,8 +18,8 @@ class ContextMixin:
         current_task: str,
         tools_available: bool,
         active_tool_names: List[str],
-        open_tool_issue: Dict[str, Any] | None,
-        recovery_state: Dict[str, Any] | None = None,
+        open_tool_issue: OpenToolIssue | None,
+        recovery_state: RecoveryState | None = None,
         state: AgentState | None = None,
         user_choice_locked: bool = False,
     ) -> List[BaseMessage]:

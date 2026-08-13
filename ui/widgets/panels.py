@@ -92,6 +92,7 @@ class ToolsPanelWidget(QWidget):
         self._inner.setSpacing(6)
         self._inner.addStretch(1)
         self._pending_servers: dict[str, bool] = {}
+        self._pending_tools: dict[str, bool] = {}
 
         self.scroll.setWidget(self._container)
         root.addWidget(self.scroll)
@@ -163,14 +164,24 @@ class ToolsPanelWidget(QWidget):
                             self._request_server_change(switch, server_name, checked)
                         )
                     else:
-                        toggle.setToolTip(f"Enable or disable tool {row['name']}")
+                        name = str(row["name"])
+                        pending = self._pending_tools.get(name)
+                        toggle.setToolTip(f"Enable or disable tool {name}")
+                        if pending is not None:
+                            with QSignalBlocker(toggle):
+                                toggle.setChecked(pending)
+                            toggle.setEnabled(False)
                         toggle.toggled.connect(
-                            lambda checked, name=str(row["name"]):
-                            self.availability_changed.emit("tool", name, checked)
+                            lambda checked, switch=toggle, tool_name=name:
+                            self._request_tool_change(switch, tool_name, checked)
                         )
                     top_row.addWidget(toggle, 0, Qt.AlignRight | Qt.AlignVCenter)
 
-                if row.get("kind") == "server" and str(row["name"]) in self._pending_servers:
+                row_name = str(row["name"])
+                if (
+                    row.get("kind") == "server" and row_name in self._pending_servers
+                    or row.get("kind") == "tool" and row_name in self._pending_tools
+                ):
                     pending_label = QLabel("Applying…")
                     pending_label.setObjectName("MCPServerLoadingLabel")
                     card_layout.addWidget(pending_label)
@@ -232,10 +243,20 @@ class ToolsPanelWidget(QWidget):
         self.set_tools_pending_labels()
         self.availability_changed.emit("server", name, enabled)
 
+    def _request_tool_change(self, toggle: QCheckBox, name: str, enabled: bool) -> None:
+        previous_enabled = not enabled
+        self._pending_tools[name] = previous_enabled
+        with QSignalBlocker(toggle):
+            toggle.setChecked(previous_enabled)
+        toggle.setEnabled(False)
+        self.set_tools_pending_labels()
+        self.availability_changed.emit("tool", name, enabled)
+
     def set_tools_pending_labels(self) -> None:
+        pending_names = set(self._pending_servers) | set(self._pending_tools)
         for card in self.findChildren(QFrame, "ToolCard"):
             title = card.findChild(QToolButton, "ToolCardTitle")
-            if title is None or title.text() not in self._pending_servers:
+            if title is None or title.text() not in pending_names:
                 continue
             label = card.findChild(QLabel, "MCPServerLoadingLabel")
             if label is None:
@@ -243,20 +264,30 @@ class ToolsPanelWidget(QWidget):
                 label.setObjectName("MCPServerLoadingLabel")
                 card.layout().insertWidget(1, label)
             label.setText("Applying…")
-            label.setToolTip("Waiting for the MCP runtime to finish reinitializing.")
+            label.setToolTip("Waiting for the tool runtime to finish reinitializing.")
 
     def clear_server_pending(self) -> None:
         self._pending_servers.clear()
+        self._pending_tools.clear()
 
     def fail_server_pending(self, message: str) -> None:
-        for name, previous_enabled in self._pending_servers.items():
+        pending_items = [
+            ("server", name, previous_enabled)
+            for name, previous_enabled in self._pending_servers.items()
+        ]
+        pending_items.extend(
+            ("tool", name, previous_enabled)
+            for name, previous_enabled in self._pending_tools.items()
+        )
+        for kind, name, previous_enabled in pending_items:
             for toggle in self.findChildren(QCheckBox, "ToolAvailabilitySwitch"):
                 if toggle.accessibleName() != f"{name} enabled":
                     continue
                 with QSignalBlocker(toggle):
                     toggle.setChecked(previous_enabled)
                 toggle.setEnabled(True)
-                toggle.setToolTip(f"MCP server change failed: {message}")
+                label = "MCP server" if kind == "server" else "Tool"
+                toggle.setToolTip(f"{label} change failed: {message}")
             for label in self.findChildren(QLabel, "MCPServerLoadingLabel"):
                 parent = label.parentWidget()
                 title = parent.findChild(QToolButton, "ToolCardTitle") if parent is not None else None
@@ -264,6 +295,7 @@ class ToolsPanelWidget(QWidget):
                     label.setText("Failed to apply")
                     label.setToolTip(message)
         self._pending_servers.clear()
+        self._pending_tools.clear()
 
 
 class InspectorPanelWidget(QWidget):

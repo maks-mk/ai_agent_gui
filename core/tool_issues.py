@@ -4,9 +4,10 @@ from typing import Any, Callable, Dict, List
 
 from core.fast_copy import copy_jsonish
 from core.message_utils import compact_text
+from core.state import OpenToolIssue
 
 
-ToolIssue = Dict[str, Any]
+ToolIssue = OpenToolIssue
 WorkspaceBoundaryChecker = Callable[[str, Dict[str, Any]], bool]
 
 

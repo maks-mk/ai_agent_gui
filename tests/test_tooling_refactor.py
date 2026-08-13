@@ -101,6 +101,29 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(restored_read_file["enabled"])
         self.assertNotIn("read_file", {tool.name for tool in restored_registry.active_tools()})
 
+    async def test_tool_snapshot_matches_active_tools_for_all_builtin_overrides(self):
+        tmp = self._workspace_tempdir()
+        mcp_config_path = tmp / "mcp.json"
+        mcp_config_path.write_text("{}", encoding="utf-8")
+        registry = ToolRegistry(self._make_config(MCP_CONFIG_PATH=mcp_config_path))
+        await registry.load_all()
+
+        for tool in registry.builtin_tools:
+            registry.set_tool_enabled(tool.name, False)
+            rows = build_tools_snapshot(registry)
+            row = next(item for item in rows if item.get("name") == tool.name)
+            self.assertFalse(row["enabled"], tool.name)
+            self.assertNotIn(tool.name, {item.name for item in registry.active_tools()}, tool.name)
+
+            registry.set_tool_enabled(tool.name, True)
+            rows = build_tools_snapshot(registry)
+            row = next(item for item in rows if item.get("name") == tool.name)
+            self.assertEqual(
+                row["enabled"],
+                tool.name in {item.name for item in registry.active_tools()},
+                tool.name,
+            )
+
     async def test_tool_registry_does_not_keep_selector_catalog_state(self):
         registry = ToolRegistry(self._make_config())
         await registry.load_all()
@@ -120,7 +143,12 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         cli_tool = tools_by_name["cli_exec"]
         self.assertLess(len(cli_tool.description), 260)
         self.assertNotIn("\n", cli_tool.description)
-        self.assertNotIn("description", cli_tool.args_schema.model_json_schema())
+        schema = cli_tool.args_schema.model_json_schema()
+        self.assertNotIn("description", schema)
+        timeout_schema = schema["properties"]["timeout"]
+        self.assertEqual(timeout_schema["default"], 120)
+        self.assertEqual(timeout_schema["exclusiveMinimum"], 0)
+        self.assertNotIn("timeout", schema["required"])
 
     def test_tool_registry_initializes_model_capabilities_slot(self):
         registry = ToolRegistry(self._make_config())

@@ -176,10 +176,11 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             "token_usage": {},
             "current_task": task,
             "turn_outcome": "",
-            "self_correction_retry_count": 0,
-            "self_correction_retry_turn_id": 0,
             "recovery_state": {
                 "turn_id": 1,
+                "retry_count": 0,
+                "retry_fingerprint_history": [],
+                "last_reason": "",
                 "active_issue": None,
                 "active_strategy": None,
                 "last_successful_evidence": "",
@@ -333,7 +334,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         message = next(item for item in result["messages"] if isinstance(item, AIMessage))
         self.assertEqual(result["turn_outcome"], TURN_OUTCOME_RECOVER_AGENT)
-        self.assertTrue(result["has_protocol_error"])
+        self.assertEqual(result["open_tool_issue"]["kind"], "protocol_error")
         self.assertEqual(result["open_tool_issue"]["details"]["protocol_reason"], "textual_tool_call_disabled")
         self.assertEqual(result["open_tool_issue"]["tool_names"], ["read_file"])
         self.assertEqual(result["open_tool_issue"]["tool_args"], {"path": "index.html"})
@@ -1480,6 +1481,12 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(set(state).issubset(declared_keys))
         self.assertNotIn("summary", AgentState.__required_keys__)
+        self.assertNotIn("self_correction_retry_count", state)
+        self.assertNotIn("self_correction_retry_turn_id", state)
+        self.assertNotIn("self_correction_fingerprint_history", state)
+        self.assertEqual(state["recovery_state"]["retry_count"], 0)
+        self.assertEqual(state["recovery_state"]["retry_fingerprint_history"], [])
+        self.assertEqual(state["recovery_state"]["last_reason"], "")
 
     def test_build_transcript_payload_parses_json_string_tool_args(self):
         payload = build_transcript_payload(
@@ -2611,8 +2618,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         state = self._initial_state("Проверь файл")
-        state["self_correction_retry_count"] = 2
-        state["self_correction_retry_turn_id"] = 1
+        state["recovery_state"]["retry_count"] = 2
+        state["recovery_state"]["retry_fingerprint_history"] = ["fp-2"]
+        state["recovery_state"]["last_reason"] = "recover_llm_replan"
         state["recovery_state"]["active_issue"] = {"summary": "old issue"}
         state["recovery_state"]["active_strategy"] = {"strategy": "llm_replan"}
         state["recovery_state"]["llm_replan_attempted_for"] = ["fp-2"]
@@ -2626,9 +2634,12 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         result = await nodes.tools_node(state)
 
-        self.assertEqual(result["self_correction_retry_count"], 0)
-        self.assertEqual(result["self_correction_retry_turn_id"], 1)
-        self.assertEqual(result["self_correction_fingerprint_history"], [])
+        self.assertNotIn("self_correction_retry_count", result)
+        self.assertNotIn("self_correction_retry_turn_id", result)
+        self.assertNotIn("self_correction_fingerprint_history", result)
+        self.assertEqual(result["recovery_state"]["retry_count"], 0)
+        self.assertEqual(result["recovery_state"]["retry_fingerprint_history"], [])
+        self.assertEqual(result["recovery_state"]["last_reason"], "")
         self.assertIsNone(result["open_tool_issue"])
         self.assertIsNone(result["recovery_state"]["active_strategy"])
         self.assertEqual(result["recovery_state"]["llm_replan_attempted_for"], [])
@@ -2646,8 +2657,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         )
 
         state = self._initial_state("Прочитай README.md")
-        state["self_correction_retry_count"] = 2
-        state["self_correction_fingerprint_history"] = ["fp-read"]
         state["open_tool_issue"] = {
             "turn_id": 1,
             "kind": "protocol_error",
@@ -2662,6 +2671,9 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         }
         state["recovery_state"] = {
             "turn_id": 1,
+            "retry_count": 2,
+            "retry_fingerprint_history": ["fp-read"],
+            "last_reason": "recover_llm_replan",
             "active_issue": dict(state["open_tool_issue"]),
             "active_strategy": {"strategy": "llm_replan", "progress_fingerprint": "fp-read"},
             "strategy_queue": [],
@@ -2675,7 +2687,8 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         result = await nodes.recovery_node(state)
 
         self.assertEqual(result["turn_outcome"], "recover_agent")
-        self.assertEqual(result["self_correction_retry_count"], 3)
+        self.assertNotIn("self_correction_retry_count", result)
+        self.assertEqual(result["recovery_state"]["retry_count"], 3)
         self.assertIsNotNone(result["open_tool_issue"])
         self.assertEqual(result["recovery_state"]["active_strategy"]["strategy"], "llm_replan")
 
@@ -3552,7 +3565,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         result = await nodes.agent_node(self._initial_state("исправь файл demo.txt"))
 
         self.assertEqual(result["turn_outcome"], "finish_turn")
-        self.assertFalse(result["has_protocol_error"])
         self.assertIsNone(result["open_tool_issue"])
         self.assertEqual(str(result["messages"][-1].content), "Сейчас исправлю файл и внесу правки.")
         self.assertEqual(len(agent_llm.invocations), 1)
@@ -3648,7 +3660,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         result = await nodes.agent_node(self._initial_state("прочитай README.md"))
 
         self.assertEqual(result["turn_outcome"], "recover_agent")
-        self.assertTrue(result["has_protocol_error"])
         self.assertEqual(result["open_tool_issue"]["kind"], "protocol_error")
         self.assertEqual(result["open_tool_issue"]["details"]["protocol_reason"], "tool_protocol_error")
         response = result["messages"][-1]
@@ -3694,7 +3705,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         result = await nodes.agent_node(self._initial_state("прочитай README.md"))
 
         self.assertEqual(result["turn_outcome"], "finish_turn")
-        self.assertFalse(result["has_protocol_error"])
         self.assertIsNone(result["open_tool_issue"])
         response = result["messages"][-1]
         self.assertIsInstance(response, AIMessage)
@@ -3724,7 +3734,6 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         result = await nodes.agent_node(self._initial_state("объясни синтаксис tool_call"))
 
         self.assertEqual(result["turn_outcome"], "finish_turn")
-        self.assertFalse(result["has_protocol_error"])
         self.assertIsNone(result["open_tool_issue"])
         response = result["messages"][-1]
         self.assertIsInstance(response, AIMessage)
@@ -3757,7 +3766,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         result = await nodes.agent_node(state)
 
         self.assertEqual(result["turn_outcome"], "recover_agent")
-        self.assertTrue(result["has_protocol_error"])
+        self.assertEqual(result["open_tool_issue"]["kind"], "protocol_error")
         self.assertEqual(result["open_tool_issue"]["details"]["protocol_reason"], "history_tool_mismatch")
         self.assertEqual(agent_llm.invocations, [])
 
@@ -3792,7 +3801,8 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         result = await nodes.agent_node(self._initial_state("Проведи тест user input"))
 
         self.assertEqual(result["turn_outcome"], "run_tools")
-        self.assertTrue(result["has_protocol_error"])
+        self.assertIsNone(result["open_tool_issue"])
+        self.assertIn("INTERNAL TOOL PROTOCOL ERROR", result["last_tool_error"])
         response = result["messages"][-1]
         self.assertIsInstance(response, AIMessage)
         self.assertEqual(len(response.tool_calls), 1)
@@ -3845,7 +3855,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         result = await nodes.agent_node(state)
 
         self.assertEqual(result["turn_outcome"], "finish_turn")
-        self.assertFalse(result["has_protocol_error"])
+        self.assertIsNone(result["open_tool_issue"])
         response = result["messages"][-1]
         self.assertIsInstance(response, AIMessage)
         self.assertFalse(response.tool_calls)

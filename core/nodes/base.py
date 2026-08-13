@@ -121,6 +121,7 @@ class BaseMixin:
         return self.recovery_manager.get_recovery_state(
             state.get("recovery_state"),
             current_turn_id=current_turn_id,
+            legacy_state=state,
         )
 
     def _collect_internal_retry_removals(self, messages: List[BaseMessage]) -> List[RemoveMessage]:

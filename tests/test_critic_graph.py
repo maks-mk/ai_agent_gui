@@ -124,10 +124,11 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
             "token_usage": {},
             "current_task": task,
             "turn_outcome": "",
-            "self_correction_retry_count": 0,
-            "self_correction_retry_turn_id": 0,
             "recovery_state": {
                 "turn_id": 1,
+                "retry_count": 0,
+                "retry_fingerprint_history": [],
+                "last_reason": "",
                 "active_issue": None,
                 "active_strategy": None,
                 "last_successful_evidence": "",
@@ -137,7 +138,6 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
             "turn_id": 1,
             "open_tool_issue": None,
             "pending_approval": None,
-            "has_protocol_error": False,
             "last_tool_error": "",
             "last_tool_result": "",
         }
@@ -275,6 +275,32 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertIn("готово", str(result["messages"][-1].content).lower())
 
+    async def test_protocol_issue_routes_to_recovery_without_boolean_flag(self):
+        read_tool = FakeTool("read_file", "unused")
+        app, agent_llm = self._build_app(
+            agent_responses=[
+                AIMessage(
+                    content="",
+                    tool_calls=[{"name": "read_file", "args": {"path": "README.md"}, "id": ""}],
+                ),
+                AIMessage(content="Recovered without executing the malformed call."),
+            ],
+            tools=[read_tool],
+            tool_metadata={"read_file": ToolMetadata(name="read_file", read_only=True)},
+        )
+
+        result = await app.ainvoke(
+            self._initial_state("Прочитай README.md"),
+            config={"configurable": {"thread_id": "protocol-issue-routing"}, "recursion_limit": 24},
+        )
+
+        self.assertEqual(read_tool.calls, [])
+        self.assertEqual(len(agent_llm.invocations), 2)
+        self.assertEqual(result["turn_outcome"], "finish_turn")
+        self.assertIsNone(result["open_tool_issue"])
+        self.assertNotIn("has_protocol_error", result)
+        self.assertIn("recovered", str(result["messages"][-1].content).lower())
+
     async def test_read_only_inspection_code_dump_finishes_without_forced_edit(self):
         read_tool = FakeTool(
             "read_file",
@@ -365,7 +391,6 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(agent_llm.invocations), 2)
         self.assertEqual(result["turn_outcome"], "finish_turn")
         self.assertIsNone(result["open_tool_issue"])
-        self.assertFalse(result["has_protocol_error"])
         self.assertIn("итог", str(result["messages"][-1].content).lower())
 
     async def test_retryable_cli_exec_issue_gets_auto_retry_then_finishes_after_success(self):

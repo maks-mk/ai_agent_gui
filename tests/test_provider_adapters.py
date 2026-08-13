@@ -10,6 +10,7 @@ these tests will fail early instead of silently breaking streaming or
 thought-signature round-tripping at runtime.
 """
 
+import asyncio
 import unittest
 import warnings
 from unittest import mock
@@ -520,6 +521,28 @@ class LlmApiModeTests(unittest.TestCase):
     def test_case_insensitive(self):
         cfg = self._make_config("RESPONSES")
         self.assertEqual(cfg.llm_api_mode, "responses")
+
+    def test_separate_models_do_not_share_http_transports(self):
+        cfg = self._make_config("chat")
+        first = create_openai_chat_model(cfg)
+        second = create_openai_chat_model(cfg)
+        first_sync_transport = first.root_client._client
+        first_async_transport = first.root_async_client._client
+        second_sync_transport = second.root_client._client
+        second_async_transport = second.root_async_client._client
+
+        self.assertIsNot(first_sync_transport, second_sync_transport)
+        self.assertIsNot(first_async_transport, second_async_transport)
+
+        first.root_client.close()
+        asyncio.run(first.root_async_client.close())
+
+        self.assertTrue(first_sync_transport.is_closed)
+        self.assertTrue(first_async_transport.is_closed)
+        self.assertFalse(second_sync_transport.is_closed)
+        self.assertFalse(second_async_transport.is_closed)
+        second.root_client.close()
+        asyncio.run(second.root_async_client.close())
 
     def test_responses_mode_sets_use_responses_api(self):
         cfg = self._make_config("responses")

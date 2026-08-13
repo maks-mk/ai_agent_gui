@@ -5,8 +5,9 @@ import os
 import re
 import shutil
 import subprocess
-from typing import Any, Callable, Iterator, Optional
+from typing import Annotated, Any, Callable, Iterator, Optional
 from langchain_core.tools import tool
+from pydantic import Field
 
 from core.utils import truncate_output
 from core.errors import format_error, ErrorType
@@ -337,7 +338,13 @@ def _emit_cli_output(data: str, stream: str) -> None:
         return
 
 @tool("cli_exec")
-async def cli_exec(command: str) -> str:
+async def cli_exec(
+    command: str,
+    timeout: Annotated[
+        int,
+        Field(gt=0, description="Maximum execution time in seconds."),
+    ] = DEFAULT_TIMEOUT,
+) -> str:
     """Run one non-interactive shell command in the workspace. Stateless: include cd/chains in the same command. Supports pipes, redirects, &&. Use run_background_process for servers/watchers; avoid prompts and interactive TUI commands."""
     if _SAFETY_POLICY and not _SAFETY_POLICY.allow_shell:
         return format_error(ErrorType.ACCESS_DENIED, "Shell execution is disabled by SafetyPolicy.")
@@ -431,7 +438,7 @@ async def cli_exec(command: str) -> str:
 
         timed_out = False
         try:
-            await asyncio.wait_for(process.wait(), timeout=DEFAULT_TIMEOUT)
+            await asyncio.wait_for(process.wait(), timeout=timeout)
         except asyncio.TimeoutError:
             timed_out = True
             await _terminate_process_tree(process)
@@ -467,7 +474,7 @@ async def cli_exec(command: str) -> str:
             details = f"\nPartial output:\n{output}" if output else ""
             return format_error(
                 ErrorType.TIMEOUT,
-                f"Command timed out after {DEFAULT_TIMEOUT} seconds. Did you run an interactive command (like nano/vim) or a blocking server?{details}"
+                f"Command timed out after {timeout} seconds. Did you run an interactive command (like nano/vim) or a blocking server?{details}"
             )
         
         if process.returncode != 0:
