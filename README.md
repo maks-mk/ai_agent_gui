@@ -10,7 +10,9 @@
 Запуск из исходников: `python main.py`.  
 Сборка в portable `.exe` для Windows: `build.bat`.
 
-![Portable Autonomous AI Agent](./img/agent.gif)
+<p align="center">
+  <img src="./img/agent.gif" alt="Portable Autonomous AI Agent" width="800">
+</p>
 
 ---
 
