@@ -10,7 +10,7 @@ It works with files, shell commands, process management, MCP servers, and web se
 Run from source: `python main.py`.  
 Build a portable Windows `.exe`: `build.bat`.
 
-![Portable Autonomous AI Agent](./img/01.jpg)
+![Portable Autonomous AI Agent](./img/agent.gif)
 
 ---
 
