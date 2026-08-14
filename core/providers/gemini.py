@@ -53,6 +53,17 @@ _GOOGLE_RETRY_CONTROL_KWARGS = frozenset(
     }
 )
 _GEMINI_FUNCTION_CALL_THOUGHT_SIGNATURES_KEY = "__gemini_function_call_thought_signatures__"
+_FIXED_SAMPLING_GEMINI_MODELS = frozenset(
+    {"gemini-3.5-flash-lite", "gemini-3.6-flash"}
+)
+
+
+def _gemini_uses_fixed_sampling(model_name: str | None) -> bool:
+    """Match Gemini models for which custom sampling controls are ignored."""
+    normalized = normalized_gemini_model_name(model_name).rsplit("/", 1)[-1]
+    if len(normalized) > 4 and normalized[-4] == "-" and normalized[-3:].isdigit():
+        normalized = normalized[:-4]
+    return normalized in _FIXED_SAMPLING_GEMINI_MODELS
 
 
 # ---------------------------------------------------------------------------
@@ -374,12 +385,13 @@ def create_gemini_chat_model(config: AgentConfig, *, api_key_override: str | Non
         api_key = str(api_key_override or "")
     gemini_kwargs: dict[str, Any] = {
         "model": config.gemini_model,
-        "temperature": config.temperature,
         "google_api_key": api_key,
         # Keep retry policy in LLMMixin; SDK retries would multiply requests
         # across application retries, key rotation, and stream repair.
         "max_retries": 0,
     }
+    if not _gemini_uses_fixed_sampling(config.gemini_model):
+        gemini_kwargs["temperature"] = config.temperature
     gemini_thinking_enabled = False
     gemini_reasoning_mode = "disabled"
     if bool(getattr(config, "enable_model_reasoning", True)):

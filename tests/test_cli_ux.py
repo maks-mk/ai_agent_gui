@@ -3841,6 +3841,10 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         self.assertEqual(dialog.objectName(), "ModelSettingsDialog")
+        self.assertEqual(dialog.width(), 884)
+        self.assertEqual(dialog.minimumWidth(), 800)
+        self.assertEqual(dialog.body_splitter.widget(0).minimumWidth(), 285)
+        self.assertEqual(dialog.body_splitter.widget(1).minimumWidth(), 450)
         self.assertIsNotNone(dialog.save_button)
         self.assertFalse(dialog.save_button.isEnabled())
         self.assertIn("Add a profile", dialog.form_hint.text())

@@ -470,9 +470,11 @@ class StreamProcessor:
         self.tracker.update_from_message(message)
 
         if node:
+            if node != "agent":
+                self._agent_is_thinking = False
             self.active_node = "agent" if node == "agent" else node
             if node == "agent" and isinstance(message, (AIMessage, AIMessageChunk)):
-                self._agent_is_thinking = self._has_thinking_content(message)
+                self._agent_is_thinking = self._agent_is_thinking or self._has_thinking_content(message)
                 if self._agent_is_thinking and self._first_reasoning_at is None:
                     self._first_reasoning_at = now()
                 reasoning_logger.debug(
@@ -512,7 +514,7 @@ class StreamProcessor:
             return
 
         if self.active_node == "agent":
-            self._agent_is_thinking = self._has_thinking_content(message)
+            self._agent_is_thinking = self._agent_is_thinking or self._has_thinking_content(message)
             if self._agent_is_thinking and self._first_reasoning_at is None:
                 self._first_reasoning_at = now()
             signal = _describe_thinking_signal(message)
@@ -1538,6 +1540,7 @@ class StreamProcessor:
         self.tool_start_times[tool_id] = time.perf_counter()
         self.printed_tool_ids.add(tool_id)
         self.active_node = "tools"
+        self._agent_is_thinking = False
         self._emit_status(force=True)
         self._emit("tool_started", self._build_tool_event_payload(tool_id, tool_name, tool_args, phase="preparing"))
 

@@ -190,6 +190,15 @@ class ChatModelAcceptsKwargTests(unittest.TestCase):
         self.assertTrue(chat_model_accepts_kwarg(FakeModel, "temperature"))
         self.assertTrue(chat_model_accepts_kwarg(FakeModel, "model"))
 
+    def test_pydantic_model_accepts_field_alias(self):
+        class FakeField:
+            alias = "thinking_level"
+
+        class FakeModel:
+            model_fields = {"reasoning_effort": FakeField()}
+
+        self.assertTrue(chat_model_accepts_kwarg(FakeModel, "thinking_level"))
+
     def test_pydantic_model_without_field(self):
         class FakeModel:
             model_fields = {"temperature": ...}

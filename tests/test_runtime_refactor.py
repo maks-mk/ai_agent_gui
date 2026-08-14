@@ -635,7 +635,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("convert_system_message_to_human", captured)
         self.assertNotIn("default_headers", captured)
 
-    def test_create_llm_for_gemini_does_not_send_sampling_controls(self):
+    def test_create_llm_for_gemini_does_not_send_top_p_or_top_k(self):
         captured = {}
 
         class FakeChatGoogleGenerativeAI:
@@ -648,13 +648,34 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     PROVIDER="gemini",
                     GEMINI_API_KEY="gm-test",
                     GEMINI_MODEL="gemini-2.5-flash",
+                    TEMPERATURE=0.4,
                     TOP_P=0.9,
                     TOP_K=32,
                 )
             )
 
+        self.assertEqual(captured["temperature"], 0.4)
         self.assertNotIn("top_p", captured)
         self.assertNotIn("top_k", captured)
+
+    def test_create_llm_for_fixed_sampling_gemini_does_not_send_temperature(self):
+        captured = {}
+
+        class FakeChatGoogleGenerativeAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_google_genai": mock.Mock(ChatGoogleGenerativeAI=FakeChatGoogleGenerativeAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="gemini",
+                    GEMINI_API_KEY="gm-test",
+                    GEMINI_MODEL="models/gemini-3.6-flash-001",
+                    TEMPERATURE=0.4,
+                )
+            )
+
+        self.assertNotIn("temperature", captured)
 
     def test_create_llm_for_gemini_enables_thinking_budget_by_default_for_thinking_models(self):
         captured = {}
@@ -695,6 +716,36 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             )
 
         self.assertEqual(captured["thinking_level"], "low")
+        self.assertIs(captured["include_thoughts"], True)
+        self.assertNotIn("thinking_budget", captured)
+
+    def test_create_llm_for_gemini3_uses_thinking_level_alias_from_installed_api_shape(self):
+        captured = {}
+
+        class FakeField:
+            def __init__(self, alias=None):
+                self.alias = alias
+
+        class FakeChatGoogleGenerativeAI:
+            model_fields = {
+                "reasoning_effort": FakeField(alias="thinking_level"),
+                "include_thoughts": FakeField(),
+            }
+
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_google_genai": mock.Mock(ChatGoogleGenerativeAI=FakeChatGoogleGenerativeAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="gemini",
+                    GEMINI_API_KEY="gm-test",
+                    GEMINI_MODEL="gemini-3.6-flash",
+                    MODEL_REASONING_EFFORT="high",
+                )
+            )
+
+        self.assertEqual(captured["thinking_level"], "high")
         self.assertIs(captured["include_thoughts"], True)
         self.assertNotIn("thinking_budget", captured)
 

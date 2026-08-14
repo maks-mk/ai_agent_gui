@@ -47,6 +47,40 @@ class UiHelperTests(unittest.TestCase):
         self.assertIn("border: 1px solid", stylesheet)
         self.assertNotIn("checkbox-check.svg", stylesheet)
 
+    def test_enabled_tool_switch_uses_white_track(self):
+        stylesheet = build_stylesheet()
+        selector = "QCheckBox#ToolAvailabilitySwitch:checked"
+        start = stylesheet.index(selector)
+        checked_rule = stylesheet[start:stylesheet.index("}", start)]
+
+        self.assertIn("background: #FFFFFF;", checked_rule)
+        self.assertIn("border: 1px solid #FFFFFF;", checked_rule)
+
+    def test_enabled_model_switch_uses_white_track(self):
+        stylesheet = build_stylesheet()
+        selector = "QCheckBox#ModelProfileEnabledSwitch:checked"
+        start = stylesheet.index(selector)
+        checked_rule = stylesheet[start:stylesheet.index("}", start)]
+        indicator_selector = "QCheckBox#ModelProfileEnabledSwitch::indicator:checked"
+        indicator_start = stylesheet.index(indicator_selector)
+        indicator_rule = stylesheet[indicator_start:stylesheet.index("}", indicator_start)]
+
+        self.assertIn("background: #FFFFFF;", checked_rule)
+        self.assertIn("border: 1px solid #FFFFFF;", checked_rule)
+        self.assertIn("background: #1E1D1B;", indicator_rule)
+
+    def test_tool_card_meta_labels_have_transparent_background(self):
+        stylesheet = build_stylesheet()
+        selector = "QLabel#MetaText"
+        start = stylesheet.index(selector)
+        meta_rule = stylesheet[start:stylesheet.index("}", start)]
+        error_selector = 'QLabel#MetaText[severity="error"]'
+        error_start = stylesheet.index(error_selector)
+        error_rule = stylesheet[error_start:stylesheet.index("}", error_start)]
+
+        self.assertIn("background: transparent;", meta_rule)
+        self.assertNotIn("background:", error_rule)
+
     def test_summary_progress_ring_updates_tooltip_from_payload(self):
         ring = SummaryProgressRing()
         self.addCleanup(ring.deleteLater)

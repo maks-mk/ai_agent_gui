@@ -102,7 +102,6 @@ def build_stylesheet() -> str:
     model_dialog_field_bg = blend_hex(SURFACE_CARD, "#FFFFFF", 0.05)
     model_dialog_field_border = blend_hex(BORDER, "#FFFFFF", 0.09)
     model_dialog_switch_off = blend_hex(SURFACE_ALT, "#FFFFFF", 0.10)
-    model_dialog_switch_on = blend_hex("#5B8DEF", SURFACE_ALT, 0.20)
     model_dialog_switch_thumb = "#F3F4F6"
     approval_dialog_bg = blend_hex(SURFACE_BG, "#FFFFFF", 0.02)
     approval_dialog_card = blend_hex(SURFACE_CARD, "#FFFFFF", 0.03)
@@ -465,8 +464,8 @@ def build_stylesheet() -> str:
     }}
 
     QCheckBox#ModelProfileEnabledSwitch:checked {{
-        background: {model_dialog_switch_on};
-        border: 1px solid {blend_hex(model_dialog_switch_on, "#1D4ED8", 0.18)};
+        background: #FFFFFF;
+        border: 1px solid #FFFFFF;
     }}
 
     QCheckBox#ModelProfileEnabledSwitch::indicator {{
@@ -487,6 +486,7 @@ def build_stylesheet() -> str:
         subcontrol-origin: margin;
         subcontrol-position: right center;
         margin-right: 2px;
+        background: {SURFACE_BG};
     }}
     
     QCheckBox#ModelSupportsImagesCheckbox {{
@@ -1041,6 +1041,7 @@ def build_stylesheet() -> str:
     QLabel#MutedText,
     QLabel#MetaText {{
         color: {TEXT_MUTED};
+        background: transparent;
     }}
 
     QLabel#InspectorMetaText {{
@@ -1894,8 +1895,8 @@ def build_stylesheet() -> str:
     }}
 
     QCheckBox#ToolAvailabilitySwitch:checked {{
-        background: {blend_hex(SUCCESS_GREEN, SURFACE_ALT, 0.34)};
-        border: 1px solid {blend_hex(SUCCESS_GREEN, "#FFFFFF", 0.06)};
+        background: #FFFFFF;
+        border: 1px solid #FFFFFF;
     }}
 
     QCheckBox#ToolAvailabilitySwitch:disabled {{
@@ -1921,6 +1922,7 @@ def build_stylesheet() -> str:
         subcontrol-origin: margin;
         subcontrol-position: right center;
         margin-right: 2px;
+        background: {SURFACE_BG};
     }}
 
     QLabel#ToolGroupHeader {{

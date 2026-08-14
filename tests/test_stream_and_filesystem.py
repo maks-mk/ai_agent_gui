@@ -601,6 +601,21 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual(statuses[-1]["node"], "agent")
         self.assertEqual(statuses[-1]["label"], "Thinking...")
 
+    def test_stream_processor_keeps_gemini_thinking_status_for_following_text_chunks(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        metadata = {"langgraph_node": "agent"}
+
+        processor._handle_messages(
+            (AIMessageChunk(content=[{"type": "thinking", "thinking": "Планирую."}]), metadata)
+        )
+        processor._handle_messages((AIMessageChunk(content="Готово."), metadata))
+
+        statuses = [event.payload for event in events if event.type == "status_changed"]
+        self.assertTrue(statuses)
+        self.assertEqual(statuses[-1]["label"], "Thinking...")
+        self.assertNotIn("Working...", [status["label"] for status in statuses])
+
     def test_stream_processor_reports_update_agent_status_as_thinking_for_reasoning(self):
         events = []
         processor = StreamProcessor(events.append)

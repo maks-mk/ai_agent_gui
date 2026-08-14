@@ -39,14 +39,16 @@ def gemini_model_supports_thinking_level(model_name: str | None) -> bool:
 
 
 def chat_model_accepts_kwarg(model_cls: type, name: str) -> bool:
-    """Check whether *model_cls* declares *name* as a pydantic field.
+    """Check whether *model_cls* declares *name* as a pydantic field or alias.
 
     Falls back to ``True`` when the class does not expose ``model_fields``
     (e.g. non-pydantic base), so callers can still attempt to pass the kwarg.
     """
     fields = getattr(model_cls, "model_fields", None)
     if isinstance(fields, dict):
-        return name in fields
+        if name in fields:
+            return True
+        return any(getattr(field, "alias", None) == name for field in fields.values())
     return True
 
 
