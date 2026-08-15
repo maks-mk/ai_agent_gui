@@ -10,9 +10,9 @@ It works with files, shell commands, process management, MCP servers, and web se
 Run from source: `python main.py`.  
 Build a portable Windows `.exe`: `build.bat`.
 
-<p align="center">
-  <img src="./img/agent.gif" alt="Portable Autonomous AI Agent" width="800">
-</p>
+<div align="center">
+  <img src="./img/agent.webp" alt="Portable Autonomous AI Agent" width="800">
+</div>
 
 ---
 
