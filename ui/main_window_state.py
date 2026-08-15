@@ -155,7 +155,12 @@ class RunStatusController:
         self.window = window
 
     def update_realtime_elapsed(self) -> None:
-        if self.window.current_turn is None or self.window._run_start_time is None or not self.window.is_busy:
+        if (
+            self.window.current_turn is None
+            or self.window._run_start_time is None
+            or not self.window.is_busy
+            or self.window._current_status_phase == "success"
+        ):
             return
 
         elapsed = time.time() - self.window._run_start_time
@@ -197,7 +202,14 @@ class RunStatusController:
         label = payload.get("label")
         node = str(payload.get("node", "") or "")
         elapsed_text = str(payload.get("elapsed_text", "") or "")
-        phase = str(payload.get("phase", "working") or "working")
+        phase = str(payload.get("phase", "") or "")
+        if not phase:
+            phase = {
+                "approval": "waiting",
+                "recovery": "reviewing",
+                "summarize": "system",
+                "tools": "active",
+            }.get(node, "working")
         if not label:
             return
 
@@ -214,6 +226,10 @@ class RunStatusController:
             pass
 
         self.set_status_visual(label, busy=node != "approval")
+        if node == "summarize":
+            status_bar = self.window.statusBar()
+            if status_bar is not None:
+                status_bar.clearMessage()
 
         if self.window.current_turn is not None:
             current_elapsed = time.time() - self.window._run_start_time if self.window._run_start_time else 0.0
@@ -222,10 +238,8 @@ class RunStatusController:
 
             if node == "summarize":
                 self.window._summarize_in_progress = True
-                self.show_transient_status_message("Context is being compressed automatically…")
             elif self.window._summarize_in_progress:
                 self.window._summarize_in_progress = False
-                self.show_transient_status_message("Context compressed")
             self.window.transcript.notify_content_changed()
 
     def on_run_finished(self, payload: dict) -> None:

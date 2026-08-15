@@ -24,7 +24,7 @@ from ui.streaming import StreamEvent
 from ui.theme import AMBER_WARNING, BORDER, ERROR_RED, SUCCESS_GREEN, SURFACE_BG, SURFACE_CARD, TEXT_MUTED, build_stylesheet
 from ui.widgets.composer import _ComposerMentionItemWidget
 from ui.widgets.foundation import AutoTextBrowser, CodeBlockWidget, CopySafePlainTextEdit, DiffBlockWidget, TRANSCRIPT_MAX_WIDTH
-from ui.widgets.messages import AssistantMessageWidget
+from ui.widgets.messages import AssistantMessageWidget, NoticeWidget
 from ui.widgets.sidebar import SessionListModel
 from ui.widgets.transcript import ConversationTurnWidget
 from ui.widgets.tool_group import ToolGroupWidget
@@ -1617,48 +1617,62 @@ class GuiUxTests(unittest.TestCase):
             self.window.current_turn.status_widget,
         )
 
-    def test_auto_summary_notice_shows_progress_then_done_and_hides_after_output(self):
+    def test_auto_summary_status_transitions_in_chat_without_duplicate_notice(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window._handle_event(StreamEvent("run_started", {"text": "Большой контекст"}))
 
         self.window._handle_event(
             StreamEvent("status_changed", {"label": "Compressing context", "node": "summarize"})
         )
-        self.assertNotIn("notice", self.window.current_turn.block_kinds())
-        self.assertIn("compress", self.window.statusBar().currentMessage().lower())
-
-        self.window._handle_event(
-            StreamEvent("status_changed", {"label": "Working...", "node": "agent"})
-        )
-        self.assertNotIn("notice", self.window.current_turn.block_kinds())
-        self.assertIn("context compressed", self.window.statusBar().currentMessage().lower())
+        self.assertEqual(self.window.current_turn.block_kinds(), ["user"])
+        self.assertIsNotNone(self.window.current_turn.status_widget)
+        self.assertEqual(self.window.current_turn.status_widget.label.text(), "Compressing context")
+        self.assertEqual(self.window.current_turn.status_widget.property("phase"), "system")
+        self.window._update_realtime_elapsed()
+        self.assertEqual(self.window.current_turn.status_widget.label.text(), "Compressing context")
+        self.assertNotEqual(self.window.current_turn.status_widget.meta_label.text(), "")
+        self.assertEqual(self.window.statusBar().currentMessage(), "")
 
         self.window._handle_event(
             StreamEvent(
-                "assistant_delta",
+                "summary_notice",
                 {
-                    "text": "готово",
-                    "full_text": "Готово",
-                    "has_thought": False,
+                    "kind": "auto_summary",
+                    "count": 3,
+                    "message": "Context compressed automatically (3 message(s) summarized).",
                 },
             )
         )
         self._process_events()
-        self.assertNotIn("notice", self.window.current_turn.block_kinds())
 
-    def test_auto_summary_notice_event_is_transient_not_persistent_notice_block(self):
-        self.window._handle_initialized(self._snapshot_payload())
-        self.window._handle_event(StreamEvent("run_started", {"text": "Большой контекст"}))
+        status_widget = self.window.current_turn.status_widget
+        self.assertIsNotNone(status_widget)
+        self.assertEqual(self.window.current_turn.block_kinds(), ["user"])
+        self.assertEqual(status_widget.label.text(), "Context compressed automatically (3 message(s) summarized).")
+        self.assertEqual(status_widget.meta_label.text(), "")
+        self.assertEqual(status_widget.property("phase"), "success")
+        self.assertNotIn("compressing context", status_widget.label.text().lower())
+        self.assertEqual(len(self.window.current_turn.findChildren(NoticeWidget)), 0)
+        self.assertEqual(self.window.statusBar().currentMessage(), "")
+
+        self.window._update_realtime_elapsed()
+        self.assertEqual(
+            self.window.current_turn.status_widget.label.text(),
+            "Context compressed automatically (3 message(s) summarized).",
+        )
+        self.assertEqual(self.window.current_turn.status_widget.meta_label.text(), "")
+
         self.window._handle_event(
             StreamEvent(
-                "summary_notice",
-                {"kind": "auto_summary", "count": 3, "message": "Context compressed automatically"},
+                "assistant_delta",
+                {"text": "готово", "full_text": "Готово", "has_thought": False},
             )
         )
         self._process_events()
 
-        self.assertIn("context compressed automatically", self.window.statusBar().currentMessage().lower())
-        self.assertNotIn("notice", self.window.current_turn.block_kinds())
+        self.assertEqual(self.window.current_turn.block_kinds(), ["user", "assistant"])
+        self.assertIs(self.window.current_turn.status_widget, status_widget)
+        self.assertEqual(len(self.window.current_turn.findChildren(NoticeWidget)), 0)
 
     def test_stream_events_render_transcript_and_compact_tool_sections(self):
         self.window._handle_initialized(self._snapshot_payload())

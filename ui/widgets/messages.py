@@ -129,8 +129,15 @@ class StatusIndicatorWidget(QFrame):
             if style is not None:
                 style.unpolish(self)
                 style.polish(self)
-        icon_name = "fa5s.pause-circle" if phase == "waiting" else "fa5s.spinner"
-        icon_color = TEXT_MUTED if phase not in {"active", "reviewing"} else ACCENT_BLUE
+        if phase == "success":
+            icon_name = "fa5s.check-circle"
+            icon_color = SUCCESS_GREEN
+        elif phase == "waiting":
+            icon_name = "fa5s.pause-circle"
+            icon_color = TEXT_MUTED
+        else:
+            icon_name = "fa5s.spinner"
+            icon_color = TEXT_MUTED if phase not in {"active", "reviewing"} else ACCENT_BLUE
         self.spinner.setIcon(_fa_icon(icon_name, color=icon_color, size=12))
 
 

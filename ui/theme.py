@@ -1072,6 +1072,10 @@ def build_stylesheet() -> str:
         color: {blend_hex(TEXT_PRIMARY, TEXT_MUTED, 0.08)};
     }}
 
+    QFrame#InlineStatusRow[phase="success"] QLabel#TranscriptMeta {{
+        color: {SUCCESS_GREEN};
+    }}
+
     QFrame#InlineStatusRow[phase="waiting"] QLabel#TranscriptMeta {{
         color: {blend_hex(AMBER_WARNING, TEXT_PRIMARY, 0.24)};
     }}

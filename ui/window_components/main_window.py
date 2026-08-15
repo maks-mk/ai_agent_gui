@@ -466,14 +466,15 @@ class MainWindow(QMainWindow):
         message = str(payload.get("message", "") or "").strip()
         if kind == "auto_summary":
             self._summarize_in_progress = False
-            count = int(payload.get("count", 0) or 0)
-            if count > 0:
-                self._show_transient_status_message(
-                    f"Context compressed automatically ({count} message(s)).",
-                    timeout_ms=5000,
-                )
-            else:
-                self._show_transient_status_message("Context compressed", timeout_ms=5000)
+            if message:
+                self._current_status_label = message
+                self._current_status_phase = "success"
+                self._last_rendered_elapsed_text = ""
+                if self.current_turn is not None:
+                    self.current_turn.set_status(message, phase="success")
+                    self.transcript.notify_content_changed()
+                else:
+                    self.transcript.add_global_notice(message, level=level)
             return
         if level == "error":
             if self.current_turn is not None:
