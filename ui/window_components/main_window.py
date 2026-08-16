@@ -14,7 +14,7 @@ from core.input_sanitizer import build_user_input_notice, sanitize_user_text
 from core.multimodal import DEFAULT_MODEL_CAPABILITIES, can_read_image_file, resolve_model_capabilities
 from core.model_profiles import normalize_profiles_payload
 from core.reasoning_controls import normalize_profile_reasoning, reasoning_options_for_profile
-from core.text_utils import prepare_markdown_for_render
+from core.text_utils import format_compact_tokens, prepare_markdown_for_render
 from ui.main_window_state import ComposerStateController, RunStatusController, StreamEventRouter
 from ui.runtime import AgentRuntimeController
 from ui.theme import ACCENT_BLUE, build_stylesheet
@@ -101,6 +101,7 @@ class MainWindow(QMainWindow):
         self._composer_height_padding = 16
         self._composer_growth_lines = 5
         self._composer_height_sync_pending = False
+        self._session_cache_hit_tokens = 0
         self._run_start_time: float | None = None
         self._current_status_label = ""
         self._current_status_phase = "working"
@@ -207,6 +208,7 @@ class MainWindow(QMainWindow):
         self.model_image_badge = refs.model_image_badge
         self.no_models_label = refs.no_models_label
         self.open_settings_inline_button = refs.open_settings_inline_button
+        self.cache_hit_label = refs.cache_hit_label
         self.summary_progress_ring = refs.summary_progress_ring
         self.send_button = refs.send_button
         self.stop_action_button = refs.stop_action_button
@@ -271,6 +273,7 @@ class MainWindow(QMainWindow):
                 "tool_args_missing": self._on_tool_args_missing,
                 "summary_progress": self._on_summary_progress,
                 "summary_notice": self._on_summary_notice,
+                "cache_hit": self._on_cache_hit,
                 "approval_resolved": self._on_approval_resolved,
                 "run_finished": self._on_run_finished,
                 "run_failed": self._on_run_failed,
@@ -492,6 +495,18 @@ class MainWindow(QMainWindow):
 
     def _on_summary_progress(self, payload: dict) -> None:
         self.summary_progress_ring.set_summary_progress(payload)
+
+    def _set_session_cache_hit_tokens(self, tokens: int) -> None:
+        self._session_cache_hit_tokens = max(0, int(tokens or 0))
+        self.cache_hit_label.setText(f"Cache Hit: {format_compact_tokens(self._session_cache_hit_tokens)}")
+
+    def _on_cache_hit(self, payload: dict) -> None:
+        try:
+            delta = max(0, int(payload.get("tokens", 0) or 0))
+        except (TypeError, ValueError):
+            return
+        if delta:
+            self._set_session_cache_hit_tokens(self._session_cache_hit_tokens + delta)
 
     def _on_approval_resolved(self, payload: dict) -> None:
         self._flush_pending_assistant_delta()
@@ -868,6 +883,9 @@ class MainWindow(QMainWindow):
         previous_session_id = self.active_session_id
         self.current_snapshot = payload.get("snapshot", {})
         self.active_session_id = payload.get("active_session_id", "")
+        cache_hit_tokens = self.current_snapshot.get("cache_hit_tokens", 0)
+        self._set_session_cache_hit_tokens(cache_hit_tokens)
+
         self._apply_model_profiles_payload(payload.get("model_profiles"))
         self._apply_model_capabilities_payload(payload.get("model_capabilities"))
         if restore_transcript:

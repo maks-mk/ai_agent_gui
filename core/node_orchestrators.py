@@ -6,6 +6,7 @@ import uuid
 from typing import TYPE_CHECKING, Any, Protocol
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, RemoveMessage, SystemMessage, ToolMessage
+from langgraph.config import get_stream_writer
 from langgraph.errors import GraphInterrupt
 
 from core.errors import ErrorType, format_error
@@ -686,6 +687,7 @@ class ToolBatchCoordinator:
 
         parallel_calls, sequential_calls = owner._partition_tool_calls(tool_calls)
         parallel_mode = self._parallel_mode_label(parallel_calls, sequential_calls)
+        self._emit_live_tool_batch_started(tool_calls)
         owner._log_run_event(
             state,
             "tools_node_start",
@@ -705,36 +707,42 @@ class ToolBatchCoordinator:
                 id(tc): i for i, tc in enumerate(tool_calls)
             }
 
+            async def process_tool_call(
+                tool_call: dict[str, Any],
+                *,
+                convert_exceptions: bool = False,
+            ) -> tuple[ToolMessage, bool, dict[str, Any] | None]:
+                try:
+                    result = await owner._process_tool_call(
+                        tool_call,
+                        recent_calls,
+                        state,
+                        approval_state,
+                        current_turn_id,
+                        active_tool_names,
+                    )
+                except (asyncio.CancelledError, GraphInterrupt):
+                    raise
+                except Exception as exc:
+                    if not convert_exceptions:
+                        raise
+                    result = self._build_exception_result(
+                        tool_call=tool_call,
+                        exception=exc,
+                        state=state,
+                        current_turn_id=current_turn_id,
+                    )
+                self._emit_live_tool_result(result[0])
+                return result
+
             async def run_parallel_group(group: list[dict[str, Any]]) -> None:
                 if not group:
                     return
                 processed = await asyncio.gather(
-                    *(
-                        owner._process_tool_call(
-                            tool_call,
-                            recent_calls,
-                            state,
-                            approval_state,
-                            current_turn_id,
-                            active_tool_names,
-                        )
-                        for tool_call in group
-                    ),
-                    return_exceptions=True,
+                    *(process_tool_call(tool_call, convert_exceptions=True) for tool_call in group),
                 )
                 for tool_call, processed_item in zip(group, processed):
-                    if isinstance(processed_item, (asyncio.CancelledError, GraphInterrupt)):
-                        raise processed_item
-                    if isinstance(processed_item, Exception):
-                        tool_msg, had_error, issue = self._build_exception_result(
-                            tool_call=tool_call,
-                            exception=processed_item,
-                            state=state,
-                            current_turn_id=current_turn_id,
-                        )
-                    else:
-                        tool_msg, had_error, issue = processed_item
-                    results[index_by_identity[id(tool_call)]] = (tool_msg, had_error, issue)
+                    results[index_by_identity[id(tool_call)]] = processed_item
 
             pending_parallel: list[dict[str, Any]] = []
             for tool_call in tool_calls:
@@ -744,14 +752,7 @@ class ToolBatchCoordinator:
 
                 await run_parallel_group(pending_parallel)
                 pending_parallel = []
-                tool_msg, had_error, issue = await owner._process_tool_call(
-                    tool_call,
-                    recent_calls,
-                    state,
-                    approval_state,
-                    current_turn_id,
-                    active_tool_names,
-                )
+                tool_msg, had_error, issue = await process_tool_call(tool_call)
                 results[index_by_identity[id(tool_call)]] = (tool_msg, had_error, issue)
 
             await run_parallel_group(pending_parallel)
@@ -819,6 +820,45 @@ class ToolBatchCoordinator:
                 parallel_mode=parallel_mode,
             )
             raise
+
+    @staticmethod
+    def _emit_live_tool_batch_started(tool_calls: list[dict[str, Any]]) -> None:
+        try:
+            writer = get_stream_writer()
+            writer(
+                {
+                    "type": "tool_batch_started",
+                    "tool_calls": [
+                        {
+                            "id": str(tool_call.get("id") or ""),
+                            "name": str(tool_call.get("name") or "unknown_tool"),
+                            "args": canonicalize_tool_args(tool_call.get("args")),
+                        }
+                        for tool_call in tool_calls
+                    ],
+                }
+            )
+        except RuntimeError:
+            return
+
+    @staticmethod
+    def _emit_live_tool_result(message: ToolMessage) -> None:
+        try:
+            writer = get_stream_writer()
+            writer(
+                {
+                    "type": "tool_result",
+                    "message": {
+                        "content": message.content,
+                        "tool_call_id": message.tool_call_id,
+                        "name": message.name,
+                        "additional_kwargs": dict(message.additional_kwargs or {}),
+                        "status": message.status,
+                    },
+                }
+            )
+        except RuntimeError:
+            return
 
     @staticmethod
     def _parallel_mode_label(

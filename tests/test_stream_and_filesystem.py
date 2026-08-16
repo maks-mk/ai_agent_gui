@@ -8,7 +8,14 @@ from unittest import mock
 import httpx
 from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage, ToolMessage
 
-from core.text_utils import format_elapsed_seconds, format_tool_output, prepare_markdown_for_render, split_markdown_segments
+from core.text_utils import (
+    extract_cache_hit_tokens,
+    format_compact_tokens,
+    format_elapsed_seconds,
+    format_tool_output,
+    prepare_markdown_for_render,
+    split_markdown_segments,
+)
 from ui.streaming import StreamProcessor
 from ui.window_components.main_window import MainWindow
 from tools import filesystem, local_shell
@@ -74,6 +81,63 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual(processor.tracker.render(60.1), "1m 0s  ↓ 0  ↑ 0")
         self.assertEqual(processor.tracker.render(61), "1m 1s  ↓ 0  ↑ 0")
         self.assertEqual(processor.tracker.render(120), "2m 0s  ↓ 0  ↑ 0")
+
+    def test_cache_hit_extractor_prefers_exact_paths_and_ignores_disallowed_usage(self):
+        usage = {
+            "usage": {
+                "prompt_tokens_details": {"cached_tokens": 8192},
+                "cache_read_input_tokens": 4096,
+                "cache_creation_input_tokens": 12000,
+                "prompt_eval_count": 16000,
+            },
+            "nested": {"cached_tokens": 2048},
+        }
+
+        self.assertEqual(extract_cache_hit_tokens(usage), 8192)
+        self.assertEqual(
+            extract_cache_hit_tokens(
+                {
+                    "usage": {"prompt_tokens_details": {"cached_tokens": 0}},
+                    "nested": {"cached_tokens": 2048},
+                }
+            ),
+            0,
+        )
+        self.assertIsNone(
+            extract_cache_hit_tokens(
+                {
+                    "cache_write_tokens": 100,
+                    "cache_creation_input_tokens": 200,
+                    "prompt_cache_miss_tokens": 300,
+                    "prompt_tokens": 400,
+                    "input_tokens": 500,
+                    "prompt_eval_count": 600,
+                }
+            )
+        )
+
+    def test_cache_hit_extractor_supports_known_provider_and_langchain_fields(self):
+        cases = (
+            ({"usage": {"input_tokens_details": {"cached_tokens": 101}}}, 101),
+            ({"usage": {"cached_tokens": 102}}, 102),
+            ({"usage": {"prompt_cache_hit_tokens": 103}}, 103),
+            ({"usage": {"cache_read_input_tokens": 104}}, 104),
+            ({"usageMetadata": {"cachedContentTokenCount": 105}}, 105),
+            ({"usage": {"cached_prompt_text_tokens": 106}}, 106),
+            ({"input_token_details": {"cache_read": 107}}, 107),
+            ({"provider": {"details": {"cached_tokens": 108}}}, 108),
+        )
+
+        for payload, expected in cases:
+            with self.subTest(payload=payload):
+                self.assertEqual(extract_cache_hit_tokens(payload), expected)
+
+    def test_compact_token_format_uses_standard_suffixes(self):
+        self.assertEqual(format_compact_tokens(0), "0")
+        self.assertEqual(format_compact_tokens(999), "999")
+        self.assertEqual(format_compact_tokens(15_360), "15.4K")
+        self.assertEqual(format_compact_tokens(100_000), "100K")
+        self.assertEqual(format_compact_tokens(1_250_000), "1.2M")
 
     def test_prepare_markdown_does_not_guess_code_blocks_from_plain_text(self):
         source = 'Пример (файл main.go):\npackage main\nimport "fmt"\nfunc main() {\n    fmt.Println("hi")\n}'
@@ -237,6 +301,114 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertTrue(statuses)
         self.assertEqual(statuses[-1]["label"], "Reconnecting... 1/3")
         self.assertEqual(statuses[-1]["node"], "agent")
+
+    def test_stream_processor_tool_preview_does_not_claim_execution_started(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._remember_tool_call(
+            {"id": "call-preview", "name": "read_file", "args": {"path": "a.txt"}}
+        )
+        processor._emit_tool_started(
+            {"id": "call-preview", "name": "read_file", "args": {"path": "a.txt"}}
+        )
+
+        self.assertEqual([event for event in events if event.type == "status_changed"], [])
+        self.assertEqual(len([event for event in events if event.type == "tool_started"]), 1)
+        self.assertEqual(processor.active_node, "agent")
+
+    def test_stream_processor_starts_tool_batch_before_results(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        tool_calls = [
+            {"id": "call-a", "name": "read_file", "args": {"path": "a.txt"}},
+            {"id": "call-b", "name": "read_file", "args": {"path": "b.txt"}},
+        ]
+
+        processor._handle_custom({"type": "tool_batch_started", "tool_calls": tool_calls})
+
+        event_types = [event.type for event in events]
+        statuses = [event.payload for event in events if event.type == "status_changed"]
+        started = [event.payload for event in events if event.type == "tool_started"]
+        self.assertEqual(event_types[0], "status_changed")
+        self.assertEqual(statuses[-1]["node"], "tools")
+        self.assertEqual(statuses[-1]["label"], "Running tools")
+        self.assertEqual([payload["tool_id"] for payload in started], ["call-a", "call-b"])
+
+    def test_stream_processor_keeps_running_tools_until_parallel_batch_finishes(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        tool_calls = [
+            {"id": "call-a", "name": "read_file", "args": {"path": "a.txt"}},
+            {"id": "call-b", "name": "read_file", "args": {"path": "b.txt"}},
+        ]
+        processor._handle_custom({"type": "tool_batch_started", "tool_calls": tool_calls})
+
+        processor._handle_tool_result(
+            ToolMessage(content="a", tool_call_id="call-a", name="read_file")
+        )
+        statuses_after_first = [
+            event.payload for event in events if event.type == "status_changed"
+        ]
+        self.assertEqual(statuses_after_first[-1]["label"], "Running tools")
+
+        processor._handle_tool_result(
+            ToolMessage(content="b", tool_call_id="call-b", name="read_file")
+        )
+        statuses_after_second = [
+            event.payload for event in events if event.type == "status_changed"
+        ]
+        self.assertEqual(statuses_after_second[-1]["label"], "Working...")
+
+    def test_stream_processor_does_not_reemit_running_tools_for_late_tool_message(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        tool_call = {"id": "call-read", "name": "read_file", "args": {"path": "a.txt"}}
+        result = ToolMessage(
+            content="a",
+            tool_call_id="call-read",
+            name="read_file",
+            additional_kwargs={"tool_args": {"path": "a.txt"}},
+        )
+        processor._handle_custom({"type": "tool_batch_started", "tool_calls": [tool_call]})
+        processor._handle_custom(
+            {
+                "type": "tool_result",
+                "message": {
+                    "content": result.content,
+                    "tool_call_id": result.tool_call_id,
+                    "name": result.name,
+                    "additional_kwargs": result.additional_kwargs,
+                    "status": result.status,
+                },
+            }
+        )
+
+        processor._handle_messages((result, {"langgraph_node": "tools"}))
+
+        statuses = [event.payload for event in events if event.type == "status_changed"]
+        self.assertEqual([status["label"] for status in statuses], ["Running tools", "Working..."])
+        self.assertEqual(processor.active_node, "agent")
+
+    def test_stream_processor_forwards_custom_tool_result_once(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        processor.tool_buffer["call-live"] = {"name": "read_file", "args": {"path": "demo.txt"}}
+        message_payload = {
+            "content": "live result",
+            "tool_call_id": "call-live",
+            "name": "read_file",
+            "additional_kwargs": {"tool_args": {"path": "demo.txt"}},
+            "status": "success",
+        }
+
+        processor._handle_custom({"type": "tool_result", "message": message_payload})
+        processor._handle_tool_result(ToolMessage(**message_payload))
+
+        finished = [event.payload for event in events if event.type == "tool_finished"]
+        self.assertEqual(len(finished), 1)
+        self.assertEqual(finished[0]["tool_id"], "call-live")
+        self.assertEqual(finished[0]["content"], "live result")
 
     def test_stream_processor_emits_tool_error_and_diff_events(self):
         events = []
@@ -485,6 +657,48 @@ class StreamAndFilesystemTests(unittest.TestCase):
         stats = processor.tracker.render(0.1)
         self.assertIn("↓ 117", stats)
         self.assertIn("↑ 609", stats)
+
+    def test_stream_processor_emits_only_new_cache_hit_tokens(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        message = AIMessage(
+            content="",
+            id="cache-message",
+            usage_metadata={
+                "input_tokens": 9000,
+                "output_tokens": 10,
+                "total_tokens": 9010,
+                "input_token_details": {"cache_read": 8192},
+            },
+        )
+
+        processor._handle_messages((message, {"langgraph_node": "agent"}))
+        processor._handle_updates(
+            {
+                "agent": {
+                    "messages": [message],
+                    "token_usage": {
+                        "input_tokens": 9000,
+                        "output_tokens": 10,
+                        "input_token_details": {"cache_read": 8192},
+                    },
+                }
+            }
+        )
+        processor._handle_updates(
+            {
+                "agent": {
+                    "messages": [AIMessage(content="", id="cache-message-2")],
+                    "token_usage": {"prompt_tokens": 4500, "cache_read_input_tokens": 4096},
+                }
+            }
+        )
+        processor._handle_updates(
+            {"agent": {"token_usage": {"prompt_eval_count": 32000, "input_tokens": 32000}}}
+        )
+
+        self.assertEqual([event.payload["tokens"] for event in events if event.type == "cache_hit"], [8192, 4096])
+        self.assertEqual(processor.tracker.total_cache_hit, 12_288)
 
     def test_stream_processor_uses_total_tokens_when_output_is_zero(self):
         processor = StreamProcessor()

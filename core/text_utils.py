@@ -19,6 +19,110 @@ def format_elapsed_seconds(seconds: int) -> str:
     return f"{minutes}m {remaining_seconds}s"
 
 
+def format_compact_tokens(tokens: int) -> str:
+    value = max(0, int(tokens))
+    for threshold, suffix in ((1_000_000_000, "B"), (1_000_000, "M"), (1_000, "K")):
+        if value >= threshold:
+            compact = value / threshold
+            rendered = f"{compact:.1f}" if compact < 100 else f"{compact:.0f}"
+            if "." in rendered:
+                rendered = rendered.rstrip("0").rstrip(".")
+            return f"{rendered}{suffix}"
+    return str(value)
+
+
+_CACHE_HIT_EXACT_PATHS = (
+    ("usage", "prompt_tokens_details", "cached_tokens"),
+    ("usage", "input_tokens_details", "cached_tokens"),
+    ("usage", "cached_tokens"),
+    ("usage", "prompt_cache_hit_tokens"),
+    ("usage", "cache_read_input_tokens"),
+    ("usageMetadata", "cachedContentTokenCount"),
+    ("usage", "cached_prompt_text_tokens"),
+    ("prompt_tokens_details", "cached_tokens"),
+    ("input_tokens_details", "cached_tokens"),
+    ("cached_tokens",),
+    ("prompt_cache_hit_tokens",),
+    ("cache_read_input_tokens",),
+    ("cachedContentTokenCount",),
+    ("cached_prompt_text_tokens",),
+    ("input_token_details", "cache_read"),
+)
+_CACHE_HIT_FALLBACK_NAMES = frozenset(
+    {
+        "cached_tokens",
+        "prompt_cache_hit_tokens",
+        "cache_read_input_tokens",
+        "cachedContentTokenCount",
+        "cached_prompt_text_tokens",
+    }
+)
+
+
+def _reported_token_count(value: Any) -> int | None:
+    if isinstance(value, bool) or value is None:
+        return None
+    if isinstance(value, int):
+        return max(0, value)
+    if isinstance(value, float):
+        return max(0, int(value)) if value.is_integer() else None
+    if isinstance(value, str) and value.strip().isdigit():
+        return int(value.strip())
+    return None
+
+
+def _mapping_value(value: Any, key: str) -> tuple[bool, Any]:
+    if isinstance(value, dict):
+        return (key in value, value.get(key))
+    try:
+        return (hasattr(value, key), getattr(value, key, None))
+    except Exception:
+        return (False, None)
+
+
+def extract_cache_hit_tokens(payload: Any) -> int | None:
+    if payload is None:
+        return None
+
+    for path in _CACHE_HIT_EXACT_PATHS:
+        current = payload
+        found = True
+        for key in path:
+            found, current = _mapping_value(current, key)
+            if not found:
+                break
+        if found:
+            reported = _reported_token_count(current)
+            if reported is not None:
+                return reported
+
+    visited: set[int] = set()
+
+    def _fallback(value: Any) -> int | None:
+        if isinstance(value, dict):
+            identity = id(value)
+            if identity in visited:
+                return None
+            visited.add(identity)
+            for key, nested in value.items():
+                if key in _CACHE_HIT_FALLBACK_NAMES:
+                    reported = _reported_token_count(nested)
+                    if reported is not None:
+                        return reported
+            for nested in value.values():
+                reported = _fallback(nested)
+                if reported is not None:
+                    return reported
+        elif isinstance(value, (list, tuple)):
+            for nested in value:
+                reported = _fallback(nested)
+                if reported is not None:
+                    return reported
+        return None
+
+    return _fallback(payload)
+
+
 @dataclass(frozen=True)
 class MarkdownSegment:
     kind: str
@@ -628,24 +732,28 @@ class TokenTracker:
 
     def __init__(self):
         self._streaming_len = 0
-        self._step_usage: dict[str, tuple[int, int]] = {}
+        self._step_usage: dict[str, tuple[int, int, int]] = {}
         self._unkeyed_step_index = 0
         self._active_step_has_data = False
 
     @property
     def total_input(self) -> int:
-        return sum(in_t for in_t, _ in self._step_usage.values())
+        return sum(in_t for in_t, _, _ in self._step_usage.values())
 
     @property
     def total_output(self) -> int:
-        return sum(out_t for _, out_t in self._step_usage.values())
+        return sum(out_t for _, out_t, _ in self._step_usage.values())
+
+    @property
+    def total_cache_hit(self) -> int:
+        return sum(cache_hit for _, _, cache_hit in self._step_usage.values())
 
     def advance_step(self):
         if self._active_step_has_data:
             self._unkeyed_step_index += 1
             self._active_step_has_data = False
 
-    def update_from_message(self, msg: Any):
+    def update_from_message(self, msg: Any) -> int:
         if isinstance(msg, (AIMessage, AIMessageChunk)):
             content = msg.content
             chunk_len = 0
@@ -659,19 +767,30 @@ class TokenTracker:
             elif self._streaming_len == 0:
                 self._streaming_len = chunk_len
 
-        if hasattr(msg, "usage_metadata") and msg.usage_metadata:
-            msg_id = getattr(msg, "id", None)
-            self._apply_metadata(
-                msg.usage_metadata,
-                msg_id=msg_id,
-                source="message",
-            )
+        msg_id = getattr(msg, "id", None)
+        usage_candidates = (
+            getattr(msg, "usage_metadata", None),
+            getattr(msg, "response_metadata", None),
+            getattr(msg, "additional_kwargs", None),
+        )
+        for usage in usage_candidates:
+            if isinstance(usage, dict) and usage:
+                reported_cache_hit = extract_cache_hit_tokens(usage)
+                delta = self._apply_metadata(
+                    usage,
+                    msg_id=msg_id,
+                    source="message",
+                )
+                if reported_cache_hit is not None:
+                    return delta
+        return 0
 
-    def update_from_node_update(self, update: Dict):
+    def update_from_node_update(self, update: Dict) -> int:
         if not isinstance(update, dict):
-            return
+            return 0
 
         applied_any = False
+        cache_hit_delta = 0
         for node_payload in update.values():
             if not isinstance(node_payload, dict):
                 continue
@@ -689,11 +808,12 @@ class TokenTracker:
 
             usage = node_payload.get("token_usage")
             if isinstance(usage, dict) and usage:
-                self._apply_metadata(usage, msg_id=primary_msg_id, source="update")
+                cache_hit_delta += self._apply_metadata(usage, msg_id=primary_msg_id, source="update")
                 applied_any = True
 
         if applied_any:
             self.advance_step()
+        return cache_hit_delta
 
     @staticmethod
     def _coerce_token_int(value: Any) -> int:
@@ -731,25 +851,29 @@ class TokenTracker:
             return max(0, total_tokens - output_tokens)
         return 0
 
-    def _apply_metadata(self, usage: Dict[str, Any], msg_id: str | None = None, source: str = ""):
+    def _apply_metadata(self, usage: Dict[str, Any], msg_id: str | None = None, source: str = "") -> int:
         if not isinstance(usage, dict) or not usage:
-            return
+            return 0
 
         out_t = self._extract_output_tokens(usage)
         in_t = self._extract_input_tokens(usage, out_t)
+        reported_cache_hit = extract_cache_hit_tokens(usage)
+        cache_hit = reported_cache_hit if reported_cache_hit is not None else 0
 
-        if in_t == 0 and out_t == 0:
-            return
+        if in_t == 0 and out_t == 0 and reported_cache_hit is None:
+            return 0
 
         msg_key = str(msg_id).strip() if msg_id else ""
         if not msg_key:
             msg_key = f"_unkeyed_step_{self._unkeyed_step_index}"
 
-        existing_in, existing_out = self._step_usage.get(msg_key, (0, 0))
+        existing_in, existing_out, existing_cache_hit = self._step_usage.get(msg_key, (0, 0, 0))
         new_in = max(existing_in, in_t)
         new_out = max(existing_out, out_t)
-        self._step_usage[msg_key] = (new_in, new_out)
+        new_cache_hit = max(existing_cache_hit, cache_hit)
+        self._step_usage[msg_key] = (new_in, new_out, new_cache_hit)
         self._active_step_has_data = True
+        return new_cache_hit - existing_cache_hit
 
     def render(self, duration: float) -> str:
         in_display = str(self.total_input if self.total_input > 0 else 0)

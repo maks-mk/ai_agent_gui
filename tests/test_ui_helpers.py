@@ -13,6 +13,7 @@ from PySide6.QtWidgets import QApplication, QLabel
 from ui.main_window_state import StreamEventRouter
 from ui.streaming import StreamEvent
 from ui.theme import build_stylesheet
+from ui.widgets.attachments import ImageAttachmentChipWidget
 from ui.widgets.composer import ComposerTextEdit
 from ui.widgets.foundation import SummaryProgressRing
 from ui.widgets.tool_group import ToolGroupWidget
@@ -80,6 +81,17 @@ class UiHelperTests(unittest.TestCase):
 
         self.assertIn("background: transparent;", meta_rule)
         self.assertNotIn("background:", error_rule)
+
+    def test_empty_attachment_path_uses_placeholder_without_file_load(self):
+        with mock.patch("ui.widgets.attachments.QPixmap") as pixmap_cls:
+            placeholder = mock.Mock()
+            pixmap_cls.return_value = placeholder
+
+            result = ImageAttachmentChipWidget._load_pixmap({"path": ""}, 40)
+
+        pixmap_cls.assert_called_once_with(40, 40)
+        placeholder.fill.assert_called_once()
+        self.assertIs(result, placeholder)
 
     def test_summary_progress_ring_updates_tooltip_from_payload(self):
         ring = SummaryProgressRing()

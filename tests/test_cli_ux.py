@@ -2801,16 +2801,28 @@ class GuiUxTests(unittest.TestCase):
         )
         self.assertEqual(self.window.current_turn.block_kinds(), ["user"])
 
+    def test_restored_session_cache_hit_survives_chat_reset(self):
+        payload = self._snapshot_payload()
+        payload["snapshot"]["cache_hit_tokens"] = 15_360
+        self.window._handle_initialized(payload)
+
+        self.assertEqual(self.window.cache_hit_label.text(), "Cache Hit: 15.4K")
+        self.window._handle_event(StreamEvent("chat_reset", {}))
+        self.assertEqual(self.window.cache_hit_label.text(), "Cache Hit: 15.4K")
+
     def test_new_session_clears_transcript_and_calls_controller(self):
         self.window._handle_initialized(self._snapshot_payload())
         self.window._handle_event(StreamEvent("run_started", {"text": "hello"}))
+        self.window._handle_event(StreamEvent("cache_hit", {"tokens": 15_360}))
         self.assertIsNotNone(self.window.current_turn)
+        self.assertEqual(self.window.cache_hit_label.text(), "Cache Hit: 15.4K")
         initial_sessions = self.window.sidebar.model.session_row_count()
 
         self.window._new_session()
 
         self.assertEqual(self.controller.new_session_calls, 1)
         self.assertIsNone(self.window.current_turn)
+        self.assertEqual(self.window.cache_hit_label.text(), "Cache Hit: 0")
         self.assertEqual(self.window.sidebar.model.session_row_count(), initial_sessions)
 
     def test_open_new_project_creates_fresh_session_without_hiding_history(self):
@@ -3019,6 +3031,9 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(self.window.send_button.text(), "")
         self.assertLessEqual(self.window.composer.height(), 72)
         self.assertLessEqual(self.window.send_button.size().width(), 38)
+        self.assertEqual(self.window.cache_hit_label.text(), "Cache Hit: 0")
+        self.assertTrue(self.window.cache_hit_label.alignment() & Qt.AlignRight)
+        self.assertIs(self.window.cache_hit_label.parentWidget(), self.window.composer_pill)
         self.assertIsNone(self.window.findChild(QToolBar))
         self.assertIsNotNone(self.window.menuWidget())
         embedded_menu = self.window.menuWidget().findChild(agent_cli.QMenuBar)

@@ -58,7 +58,8 @@ class AgentNodes(
     )
 
     # Only these tools are allowed to run in parallel in a single tool-call batch.
-    # Any unknown or mutating tool keeps sequential execution for safety.
+    # cli_exec is an explicit exception: independent shell calls may overlap even
+    # though their command profiles can be mutating. Unknown tools stay sequential.
     PARALLEL_SAFE_TOOL_NAMES = frozenset(
         {
             "read_file",
@@ -66,6 +67,7 @@ class AgentNodes(
             "fetch_content",
             "batch_web_search",
             "find_process_by_port",
+            "cli_exec",
         }
     )
     # Read-only tools can be called repeatedly while an agent verifies edits/results.

@@ -387,7 +387,32 @@ class StreamProcessor:
             self._handle_custom(payload)
 
     def _handle_custom(self, payload: Any) -> None:
-        if not isinstance(payload, dict) or payload.get("type") != "status_changed":
+        if not isinstance(payload, dict):
+            return
+        if payload.get("type") == "tool_batch_started":
+            tool_calls = payload.get("tool_calls") or []
+            if not isinstance(tool_calls, list):
+                return
+            self.active_node = "tools"
+            self._agent_is_thinking = False
+            self._emit_status(force=True)
+            for tool_call in tool_calls:
+                if isinstance(tool_call, dict):
+                    self._remember_tool_call(tool_call)
+                    self._emit_tool_started(tool_call, force=True)
+            return
+        if payload.get("type") == "tool_result":
+            message_payload = payload.get("message")
+            if not isinstance(message_payload, dict):
+                return
+            try:
+                message = ToolMessage(**message_payload)
+            except (TypeError, ValueError):
+                logger.debug("Ignored malformed custom tool result payload.", exc_info=True)
+                return
+            self._handle_tool_result(message)
+            return
+        if payload.get("type") != "status_changed":
             return
 
         label = str(payload.get("label") or "").strip()
@@ -403,6 +428,11 @@ class StreamProcessor:
         status_payload.setdefault("phase", self._status_phase())
         self._emit("status_changed", status_payload)
 
+    def _emit_cache_hit_delta(self, tokens: int) -> None:
+        delta = max(0, int(tokens or 0))
+        if delta:
+            self._emit("cache_hit", {"tokens": delta})
+
     def _handle_updates(self, payload: Dict[str, Any]) -> None:
         if "__interrupt__" in payload:
             self.active_node = "approval"
@@ -416,7 +446,7 @@ class StreamProcessor:
                     self.pending_interrupt = {"value": interrupt_value}
             return
 
-        self.tracker.update_from_node_update(payload)
+        self._emit_cache_hit_delta(self.tracker.update_from_node_update(payload))
 
         summarize_payload = payload.get("summarize") or {}
         if summarize_payload:
@@ -442,7 +472,7 @@ class StreamProcessor:
             for message in node_messages:
                 if not isinstance(message, (AIMessage, AIMessageChunk, ToolMessage)):
                     continue
-                self.tracker.update_from_message(message)
+                self._emit_cache_hit_delta(self.tracker.update_from_message(message))
                 if isinstance(message, (AIMessage, AIMessageChunk)):
                     self._handle_agent_message(message, source=f"updates_{node_name}")
                 elif isinstance(message, ToolMessage):
@@ -467,7 +497,12 @@ class StreamProcessor:
     def _handle_messages(self, payload: tuple[Any, Dict[str, Any]]) -> None:
         message, metadata = payload
         node = metadata.get("langgraph_node")
-        self.tracker.update_from_message(message)
+        self._emit_cache_hit_delta(self.tracker.update_from_message(message))
+
+        if node == "tools" and isinstance(message, ToolMessage):
+            self._agent_is_thinking = False
+            self._handle_tool_result(message)
+            return
 
         if node:
             if node != "agent":
@@ -488,8 +523,6 @@ class StreamProcessor:
 
         if node == "agent" and isinstance(message, (AIMessage, AIMessageChunk)):
             self._handle_agent_message(message, source="messages")
-        elif node == "tools" and isinstance(message, ToolMessage):
-            self._handle_tool_result(message)
 
     def _handle_agent_message(
         self,
@@ -1539,9 +1572,6 @@ class StreamProcessor:
 
         self.tool_start_times[tool_id] = time.perf_counter()
         self.printed_tool_ids.add(tool_id)
-        self.active_node = "tools"
-        self._agent_is_thinking = False
-        self._emit_status(force=True)
         self._emit("tool_started", self._build_tool_event_payload(tool_id, tool_name, tool_args, phase="preparing"))
 
     def _handle_tool_result(self, message: ToolMessage) -> None:
@@ -1636,17 +1666,20 @@ class StreamProcessor:
         if diff_blocks:
             self._emit("tool_diff", {"tool_id": tool_id, "diff": diff_blocks[0], "diff_blocks": diff_blocks})
 
+        if self.tool_start_times:
+            self.active_node = "tools"
+            self._emit_status()
+            self._flush_deferred_assistant_delta()
+            return
+
         self.active_node = "agent"
         self._emit_status(force=True)
-        if not self.tool_start_times:
-            visible = self._visible_full_text or self.full_text
-            self._post_tool_replay_text = self._last_nonempty_paragraph(visible).strip()
-            deferred_tail = self._begin_post_tool_assistant_section()
-            self._post_tool_text_buffer = ""
-            if deferred_tail.strip():
-                self._handle_agent_message(AIMessage(content=deferred_tail), source="post_tool_deferred")
-        else:
-            self._flush_deferred_assistant_delta()
+        visible = self._visible_full_text or self.full_text
+        self._post_tool_replay_text = self._last_nonempty_paragraph(visible).strip()
+        deferred_tail = self._begin_post_tool_assistant_section()
+        self._post_tool_text_buffer = ""
+        if deferred_tail.strip():
+            self._handle_agent_message(AIMessage(content=deferred_tail), source="post_tool_deferred")
 
     @staticmethod
     def _normalize_tool_name(tool_name: Any) -> str:

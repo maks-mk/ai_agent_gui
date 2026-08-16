@@ -3,6 +3,7 @@
 Verifies that ``ToolBatchCoordinator`` correctly partitions tool calls into
 parallel-safe and sequential groups, runs them concurrently vs. one-by-one,
 and re-assembles ``ToolMessage`` results in the original ``tool_calls`` order.
+Shell calls are explicitly parallel-safe even though their metadata is mutating.
 """
 
 import asyncio
@@ -113,8 +114,7 @@ class _FakeOwner:
         return bool(meta and meta.read_only and not meta.mutating and not meta.destructive)
 
     def _tool_call_is_parallel_safe(self, tool_call: dict[str, Any]) -> bool:
-        name = tool_call.get("name") or "unknown_tool"
-        return self._tool_is_read_only(name) and name in self.PARALLEL_SAFE_TOOL_NAMES
+        return AgentNodes._tool_call_is_parallel_safe(self, tool_call)
 
     def _partition_tool_calls(self, tool_calls):
         parallel = []
@@ -229,6 +229,79 @@ class MixedParallelToolsTests(unittest.IsolatedAsyncioTestCase):
         # Order preserved
         self.assertEqual(result["messages"][0].tool_call_id, "tc1")
         self.assertEqual(result["messages"][1].tool_call_id, "tc2")
+
+    async def test_parallel_results_stream_as_each_call_finishes(self):
+        owner = self._make_owner({"read_file": True, "list_directory": True})
+        coordinator = ToolBatchCoordinator(owner)
+        original_process = owner._process_tool_call
+
+        async def process_with_different_delays(tool_call, *args, **kwargs):
+            if tool_call.get("id") == "tc1":
+                await asyncio.sleep(0.08)
+            return await original_process(tool_call, *args, **kwargs)
+
+        owner._process_tool_call = process_with_different_delays
+        streamed = []
+        state = self._make_state([
+            _tc("read_file", "tc1"),
+            _tc("list_directory", "tc2"),
+        ])
+
+        with mock.patch("core.node_orchestrators.get_stream_writer", return_value=streamed.append):
+            result = await coordinator.run(state)
+
+        self.assertEqual(streamed[0]["type"], "tool_batch_started")
+        self.assertEqual(
+            [tool_call["id"] for tool_call in streamed[0]["tool_calls"]],
+            ["tc1", "tc2"],
+        )
+        result_events = [event for event in streamed if event["type"] == "tool_result"]
+        self.assertEqual(
+            [event["message"]["tool_call_id"] for event in result_events],
+            ["tc2", "tc1"],
+        )
+        self.assertEqual(
+            [message.tool_call_id for message in result["messages"]],
+            ["tc1", "tc2"],
+        )
+
+    async def test_cli_exec_calls_run_concurrently_despite_mutating_metadata(self):
+        owner = self._make_owner({"cli_exec": False})
+        owner._process_delay = 0.15
+        coordinator = ToolBatchCoordinator(owner)
+        state = self._make_state([
+            _tc("cli_exec", "tc1", {"command": "echo one"}),
+            _tc("cli_exec", "tc2", {"command": "echo two"}),
+        ])
+
+        import time
+
+        start = time.perf_counter()
+        result = await coordinator.run(state)
+        elapsed = time.perf_counter() - start
+
+        self.assertLess(elapsed, 0.27, f"Expected concurrent cli_exec calls, took {elapsed:.3f}s")
+        self.assertEqual(
+            [message.tool_call_id for message in result["messages"]],
+            ["tc1", "tc2"],
+        )
+
+    async def test_cli_exec_does_not_make_other_mutating_tools_parallel(self):
+        owner = self._make_owner({"cli_exec": False, "write_file": False})
+        coordinator = ToolBatchCoordinator(owner)
+        state = self._make_state([
+            _tc("cli_exec", "tc1", {"command": "echo one"}),
+            _tc("write_file", "tc2"),
+            _tc("cli_exec", "tc3", {"command": "echo two"}),
+        ])
+
+        result = await coordinator.run(state)
+
+        self.assertEqual(owner._call_log, ["cli_exec", "write_file", "cli_exec"])
+        self.assertEqual(
+            [message.tool_call_id for message in result["messages"]],
+            ["tc1", "tc2", "tc3"],
+        )
 
     async def test_all_sequential(self):
         """When no call is parallel-safe, all run sequentially."""

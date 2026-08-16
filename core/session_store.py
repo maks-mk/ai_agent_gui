@@ -40,6 +40,7 @@ class SessionSnapshot:
     approval_mode: str = "prompt"
     title: str = DEFAULT_CHAT_TITLE
     last_run_stats: str = ""
+    cache_hit_tokens: int = 0
     is_persisted: bool = True
 
     def touch(self) -> None:
@@ -81,6 +82,10 @@ class SessionStore:
             payload = dict(payload)
             payload.setdefault("approval_mode", "prompt")
             payload["is_persisted"] = bool(payload.get("is_persisted", True))
+            try:
+                payload["cache_hit_tokens"] = max(0, int(payload.get("cache_hit_tokens", 0) or 0))
+            except (TypeError, ValueError):
+                payload["cache_hit_tokens"] = 0
             payload["project_path"] = normalize_project_path(payload.get("project_path"))
             payload["title"] = str(payload.get("title") or DEFAULT_CHAT_TITLE).strip() or DEFAULT_CHAT_TITLE
             return SessionSnapshot(**payload)
@@ -326,5 +331,6 @@ class SessionStore:
             updated_at=now,
             project_path=normalize_project_path(project_path),
             title=str(title or DEFAULT_CHAT_TITLE).strip() or DEFAULT_CHAT_TITLE,
+            cache_hit_tokens=0,
             is_persisted=bool(persisted),
         )

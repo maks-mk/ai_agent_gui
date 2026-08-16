@@ -297,6 +297,21 @@ class AgentRunWorker(QObject):
             logger.debug("Failed to clear cli_output bridge.", exc_info=True)
 
     def _emit_stream_event(self, event: StreamEvent) -> None:
+        if event.type == "cache_hit":
+            payload = event.payload if isinstance(event.payload, dict) else {}
+            try:
+                delta = max(0, int(payload.get("tokens", 0) or 0))
+            except (TypeError, ValueError):
+                delta = 0
+            if delta and self.current_session is not None and self.store is not None:
+                self.current_session.cache_hit_tokens = max(
+                    0,
+                    int(getattr(self.current_session, "cache_hit_tokens", 0) or 0) + delta,
+                )
+                try:
+                    self.store.save_active_session(self.current_session, touch=False, set_active=True)
+                except Exception:
+                    logger.debug("Failed to persist session Cache Hit tokens.", exc_info=True)
         self.event_emitted.emit(event)
         self._maybe_reset_summary_progress_after_compaction(event)
         self._maybe_emit_live_summary_progress(event)

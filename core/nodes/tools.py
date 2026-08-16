@@ -20,9 +20,11 @@ class ToolsMixin:
         return await self.tool_batch.run(state)
 
     def _tool_call_is_parallel_safe(self, tool_call: Dict[str, Any]) -> bool:
-        """Check a single tool call against the double-gate: metadata read-only AND whitelist."""
+        """Allow whitelisted read-only calls and explicitly allowed shell calls to overlap."""
         name = tool_call.get("name") or "unknown_tool"
-        return self._tool_is_read_only(name) and name in self.PARALLEL_SAFE_TOOL_NAMES
+        if name not in self.PARALLEL_SAFE_TOOL_NAMES:
+            return False
+        return name == "cli_exec" or self._tool_is_read_only(name)
 
     def _partition_tool_calls(
         self,
@@ -32,7 +34,8 @@ class ToolsMixin:
 
         Each call is independently classified.  The original ordering within
         each group is preserved, enabling mixed-mode batch execution where
-        read-only calls run concurrently while mutating calls run sequentially.
+        whitelisted read-only calls and cli_exec calls run concurrently while
+        other mutating calls run sequentially.
         """
         parallel: List[Dict[str, Any]] = []
         sequential: List[Dict[str, Any]] = []

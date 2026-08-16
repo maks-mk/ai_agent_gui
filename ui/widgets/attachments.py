@@ -70,6 +70,10 @@ class ImageAttachmentChipWidget(QFrame):
     @staticmethod
     def _load_pixmap(attachment: dict[str, Any], thumb_size: int) -> QPixmap:
         path = str(attachment.get("path") or "").strip()
+        if not path:
+            placeholder = QPixmap(thumb_size, thumb_size)
+            placeholder.fill(Qt.transparent)
+            return placeholder
         pixmap = QPixmap(path)
         if pixmap.isNull():
             placeholder = QPixmap(thumb_size, thumb_size)

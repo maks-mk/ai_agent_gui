@@ -215,6 +215,7 @@ def build_runtime_snapshot(config: AgentConfig, tool_registry, snapshot: Session
         "session_id": snapshot.session_id,
         "session_short": _short_id(snapshot.session_id),
         "session_title": snapshot.title,
+        "cache_hit_tokens": max(0, int(getattr(snapshot, "cache_hit_tokens", 0) or 0)),
         "thread_id": snapshot.thread_id,
         "thread_short": _short_id(snapshot.thread_id),
         "project_path": snapshot.project_path,

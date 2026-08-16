@@ -66,6 +66,7 @@ class WorkspaceBuildResult:
     model_image_badge: QLabel
     no_models_label: QLabel
     open_settings_inline_button: QPushButton
+    cache_hit_label: QLabel
     summary_progress_ring: SummaryProgressRing
     send_button: QPushButton
     stop_action_button: QPushButton
@@ -240,6 +241,13 @@ class WorkspaceBuilder:
         open_settings_inline_button.setFocusPolicy(Qt.NoFocus)
         control_row.addWidget(open_settings_inline_button, 0, Qt.AlignVCenter)
 
+        cache_hit_label = QLabel("Cache Hit: 0")
+        cache_hit_label.setObjectName("ComposerCacheHitLabel")
+        cache_hit_label.setAlignment(Qt.AlignRight | Qt.AlignVCenter)
+        cache_hit_label.setAccessibleName("Session cache hit tokens")
+        cache_hit_label.setToolTip("Prompt cache tokens reported by the provider for this session")
+        control_row.addWidget(cache_hit_label, 0, Qt.AlignVCenter)
+
         control_row.addStretch(1)
 
         summary_progress_ring = SummaryProgressRing()
@@ -317,6 +325,7 @@ class WorkspaceBuilder:
             model_image_badge=model_image_badge,
             no_models_label=no_models_label,
             open_settings_inline_button=open_settings_inline_button,
+            cache_hit_label=cache_hit_label,
             summary_progress_ring=summary_progress_ring,
             send_button=send_button,
             stop_action_button=stop_action_button,

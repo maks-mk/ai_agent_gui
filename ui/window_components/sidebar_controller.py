@@ -42,6 +42,7 @@ class SidebarController:
         self.window.transcript.clear_transcript()
         self.window._clear_draft_image_attachments()
         self.window._clear_composer_notice()
+        self.window._set_session_cache_hit_tokens(0)
         self.window._clear_user_choice_request()
         self.window._show_transient_status_message("Switching chat…")
         self.window.controller.switch_session(session_id)
@@ -75,6 +76,7 @@ class SidebarController:
         self.window.transcript.clear_transcript()
         self.window._clear_draft_image_attachments()
         self.window._clear_composer_notice()
+        self.window._set_session_cache_hit_tokens(0)
         self.window._clear_user_choice_request()
         self.window._clear_approval_request()
         self.window.controller.new_session()
@@ -102,6 +104,7 @@ class SidebarController:
         self.window.composer.reset_history_navigation()
         self.window.current_turn = None
         self.window.transcript.clear_transcript()
+        self.window._set_session_cache_hit_tokens(0)
         self.window._clear_user_choice_request()
         self.window._clear_approval_request()
         self.window._set_status_visual("Creating a new chat for the selected folder…", busy=True)

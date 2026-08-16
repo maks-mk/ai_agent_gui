@@ -1640,6 +1640,13 @@ def build_stylesheet() -> str:
         font-size: 8.8pt;
     }}
 
+    QLabel#ComposerCacheHitLabel {{
+        color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.18)};
+        background: transparent;
+        padding: 0px 2px 0px 0px;
+        font-size: 8.4pt;
+    }}
+
     QPushButton#ComposerOpenSettingsButton {{
         background: transparent;
         border: 1px solid {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.15)};

@@ -2854,12 +2854,14 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         store = SessionStore(tmp / "session.json")
         snapshot = store.new_session(checkpoint_backend="sqlite", checkpoint_target="demo.sqlite")
         snapshot.approval_mode = "always"
+        snapshot.cache_hit_tokens = 15_360
         store.save_active_session(snapshot)
         loaded = store.load_active_session()
         self.assertIsNotNone(loaded)
         self.assertEqual(loaded.session_id, snapshot.session_id)
         self.assertEqual(loaded.thread_id, snapshot.thread_id)
         self.assertEqual(loaded.approval_mode, "always")
+        self.assertEqual(loaded.cache_hit_tokens, 15_360)
 
     def test_session_store_defaults_missing_approval_mode_to_prompt(self):
         tmp = self._workspace_tempdir()
@@ -3017,6 +3019,20 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(updated)
         self.assertEqual(worker.current_session.title, "Сводку по ошибкам [client/demo-app]")
+
+    def test_worker_persists_cache_hit_delta_for_current_session(self):
+        tmp = self._workspace_tempdir()
+        worker = gui_runtime.AgentRunWorker()
+        worker.store = SessionStore(tmp / "session.json")
+        worker.current_session = worker.store.new_session("sqlite", "demo.sqlite", project_path=tmp)
+
+        worker._emit_stream_event(StreamEvent("cache_hit", {"tokens": 8192}))
+        worker._emit_stream_event(StreamEvent("cache_hit", {"tokens": 4096}))
+
+        self.assertEqual(worker.current_session.cache_hit_tokens, 12_288)
+        restored = SessionStore(tmp / "session.json").load_active_session()
+        self.assertIsNotNone(restored)
+        self.assertEqual(restored.cache_hit_tokens, 12_288)
 
     def test_worker_emits_live_summary_progress_after_tool_finished(self):
         worker = gui_runtime.AgentRunWorker()
