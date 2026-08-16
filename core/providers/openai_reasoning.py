@@ -550,7 +550,7 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
     if api_mode == "responses":
         openai_kwargs["use_responses_api"] = True
     registry = ProviderRegistry.from_path(config.provider_registry_path)
-    provider_config = registry.match(config.openai_base_url)
+    provider_config = registry.match(config.openai_base_url, config.openai_model)
     reasoning_enabled = bool(getattr(config, "enable_model_reasoning", True))
     provider_model_supports_reasoning = provider_supports_reasoning_for_model(provider_config, config.openai_model)
     if reasoning_enabled and provider_model_supports_reasoning:

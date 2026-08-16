@@ -169,6 +169,18 @@ class ModelProfilesTests(unittest.TestCase):
         )
         self.assertIn({"value": "adaptive", "label": "Adaptive", "config": {"enabled": True, "mode": "adaptive"}}, anthropic_options)
 
+    def test_nvidia_gpt_oss_reasoning_options_use_documented_effort_levels(self):
+        options = reasoning_options_for_profile(
+            {
+                "provider": "openai",
+                "model": "openai/gpt-oss-120b",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+            }
+        )
+
+        self.assertEqual([option["value"] for option in options], ["off", "low", "medium", "high"])
+        self.assertEqual(options[-1]["config"], {"enabled": True, "effort": "high"})
+
     def test_reasoning_off_label_reflects_provider_behavior(self):
         openai_options = reasoning_options_for_profile(
             {"provider": "openai", "model": "gpt-5.6", "base_url": "https://api.openai.com/v1"}

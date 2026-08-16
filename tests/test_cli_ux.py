@@ -326,6 +326,27 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(len(turn.assistant_segments), 1)
         self.assertEqual(turn.assistant_segments[0].markdown(), preface)
 
+    def test_transcript_does_not_create_assistant_block_for_invisible_markdown(self):
+        turn = ConversationTurnWidget("user", parent=self.window)
+
+        turn.set_assistant_markdown("```\n")
+
+        self.assertEqual(turn.block_kinds(), ["user"])
+        self.assertEqual(turn.assistant_segments, [])
+
+    def test_invisible_assistant_fragment_does_not_split_tool_group(self):
+        turn = ConversationTurnWidget("user", parent=self.window)
+        turn.start_tool({"tool_id": "first", "name": "read_file", "args": {"path": "a.txt"}})
+        turn.finish_tool({"tool_id": "first", "name": "read_file", "content": "a"})
+        first_group = turn.tool_group
+
+        turn.set_assistant_markdown("```\n")
+        turn.start_tool({"tool_id": "second", "name": "read_file", "args": {"path": "b.txt"}})
+
+        self.assertIs(turn.tool_group, first_group)
+        self.assertEqual(turn.block_kinds(), ["user", "tool_group"])
+        self.assertEqual(turn.assistant_segments, [])
+
     def test_transcript_keeps_new_comment_when_shared_prefix_is_partial_word(self):
         turn = ConversationTurnWidget("user", parent=self.window)
         previous = "Посмотрю конфигурацию лимитов и логику self-correction."
@@ -3169,6 +3190,30 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(
             self.controller.save_profiles_calls[-1]["profiles"][0]["reasoning"],
             {"enabled": True, "effort": "high"},
+        )
+
+    def test_nvidia_gpt_oss_reasoning_selector_saves_effort_level(self):
+        payload = self._snapshot_payload()
+        profile = payload["model_profiles"]["profiles"][0]
+        profile.update(
+            {
+                "model": "openai/gpt-oss-120b",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+            }
+        )
+        self.window._handle_initialized(payload)
+
+        self.assertEqual(
+            [action.text() for action in self.window.reasoning_chip_menu.actions()],
+            ["Default", "Low", "Medium", "High"],
+        )
+        action = next(action for action in self.window.reasoning_chip_menu.actions() if action.text() == "Medium")
+        action.trigger()
+
+        self.assertEqual(self.window.reasoning_chip.text(), "Medium")
+        self.assertEqual(
+            self.controller.save_profiles_calls[-1]["profiles"][0]["reasoning"],
+            {"enabled": True, "effort": "medium"},
         )
 
     def test_no_models_cta_is_visible_and_send_is_disabled(self):

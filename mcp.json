@@ -23,7 +23,7 @@
   "_builtin_tools": {
     "download_file": false,
     "list_directory": false,
-    "batch_web_search": false,
-    "fetch_content": false
+    "batch_web_search": true,
+    "fetch_content": true
   }
 }

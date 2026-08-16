@@ -66,6 +66,18 @@ class ProviderRegistryTests(unittest.TestCase):
 
         self.assertEqual(registry.match("https://api.openrouter.ai/v1")["id"], "high")
 
+    def test_match_uses_model_name_to_select_provider_variant(self):
+        registry = ProviderRegistry(
+            _registry(
+                _provider(id="generic", priority=10, model_match={"contains": ["qwen3"]}),
+                _provider(id="gpt_oss", priority=20, model_match={"contains": ["gpt-oss"]}),
+            )
+        )
+
+        self.assertEqual(registry.match("https://openrouter.ai/v1", "openai/gpt-oss-120b")["id"], "gpt_oss")
+        self.assertEqual(registry.match("https://openrouter.ai/v1", "qwen/qwen3-235b")["id"], "generic")
+        self.assertIsNone(registry.match("https://openrouter.ai/v1", "meta/llama-3.3"))
+
     def test_unknown_provider_returns_none_and_payload_is_unchanged(self):
         payload = {"model": "x"}
 

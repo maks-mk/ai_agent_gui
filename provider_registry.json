@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "data_version": 2,
+  "data_version": 3,
   "providers": [
     {
       "id": "openai",
@@ -110,6 +110,37 @@
       "notes": "Fireworks OpenAI-compatible reasoning API."
     },
     {
+      "id": "nvidia_nim_gpt_oss",
+      "enabled": true,
+      "priority": 71,
+      "match": [
+        "integrate.api.nvidia.com",
+        "api.nvidia.com"
+      ],
+      "match_type": "suffix",
+      "supports_reasoning": true,
+      "validation": "map",
+      "model_match": {
+        "contains": [
+          "gpt-oss"
+        ]
+      },
+      "reasoning": {
+        "path": "reasoning_effort",
+        "allowed_values": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "value_map": {
+          "minimal": "low",
+          "xhigh": "high",
+          "max": "high"
+        }
+      },
+      "notes": "NVIDIA NIM GPT-OSS Chat Completions API documents top-level reasoning_effort with low, medium, and high values. Ref: docs.api.nvidia.com/nim/reference/openai-gpt-oss-120b-infer."
+    },
+    {
       "id": "nvidia_nim",
       "enabled": true,
       "priority": 70,
@@ -130,8 +161,7 @@
           "glm-4.7",
           "kimi-k2",
           "qwen3",
-          "gemma-4",
-          "gpt-oss"
+          "gemma-4"
         ]
       },
       "reasoning": {

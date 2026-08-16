@@ -1253,7 +1253,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(captured["reasoning_effort"], "medium")
         self.assertNotIn("extra_body", captured)
 
-    def test_create_llm_for_nvidia_reasoning_model_uses_registry_thinking_kwargs(self):
+    def test_create_llm_for_nvidia_gpt_oss_uses_documented_reasoning_effort(self):
         captured = {}
 
         class FakeChatOpenAI:
@@ -1267,7 +1267,29 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                     OPENAI_API_KEY="sk-test",
                     OPENAI_MODEL="openai/gpt-oss-120b",
                     OPENAI_BASE_URL="https://integrate.api.nvidia.com/v1",
-                    MODEL_REASONING_EFFORT="xhigh",
+                    MODEL_REASONING_EFFORT="high",
+                )
+            )
+
+        self.assertNotIn("reasoning", captured)
+        self.assertNotIn("extra_body", captured)
+        self.assertEqual(captured["reasoning_effort"], "high")
+
+    def test_create_llm_for_nvidia_qwen_keeps_registry_thinking_kwargs(self):
+        captured = {}
+
+        class FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_openai": mock.Mock(ChatOpenAI=FakeChatOpenAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="openai",
+                    OPENAI_API_KEY="sk-test",
+                    OPENAI_MODEL="qwen/qwen3-235b-a22b",
+                    OPENAI_BASE_URL="https://integrate.api.nvidia.com/v1",
+                    MODEL_REASONING_EFFORT="high",
                 )
             )
 

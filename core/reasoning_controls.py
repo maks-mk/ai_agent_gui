@@ -66,7 +66,7 @@ def reasoning_options_for_profile(
     if provider == "openai":
         try:
             registry = ProviderRegistry.from_path(registry_path or (BASE_DIR / "provider_registry.json"))
-            provider_config = registry.match(_clean_text(data.get("base_url")))
+            provider_config = registry.match(_clean_text(data.get("base_url")), model)
         except Exception:
             return []
         if not provider_supports_reasoning_for_model(provider_config, model):

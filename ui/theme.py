@@ -1624,9 +1624,24 @@ def build_stylesheet() -> str:
         font-weight: 500;
     }}
 
+    QToolButton#ComposerMetaChipButton[chipPosition="left"] {{
+        border-top-right-radius: 0px;
+        border-bottom-right-radius: 0px;
+    }}
+
+    QToolButton#ComposerMetaChipButton[chipPosition="right"] {{
+        border-left: none;
+        border-top-left-radius: 0px;
+        border-bottom-left-radius: 0px;
+    }}
+
     QToolButton#ComposerMetaChipButton:hover {{
         background: {blend_hex(_COMPOSER_BG, SURFACE_ALT, 0.36)};
         border: 1px solid {blend_hex(BORDER, "#FFFFFF", 0.14)};
+    }}
+
+    QToolButton#ComposerMetaChipButton[chipPosition="right"]:hover {{
+        border-left: none;
     }}
 
     QToolButton#ComposerMetaChipButton:disabled {{

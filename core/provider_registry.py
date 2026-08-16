@@ -96,7 +96,7 @@ class ProviderRegistry:
             raise RegistryValidationError("registry root must be an object")
         return cls(payload)
 
-    def match(self, base_url: str | None) -> dict[str, Any] | None:
+    def match(self, base_url: str | None, model_name: str | None = None) -> dict[str, Any] | None:
         hostname = _hostname_from_base_url(base_url or "")
         if not hostname:
             debug_event("provider_registry_match_skipped", base_url=base_url, hostname="")
@@ -108,6 +108,8 @@ class ProviderRegistry:
             reverse=True,
         )
         for provider in providers:
+            if model_name is not None and not provider_supports_reasoning_for_model(provider, model_name):
+                continue
             match_type = provider["match_type"]
             for pattern in provider["match"]:
                 if match_type == "exact" and hostname == pattern:

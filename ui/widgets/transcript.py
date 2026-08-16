@@ -138,20 +138,29 @@ class ConversationTurnWidget(QWidget):
         self._append_block("assistant", segment)
         return segment
 
+    def _remove_trailing_empty_assistant_segment(self) -> bool:
+        if not self._timeline or self._timeline[-1][0] != "assistant":
+            return False
+        widget = self._timeline[-1][1]
+        if not isinstance(widget, AssistantMessageWidget) or AssistantMessageWidget.has_renderable_content(widget.markdown()):
+            return False
+        self._timeline.pop()
+        self._layout.removeWidget(widget)
+        if widget in self.assistant_segments:
+            self.assistant_segments.remove(widget)
+        widget.deleteLater()
+        self._assistant_markdown = ""
+        return True
+
     def set_assistant_markdown(self, markdown: str) -> None:
+        if not AssistantMessageWidget.has_renderable_content(markdown):
+            if self._remove_trailing_empty_assistant_segment():
+                self._assistant_markdown = ""
+            return
         if (
             markdown == self._assistant_markdown
             and self.assistant_segments
         ):
-            return
-        if not markdown:
-            if self._timeline and self._timeline[-1][0] == "assistant":
-                _kind, widget = self._timeline.pop()
-                self._layout.removeWidget(widget)
-                if widget in self.assistant_segments:
-                    self.assistant_segments.remove(widget)  # type: ignore[arg-type]
-                widget.deleteLater()
-            self._assistant_markdown = ""
             return
 
         starts_new_assistant_block = not self._timeline or self._timeline[-1][0] != "assistant"
@@ -208,6 +217,7 @@ class ConversationTurnWidget(QWidget):
 
     def start_tool(self, payload: dict[str, Any]) -> ToolCardWidget:
         self.set_assistant_streaming(False)
+        self._remove_trailing_empty_assistant_segment()
         tool_id = payload.get("tool_id", "")
         card = self.tool_cards.get(tool_id)
         if card is None:

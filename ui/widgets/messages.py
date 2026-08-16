@@ -305,6 +305,13 @@ class AssistantMessageWidget(QFrame):
                 parts.append(part or ("markdown", segment.text, ""))
         return parts
 
+    @classmethod
+    def has_renderable_content(cls, markdown: str) -> bool:
+        text = str(markdown or "").strip()
+        if not text:
+            return False
+        return any(part_text.strip() for _kind, part_text, _language in cls._split_markdown_parts(text))
+
     def _split_markdown_parts_incremental(self, markdown: str) -> list[tuple[str, str, str]]:
         previous_text = self._parts_source_text
         previous_parts = self._split_parts_cache

@@ -698,10 +698,20 @@ class MainWindow(QMainWindow):
         for action in self.reasoning_chip_group.actions():
             self.reasoning_chip_group.removeAction(action)
         if not options:
+            self.reasoning_chip.setProperty("chipPosition", "hidden")
             self.reasoning_chip.setVisible(False)
+            self.model_chip.setProperty("chipPosition", "single")
+            self.model_chip.style().unpolish(self.model_chip)
+            self.model_chip.style().polish(self.model_chip)
             return
 
+        self.reasoning_chip.setProperty("chipPosition", "right")
         self.reasoning_chip.setVisible(True)
+        self.model_chip.setProperty("chipPosition", "left")
+        self.model_chip.style().unpolish(self.model_chip)
+        self.model_chip.style().polish(self.model_chip)
+        self.reasoning_chip.style().unpolish(self.reasoning_chip)
+        self.reasoning_chip.style().polish(self.reasoning_chip)
         current = normalize_profile_reasoning((profile or {}).get("reasoning"))
         selected_value = "off" if current and not current.get("enabled", True) else ""
         provider = str((profile or {}).get("provider") or "").strip().lower()
