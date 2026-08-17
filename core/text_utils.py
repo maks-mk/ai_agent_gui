@@ -344,7 +344,7 @@ def abbreviate_path(path_str: str, max_length: int = 60) -> str:
 
 
 def _format_path_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
-    path_value = tool_args.get("file_path") or tool_args.get("path")
+    path_value = tool_args.get("file_path") or tool_args.get("path") or tool_args.get("dir_path")
     if path_value:
         return f"{tool_name}({abbreviate_path(str(path_value))})"
     return None
@@ -386,7 +386,19 @@ def _format_url_tool(tool_name: str, tool_args: Dict[str, Any]) -> str | None:
 
 
 DISPLAY_RULES: tuple[tuple[set[str], Callable[[str, Dict[str, Any]], str | None]], ...] = (
-    ({"read_file", "write_file", "edit_file", "Read", "Write", "SearchReplace"}, _format_path_tool),
+    (
+        {
+            "read_file",
+            "write_file",
+            "edit_file",
+            "safe_delete_file",
+            "safe_delete_directory",
+            "Read",
+            "Write",
+            "SearchReplace",
+        },
+        _format_path_tool,
+    ),
     ({"batch_web_search"}, _format_query_tool),
     ({"grep", "Grep", "glob", "Glob"}, _format_pattern_tool),
     ({"execute", "RunCommand", "cli_exec"}, _format_command_tool),
@@ -413,8 +425,17 @@ def classify_tool_args_state(tool_name: str, tool_args: Dict[str, Any]) -> str:
         return "pending"
 
     anchor_keys: tuple[str, ...] = ()
-    if tool_name in {"read_file", "write_file", "edit_file", "Read", "Write", "SearchReplace"}:
-        anchor_keys = ("path", "file_path")
+    if tool_name in {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "safe_delete_file",
+        "safe_delete_directory",
+        "Read",
+        "Write",
+        "SearchReplace",
+    }:
+        anchor_keys = ("path", "file_path", "dir_path")
     elif tool_name == "batch_web_search":
         anchor_keys = ("queries",)
     elif tool_name in {"grep", "Grep", "glob", "Glob"}:
@@ -495,8 +516,17 @@ def tool_target_summary(tool_name: str, tool_args: Dict[str, Any]) -> str:
     args = dict(tool_args or {})
     normalized_name = str(tool_name or "").strip()
 
-    if normalized_name in {"read_file", "write_file", "edit_file", "Read", "Write", "SearchReplace"}:
-        path_value = args.get("file_path") or args.get("path")
+    if normalized_name in {
+        "read_file",
+        "write_file",
+        "edit_file",
+        "safe_delete_file",
+        "safe_delete_directory",
+        "Read",
+        "Write",
+        "SearchReplace",
+    }:
+        path_value = args.get("file_path") or args.get("path") or args.get("dir_path")
         return abbreviate_path(str(path_value)) if path_value else ""
     if normalized_name in {"ls", "LS", "list_directory"}:
         path_value = args.get("path")
@@ -532,6 +562,8 @@ def build_tool_ui_labels(
         "read_file": "Reading file",
         "write_file": "Writing file",
         "edit_file": "Editing file",
+        "safe_delete_file": "Deleting file",
+        "safe_delete_directory": "Deleting directory",
         "Read": "Reading file",
         "Write": "Writing file",
         "SearchReplace": "Editing file",
@@ -555,6 +587,8 @@ def build_tool_ui_labels(
         "read_file": "Preparing file read",
         "write_file": "Preparing file write",
         "edit_file": "Preparing edit",
+        "safe_delete_file": "Preparing file deletion",
+        "safe_delete_directory": "Preparing directory deletion",
         "Read": "Preparing file read",
         "Write": "Preparing file write",
         "SearchReplace": "Preparing edit",

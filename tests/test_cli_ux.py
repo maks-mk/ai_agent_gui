@@ -265,6 +265,24 @@ class GuiUxTests(unittest.TestCase):
                 self.assertEqual(card.action_label.full_text(), completed_title)
                 card.deleteLater()
 
+    def test_safe_delete_cards_render_paths_like_other_filesystem_tools(self):
+        cases = (
+            ("safe_delete_file", "obsolete.txt"),
+            ("safe_delete_directory", "old-cache"),
+        )
+
+        for name, path in cases:
+            with self.subTest(name=name):
+                card = ToolCardWidget({"name": name, "args": {"path": path}, "phase": "running"})
+                self.assertEqual(card.action_label.full_text(), f"Deleting {path}")
+                self.assertIn("color:#7CC7FF", card.action_label.text())
+
+                card.finish({"name": name, "args": {"path": path}, "content": "Success"})
+
+                self.assertEqual(card.action_label.full_text(), f"Deleted {path}")
+                self.assertNotIn("safe_delete_", card.action_label.full_text())
+                card.deleteLater()
+
     def test_tool_title_keeps_action_form_for_errors(self):
         card = ToolCardWidget({"name": "read_file", "phase": "running", "is_error": True})
         self.assertEqual(card.action_label.full_text(), "Reading failed")
@@ -3181,8 +3199,8 @@ class GuiUxTests(unittest.TestCase):
         self.window._handle_initialized(payload)
 
         self.assertFalse(self.window.reasoning_chip.isHidden())
-        self.assertEqual(self.window.reasoning_chip.text(), "Default")
-        self.assertIn("Default", [action.text() for action in self.window.reasoning_chip_menu.actions()])
+        self.assertEqual(self.window.reasoning_chip.text(), "Reasoning")
+        self.assertNotIn("Default", [action.text() for action in self.window.reasoning_chip_menu.actions()])
         action = next(action for action in self.window.reasoning_chip_menu.actions() if action.text() == "High")
         action.trigger()
 
@@ -3190,6 +3208,25 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(
             self.controller.save_profiles_calls[-1]["profiles"][0]["reasoning"],
             {"enabled": True, "effort": "high"},
+        )
+
+    def test_reasoning_selector_preserves_legacy_disabled_profile_state(self):
+        payload = self._snapshot_payload()
+        profile = payload["model_profiles"]["profiles"][0]
+        profile.update(
+            {
+                "model": "gpt-5.6",
+                "base_url": "https://api.openai.com/v1",
+                "reasoning": {"enabled": False},
+            }
+        )
+        self.window._handle_initialized(payload)
+
+        self.assertEqual(self.window.reasoning_chip.text(), "Off")
+        self.assertNotIn("Off", [action.text() for action in self.window.reasoning_chip_menu.actions()])
+        self.assertEqual(
+            [action.text() for action in self.window.reasoning_chip_menu.actions()],
+            ["Minimal", "Low", "Medium", "High", "X-High"],
         )
 
     def test_nvidia_gpt_oss_reasoning_selector_saves_effort_level(self):
@@ -3205,7 +3242,7 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(
             [action.text() for action in self.window.reasoning_chip_menu.actions()],
-            ["Default", "Low", "Medium", "High"],
+            ["Low", "Medium", "High"],
         )
         action = next(action for action in self.window.reasoning_chip_menu.actions() if action.text() == "Medium")
         action.trigger()

@@ -445,13 +445,13 @@ class ToolCardWidget(QFrame):
         normalized_args: dict[str, Any],
     ) -> list[tuple[str, str]]:
         role = self._tool_role(payload.get("name", ""))
-        if role not in {"write", "edit", "read", "list"}:
+        if role not in {"write", "edit", "read", "list", "delete"}:
             return []
         target = self._compact_single_line(payload.get("subtitle", ""))
         if self._is_argument_placeholder(target):
             target = ""
         if not target:
-            path_value = normalized_args.get("file_path") or normalized_args.get("path")
+            path_value = normalized_args.get("file_path") or normalized_args.get("path") or normalized_args.get("dir_path")
             target = self._compact_single_line(path_value)
         if not target:
             return []

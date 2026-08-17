@@ -725,7 +725,7 @@ class MainWindow(QMainWindow):
         elif provider == "anthropic" and current.get("mode"):
             selected_value = str(current["mode"])
 
-        selected_label = "Default"
+        selected_label = "Off" if selected_value == "off" else "Reasoning"
         for option in options:
             action = self.reasoning_chip_menu.addAction(str(option["label"]))
             action.setCheckable(True)

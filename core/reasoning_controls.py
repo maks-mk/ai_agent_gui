@@ -60,9 +60,6 @@ def reasoning_options_for_profile(
     data = profile if isinstance(profile, Mapping) else {}
     provider = _clean_text(data.get("provider")).lower()
     model = _clean_text(data.get("model"))
-    off_label = "Default" if provider == "openai" else "Off"
-    off = _option("off", off_label, {"enabled": False})
-
     if provider == "openai":
         try:
             registry = ProviderRegistry.from_path(registry_path or (BASE_DIR / "provider_registry.json"))
@@ -74,8 +71,9 @@ def reasoning_options_for_profile(
         reasoning = provider_config.get("reasoning", {}) if isinstance(provider_config, Mapping) else {}
         values = reasoning.get("allowed_values", []) if isinstance(reasoning, Mapping) else []
         allowed = [_clean_text(value).lower() for value in values if _clean_text(value)]
-        return [off, *[_option(value, _title(value), {"enabled": True, "effort": value}) for value in allowed]]
+        return [_option(value, _title(value), {"enabled": True, "effort": value}) for value in allowed]
 
+    off = _option("off", "Off", {"enabled": False})
     if provider == "gemini":
         if _gemini_model_supports_thinking_level(model):
             normalized_model = _normalized_gemini_model_name(model)

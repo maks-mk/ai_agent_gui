@@ -178,10 +178,10 @@ class ModelProfilesTests(unittest.TestCase):
             }
         )
 
-        self.assertEqual([option["value"] for option in options], ["off", "low", "medium", "high"])
+        self.assertEqual([option["value"] for option in options], ["low", "medium", "high"])
         self.assertEqual(options[-1]["config"], {"enabled": True, "effort": "high"})
 
-    def test_reasoning_off_label_reflects_provider_behavior(self):
+    def test_reasoning_off_option_is_only_exposed_for_providers_that_support_disabling(self):
         openai_options = reasoning_options_for_profile(
             {"provider": "openai", "model": "gpt-5.6", "base_url": "https://api.openai.com/v1"}
         )
@@ -191,14 +191,17 @@ class ModelProfilesTests(unittest.TestCase):
         gemini_options = reasoning_options_for_profile({"provider": "gemini", "model": "gemini-2.5-flash"})
         anthropic_options = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-sonnet-5"})
 
-        default_option = {"value": "off", "label": "Default", "config": {"enabled": False}}
         off_option = {"value": "off", "label": "Off", "config": {"enabled": False}}
-        self.assertEqual(openai_options[0], default_option)
-        self.assertEqual(compatible_options[0], default_option)
+        self.assertNotIn("off", [option["value"] for option in openai_options])
+        self.assertNotIn("off", [option["value"] for option in compatible_options])
         self.assertEqual(gemini_options[0], off_option)
         self.assertEqual(anthropic_options[0], off_option)
 
     def test_profile_reasoning_overrides_use_provider_specific_fields(self):
+        self.assertEqual(
+            profile_reasoning_overrides({"provider": "openai", "reasoning": {"enabled": False}}),
+            {"enable_model_reasoning": False},
+        )
         self.assertEqual(
             profile_reasoning_overrides({"provider": "gemini", "reasoning": {"enabled": True, "thinking_budget": 4096}}),
             {"enable_model_reasoning": True, "gemini_thinking_budget": 4096},

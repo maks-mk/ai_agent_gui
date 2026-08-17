@@ -144,6 +144,8 @@ Registry матчится по hostname из `OPENAI_BASE_URL`.
 
 Особый случай: `MODEL_REASONING_EFFORT=none` выключает добавление reasoning payload на уровне runtime. Это работает даже если provider entry поддерживает reasoning.
 
+В UI профилей OpenAI-compatible пункт `Default` не является отдельным уровнем и не добавляется в меню. Пользователь выбирает только значения из `allowed_values`; профиль без сохранённого reasoning-выбора сохраняет глобальную runtime-настройку. Старые профили с `reasoning.enabled: false` продолжают отключать reasoning.
+
 ## Как выбрать `path`
 
 Смотри документацию конкретного агрегатора.

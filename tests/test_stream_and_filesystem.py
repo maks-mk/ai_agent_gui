@@ -1634,6 +1634,27 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertIn("demo.txt", finished[0]["subtitle"])
         self.assertIn("demo.txt", finished[0]["raw_display"])
 
+    def test_stream_processor_safe_delete_payloads_use_filesystem_labels(self):
+        processor = StreamProcessor()
+        cases = (
+            ("safe_delete_file", "obsolete.txt", "Preparing file deletion"),
+            ("safe_delete_directory", "old-cache", "Preparing directory deletion"),
+        )
+
+        for name, path, expected_display in cases:
+            with self.subTest(name=name):
+                payload = processor._build_tool_event_payload(
+                    f"call-{name}",
+                    name,
+                    {"path": path},
+                    phase="preparing",
+                )
+
+                self.assertEqual(payload["display"], expected_display)
+                self.assertEqual(payload["subtitle"], path)
+                self.assertEqual(payload["raw_display"], f"{name}({path})")
+                self.assertEqual(payload["args_state"], "complete")
+
     def test_stream_processor_emits_tool_started_refresh_when_args_arrive_late(self):
         events = []
         processor = StreamProcessor(events.append)
