@@ -307,7 +307,7 @@
       },
       "notes": "Experimental: testing OpenAI-style reasoning payload for GPT-5 models through freemodel.dev."
     },
-	{
+    {
       "id": "tokenlayer",
       "enabled": true,
       "priority": 60,
@@ -333,7 +333,7 @@
       },
       "notes": "Experimental: testing OpenAI-style reasoning payload for GPT-5 models through tokenlayer.net."
     },
-	{
+    {
       "id": "agentrouter",
       "enabled": true,
       "priority": 60,
@@ -356,7 +356,7 @@
       },
       "notes": "AgentRouter OpenAI-compatible Chat Completions uses top-level reasoning_effort; Responses-only reasoning.summary is not sent in chat mode."
     },
-	{
+    {
       "id": "apimaster",
       "enabled": true,
       "priority": 60,
@@ -403,7 +403,7 @@
       },
       "notes": "TokenBay OpenAI-compatible Chat Completions documents top-level reasoning_effort. Responses API documents reasoning.effort and reasoning.summary, but ChatOpenAI uses chat completions here."
     },
-	{
+    {
       "id": "ai-router",
       "enabled": true,
       "priority": 60,
@@ -429,6 +429,33 @@
         }
       },
       "notes": "Experimental: testing OpenAI-style reasoning payload for GPT-5 models through api.ai-router.dev."
+    },
+    {
+      "id": "hf_qwen38",
+      "enabled": true,
+      "priority": 65,
+      "match": [
+        "g9hnto0u7lvbu837.us-east-2.aws.endpoints.huggingface.cloud"
+      ],
+      "match_type": "exact",
+      "supports_reasoning": true,
+      "validation": "map",
+      "reasoning": {
+        "path": "reasoning_effort",
+        "allowed_values": [
+          "low",
+          "medium",
+          "xhigh"
+        ],
+        "value_map": {
+          "minimal": "low",
+          "low": "low",
+          "medium": "medium",
+          "high": "xhigh",
+          "xhigh": "xhigh"
+        }
+      },
+      "notes": "Hugging Face public Qwen3.8-27B endpoint. OpenAI-compatible Chat Completions API. reasoning_effort supports low, medium and xhigh."
     },
     {
       "id": "freetheai",

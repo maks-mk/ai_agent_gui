@@ -1,5 +1,5 @@
 # ===========================
-# .env example (v0.67.73.21b)
+# .env example (v0.67.73.234b)
 # ===========================
 #
 # ВНИМАНИЕ:
@@ -15,8 +15,8 @@
 PROVIDER=gemini
 
 # --- Google Gemini ---
-GEMINI_API_KEY=AIzaSy-REPLACE_WITH_YOUR_KEY
-GEMINI_MODEL=gemini-3.6-flash
+GEMINI_API_KEY=AIzaSyREPLACE_WITH_YOUR_KEY
+GEMINI_MODEL=gemini-1.5-flash
 # Включает provider-side reasoning/thinking для поддерживаемых моделей.
 ENABLE_MODEL_REASONING=true
 # Gemini thinking budget применяется к gemini-2.5* / gemini-3*.
@@ -62,7 +62,7 @@ MODEL_REASONING_EFFORT=medium
 # ===========================
 # 2) Основные настройки агента
 # ===========================
-TEMPERATURE=0.3
+TEMPERATURE=0.2
 MAX_LOOPS=50
 # Optional: перезаписать настройки per-tool loop guard.
 # Если оставить пустыми, значения вычисляются от MAX_LOOPS:
@@ -116,7 +116,7 @@ ENABLE_PROCESS_TOOLS=false
 
 # Shell / Терминал (выполнение команд cmd/bash).
 # ВНИМАНИЕ: Дает модели доступ к выполнению любых команд. Используйте с осторожностью.
-ENABLE_SHELL_TOOL=true
+ENABLE_SHELL_TOOL=false
 # Stream/runtime caps (защита от роста памяти в длинных стримах)
 # STREAM_TEXT_MAX_CHARS=120000
 # STREAM_EVENTS_MAX=400
@@ -170,7 +170,7 @@ MAX_BACKGROUND_PROCESSES=5
 # "чистый" счётчик истории.
 # Дополнительно есть "мягкая зона": чуть выше порога суммаризация может быть отложена,
 # если сжимать пока почти нечего или в истории слишком мало human-turns.
-SESSION_SIZE=40000
+SESSION_SIZE=8000
 SUMMARY_RESERVED_TOKENS=3000
 
 # Сколько последних сообщений оставлять "сырыми" (без сжатия) при суммаризации.

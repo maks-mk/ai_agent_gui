@@ -23,6 +23,27 @@ START
 - При смене проблемы (новый fingerprint) retry-бюджет сбрасывается; для одной и той же проблемы разрешены несколько `llm_replan` попыток в рамках `SELF_CORRECTION_RETRY_LIMIT`.
 - Stream-interruption recovery: при обрыве потока провайдера история автоматически чинится, ошибка классифицируется (`rate_limit` / `timeout` / `server_error` / `network`), и запуск продолжается после backoff с джиттером. Для обычных ошибок используется экспоненциальная задержка (`RETRY_DELAY * 2^attempt + random jitter`), для rate-limit — `RETRY_DELAY * 1.5`. Лимит попыток авто-продолжения — `min(MAX_RETRIES, 2)` (не отдельная env-переменная).
 - После `tools` успешный результат возвращается в `update_step`, затем агент получает следующий ход. После `recovery` исходы `recover_agent` и `continue_agent` также ведут через `update_step`; остальные исходы завершают выполнение.
+- `agent.py` сначала загружает `ToolRegistry` и MCP, создаёт checkpoint runtime и run logger, затем создаёт provider adapter через `core/providers/factory.py`. Инструменты привязываются к LLM только после нормализации схем; при ошибке binding tool calling отключается для текущего runtime.
+- `ToolRegistry` объединяет встроенные tools и MCP tools, применяет фиче-флаги, сохранённые overrides из `mcp.json` и metadata риска. `read_only` tools могут выполняться mixed-mode batch параллельно, остальные tools идут последовательно.
+- Для OpenAI-compatible профилей reasoning kwargs выбираются через `provider_registry.json` по hostname `base_url` и, при необходимости, по имени модели. Нативные адаптеры Gemini и Anthropic используют собственные provider-specific настройки.
+
+## Runtime Lifecycle
+
+```text
+main.py
+  → MainWindow / AgentRuntimeController
+  → AgentRunWorker
+  → build_agent_app()
+     → AgentConfig (.env)
+     → ToolRegistry (built-in + MCP)
+     → checkpoint runtime (SQLite или memory)
+     → provider adapter и model profile
+     → LangGraph application
+  → stream/status events
+  → session snapshot, checkpoints и JSONL run log
+```
+
+`AgentRuntimeController` отделяет Qt UI-поток от асинхронного выполнения графа. Interrupts для approval и user choice возобновляются через runtime session coordination; stream errors классифицируются до retry/continue flow. Текущая версия приложения задаётся единственным источником `core/constants.py` (`AGENT_VERSION`) и отображается в заголовке окна и runtime payload.
 
 ---
 

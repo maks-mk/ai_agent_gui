@@ -2,6 +2,8 @@
 
 `provider_registry.json` описывает, какие reasoning/thinking параметры нужно передавать OpenAI-compatible агрегаторам. Это нужно потому, что единого стандарта нет: один провайдер принимает `reasoning.effort`, другой `extra_body.reasoning.effort`, третий `reasoning_effort`, а некоторые возвращают `400`, если отправить неизвестное поле.
 
+Текущий registry использует `schema_version: 1` и `data_version: 3`. В нём есть отдельные записи для NVIDIA NIM GPT-OSS, NVIDIA NIM thinking-моделей и Hugging Face/Qwen endpoint `hf_qwen38`; matching выполняется по hostname `OPENAI_BASE_URL`, а для reasoning-профилей дополнительно учитывается имя модели.
+
 Registry применяется только к профилям с `provider: openai`. Gemini настраивается отдельно через Google SDK-поля `thinking_budget`, `thinking_level` и `include_thoughts`.
 
 > Кастомные HTTP-заголовки для OpenAI-compatible запросов (эмуляция QwenCode и др.) настраиваются отдельно через `headers.json` — см. раздел «HTTP-заголовки» в [`CONFIGURATION.md`](./CONFIGURATION.md).
@@ -154,7 +156,7 @@ Registry матчится по hostname из `OPENAI_BASE_URL`.
 | OpenAI SDK `extra_body` | `extra_body.reasoning.effort` | OpenRouter |
 | Top-level Chat Completions field | `reasoning_effort` | Ollama Cloud, Fireworks, Mistral |
 
-> **NVIDIA NIM** в текущем registry использует отдельный формат `extra_body.chat_template_kwargs.enable_thinking`; подробности ниже.
+> **NVIDIA NIM** в текущем registry разделён на два формата: GPT-OSS использует top-level `reasoning_effort`, остальные matching thinking-модели — `extra_body.chat_template_kwargs.enable_thinking`; подробности ниже.
 
 Не угадывай поле по названию модели. Один и тот же model id через разные gateways может требовать разные параметры.
 
@@ -299,12 +301,18 @@ Registry матчится по hostname из `OPENAI_BASE_URL`.
 
 ## NVIDIA NIM: особенности reasoning
 
-NVIDIA NIM hosted API (`integrate.api.nvidia.com`, `api.nvidia.com`) имеет ряд особенностей:
+NVIDIA NIM hosted API (`integrate.api.nvidia.com`, `api.nvidia.com`) разделён в registry на два provider entry с разными payload:
 
-1. **`chat_template_kwargs` для thinking mode** — агент включает thinking через `extra_body.chat_template_kwargs.enable_thinking` (отправляется через `extra_body`, чтобы обойти LangChain UserWarning о нестандартных параметрах). Это работает на hosted API для моделей, перечисленных в `model_match` (`deepseek-r1`, `deepseek-v4`, `deepseek-v3`, `glm-5`, `glm-4.7`, `kimi-k2`, `qwen3`, `gemma-4`, `gpt-oss`). Модели вне `model_match` либо не поддерживают thinking, либо думают всегда.
+1. **GPT-OSS (`nvidia_nim_gpt_oss`, priority 71)** — применяется только к моделям, содержащим `gpt-oss`. Используется top-level `reasoning_effort`; допустимые значения после mapping: `low`, `medium`, `high`. Входные `minimal` и `xhigh`/`max` преобразуются соответственно в `low` и `high`.
 
-2. **Vocabulary**: входные значения `minimal`, `low`, `medium`, `high`, `xhigh` и `max` маппятся в `enable_thinking: true`. В текущей схеме они только включают thinking mode и не задают различимую глубину reasoning.
+2. **Остальные thinking-модели (`nvidia_nim`, priority 70)** — применяется к моделям, содержащим `deepseek-r1`, `deepseek-v4`, `deepseek-v3`, `deepseek-prover`, `glm-5`, `glm-4.7`, `kimi-k2`, `qwen3` или `gemma-4`. Thinking включается через `extra_body.chat_template_kwargs.enable_thinking=true`, а `clear_thinking=false` добавляется как дополнительное поле. Значения `minimal`, `low`, `medium`, `high`, `xhigh` и `max` маппятся в `true`; они включают режим thinking, но не задают различимую глубину reasoning.
 
-3. **Reasoning в streaming** — модель может возвращать reasoning через нестандартные top-level поля в delta: `delta.reasoning`, `delta.reasoning_content`, `delta.thinking`. Наш `extract_openai_reasoning_delta` уже проверяет эти поля.
+Обе записи используют suffix matching для `integrate.api.nvidia.com` и `api.nvidia.com`. Приоритет GPT-OSS нужен, чтобы его запись с `reasoning_effort` побеждала общий NVIDIA entry для тех же hostname.
 
-4. **`reasoning_detected=false`** — если модель не возвращает reasoning content в потоке, это не значит, что thinking не был включён. Параметр влияет на поведение модели, но reasoning tokens могут не возвращаться клиенту.
+Reasoning в streaming может возвращаться через нестандартные top-level поля delta: `delta.reasoning`, `delta.reasoning_content`, `delta.thinking`. Если `reasoning_detected=false`, это не доказывает, что thinking не включён: провайдер может не возвращать reasoning tokens клиенту.
+
+## Hugging Face / Qwen endpoint
+
+Запись `hf_qwen38` с priority 65 точно сопоставляется с hostname `g9hnto0u7lvbu837.us-east-2.aws.endpoints.huggingface.cloud`. Она поддерживает `reasoning_effort` со значениями `low`, `medium`, `xhigh`; входные значения `minimal` и `low` → `low`, `medium` → `medium`, `high` и `xhigh` → `xhigh`.
+
+Для этого endpoint OpenAI-compatible профиль должен использовать соответствующий `OPENAI_BASE_URL`. У записи нет `model_match`, поэтому поддержка reasoning применяется к любой модели, отправленной на этот конкретный endpoint. Registry не распространяет entry на другие Hugging Face endpoint hostname.

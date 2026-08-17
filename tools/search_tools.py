@@ -278,11 +278,30 @@ def _parse_urls_input(raw_urls: Any) -> List[str]:
 class FetchContentInput(BaseModel):
     model_config = ConfigDict(extra="ignore")
 
-    urls: List[str] = Field(...)
-    advanced: bool = False
-    content_format: str = "markdown"
-    query: Optional[str] = None
-    chunks_per_source: int = 3
+    urls: List[str] = Field(
+        ...,
+        min_length=1,
+        max_length=_TAVILY_MAX_EXTRACT_URLS,
+        description="1-20 HTTP(S) URLs to extract in one Tavily batch request. Pass all known URLs together.",
+    )
+    advanced: bool = Field(
+        default=False,
+        description="Use advanced extraction for complex or JavaScript-heavy pages.",
+    )
+    content_format: str = Field(
+        default="markdown",
+        description="Output format: markdown or text.",
+    )
+    query: Optional[str] = Field(
+        default=None,
+        description="Optional query used to select relevant chunks from every page.",
+    )
+    chunks_per_source: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description="Relevant chunks returned per URL when query is provided (1-5).",
+    )
 
     @model_validator(mode="before")
     @classmethod
@@ -403,7 +422,7 @@ async def fetch_content(
     query: Optional[str] = None,
     chunks_per_source: int = 3,
 ) -> str:
-    """Extract text from one or multiple URLs."""
+    """Extract content from 1–20 HTTP(S) URLs in one Tavily batch request."""
     client = _RUNTIME.get_client()
     if not client:
         return format_error(ErrorType.CONFIG, "Fetch unavailable due to missing configuration.")
@@ -424,7 +443,7 @@ async def fetch_content(
     }
     if query:
         request_kwargs["query"] = _normalize_query(query)
-        request_kwargs["chunks_per_source"] = _clamp_int(chunks_per_source, 1, 20, 3)
+        request_kwargs["chunks_per_source"] = _clamp_int(chunks_per_source, 1, 5, 3)
 
     try:
         response = await _RUNTIME.execute_with_retry(client.extract, **request_kwargs)

@@ -14,7 +14,7 @@ from core.multimodal import DEFAULT_MODEL_CAPABILITIES
 from core.validation import validate_tool_result
 from tools import process_tools
 from tools.process_tools import run_background_process
-from tools.search_tools import _parse_urls_input, fetch_content
+from tools.search_tools import _RUNTIME, _parse_urls_input, fetch_content
 from tools.tool_registry import ToolRegistry
 from ui.runtime_payloads import build_tools_snapshot
 from tools.user_input_tool import request_user_input
@@ -412,6 +412,49 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         validated = schema.model_validate({"urls": "https://example.com"})
 
         self.assertEqual(validated.urls, ["https://example.com"])
+
+    def test_fetch_content_schema_declares_tavily_batch_limits(self):
+        schema = fetch_content.get_input_schema().model_json_schema()
+        urls_schema = schema["properties"]["urls"]
+        chunks_schema = schema["properties"]["chunks_per_source"]
+
+        self.assertEqual(urls_schema["minItems"], 1)
+        self.assertEqual(urls_schema["maxItems"], 20)
+        self.assertEqual(chunks_schema["minimum"], 1)
+        self.assertEqual(chunks_schema["maximum"], 5)
+        self.assertIn("batch", urls_schema["description"].lower())
+
+    async def test_fetch_content_sends_all_urls_in_one_tavily_batch_call(self):
+        client = SimpleNamespace(extract=mock.AsyncMock())
+        client.extract.return_value = {
+            "results": [
+                {"url": "https://example.com/one", "raw_content": "One"},
+                {"url": "https://example.com/two", "raw_content": "Two"},
+            ],
+            "failed_results": [],
+        }
+
+        with mock.patch.object(_RUNTIME, "get_client", return_value=client):
+            result = await fetch_content.ainvoke(
+                {
+                    "urls": [
+                        "https://example.com/one",
+                        "https://example.com/two",
+                    ],
+                    "query": "main points",
+                    "chunks_per_source": 5,
+                }
+            )
+
+        self.assertIn("https://example.com/one", result)
+        self.assertIn("https://example.com/two", result)
+        client.extract.assert_awaited_once_with(
+            urls=["https://example.com/one", "https://example.com/two"],
+            extract_depth="basic",
+            format="markdown",
+            query="main points",
+            chunks_per_source=5,
+        )
 
     def test_fetch_content_parser_accepts_url_lists_and_discards_invalid_entries(self):
         raw_urls = [

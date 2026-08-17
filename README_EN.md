@@ -7,12 +7,12 @@
 A desktop AI agent with a `LangGraph` runtime and a `PySide6` GUI.  
 It works with files, shell commands, process management, MCP servers, and web search.
 
+Current version: `v0.67.73.234b`.
+
 Run from source: `python main.py`.  
 Build a portable Windows `.exe`: `build.bat`.
 
-<div align="center">
-  <img src="./img/agent.webp" alt="Portable Autonomous AI Agent" width="800">
-</div>
+![Portable Autonomous AI Agent](./img/01.jpg)
 
 ---
 

@@ -46,7 +46,7 @@ uv --version
 
 Путь к конфигу задаётся переменной `MCP_CONFIG_PATH`; по умолчанию используется `mcp.json` в корне проекта. Сначала откройте существующий файл и добавьте новый объект рядом с уже имеющимися объектами серверов.
 
-Например, исходный файл может выглядеть так:
+Текущий шаблон `mcp.json` выглядит так:
 
 ```json
 {
@@ -54,30 +54,50 @@ uv --version
     "type": "remote",
     "url": "https://mcp.context7.com/mcp",
     "transport": "http",
-    "enabled": false
-  },
-  "_builtin_tools": {
-    "download_file": false,
-    "list_directory": false
-  }
-}
-```
-
-После добавления сервера корневой объект должен сохранить существующие записи:
-
-```json
-{
-  "context7": {
-    "type": "remote",
-    "url": "https://mcp.context7.com/mcp",
-    "transport": "http",
-    "enabled": false
+    "enabled": true,
+    "policy": {
+      "read_only": true
+    }
   },
   "sequential-thinking": {
     "command": "npx",
     "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
     "transport": "stdio",
-    "enabled": false
+    "enabled": false,
+    "policy": {
+      "read_only": true
+    }
+  },
+  "_builtin_tools": {
+    "download_file": false,
+    "list_directory": false,
+    "batch_web_search": false,
+    "fetch_content": false
+  }
+}
+```
+
+После добавления сервера корневой объект должен сохранить существующие записи и их policy:
+
+```json
+{
+  "context7": {
+    "type": "remote",
+    "url": "https://mcp.context7.com/mcp",
+    "transport": "http",
+    "enabled": true,
+    "policy": {
+      "read_only": true
+    }
+  },
+  "sequential-thinking": {
+    "command": "npx",
+    "args": ["-y", "@modelcontextprotocol/server-sequential-thinking"],
+    "transport": "stdio",
+    "enabled": false,
+    "policy": {
+      "read_only": true
+    }
   },
   "filesystem": {
     "command": "npx",
@@ -87,7 +107,9 @@ uv --version
   },
   "_builtin_tools": {
     "download_file": false,
-    "list_directory": false
+    "list_directory": false,
+    "batch_web_search": false,
+    "fetch_content": false
   }
 }
 ```
