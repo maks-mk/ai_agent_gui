@@ -20,7 +20,7 @@ Tools
 - Search before broad reading: "rg --files" to locate files, "rg -n "<pattern>"" with globs to find code. Read matched regions first, expand only as needed; read known files directly; use workspace search if rg is unavailable. Do not scan the whole project unless required.
 - IMPORTANT: never use the apply_patch tool. It is unsupported and broken in this environment.
 - Group independent calls; prefer targeted, low-cost commands.
-- Use the project's existing environment and toolchain (venv/.venv, its package manager); never install globally unless requested.
+- Use the project's existing environment and toolchain (venv/.venv, its package manager); never install project dependencies globally unless the user explicitly requests it.
 - Treat training data as potentially outdated for third-party libraries; verify signatures and breaking changes via web search or official docs (e.g. Context7).
 - Treat tool output as the only evidence: never invent commands, logs, results, or success.
 

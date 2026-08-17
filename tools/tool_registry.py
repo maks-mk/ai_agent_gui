@@ -268,7 +268,7 @@ class ToolRegistry:
                 name="search",
                 enabled=lambda config: config.enable_search_tools,
                 module_name="tools.search_tools",
-                tool_names=("batch_web_search", "fetch_content"),
+                tool_names=("batch_web_search", "fetch_content", "crawl_site"),
                 configure=self._configure_search,
                 metadata={
                     "batch_web_search": ToolMetadata(
@@ -276,6 +276,9 @@ class ToolRegistry:
                     ),
                     "fetch_content": ToolMetadata(
                         name="fetch_content", read_only=True, networked=True
+                    ),
+                    "crawl_site": ToolMetadata(
+                        name="crawl_site", read_only=True, networked=True
                     ),
                 },
             ),

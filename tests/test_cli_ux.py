@@ -248,6 +248,7 @@ class GuiUxTests(unittest.TestCase):
             "list_directory": ("Listing", "Listed"),
             "batch_web_search": ("Searching", "Searched"),
             "fetch_content": ("Fetching", "Fetched"),
+            "crawl_site": ("Crawling", "Crawled"),
             "cli_exec": ("Running", "Ran"),
             "safe_delete_file": ("Deleting", "Deleted"),
             "download_file": ("Downloading", "Downloaded"),
@@ -282,6 +283,26 @@ class GuiUxTests(unittest.TestCase):
                 self.assertEqual(card.action_label.full_text(), f"Deleted {path}")
                 self.assertNotIn("safe_delete_", card.action_label.full_text())
                 card.deleteLater()
+
+    def test_crawl_site_card_renders_root_url(self):
+        card = ToolCardWidget(
+            {
+                "name": "crawl_site",
+                "args": {"url": "https://example.com/docs"},
+                "phase": "running",
+            }
+        )
+        self.assertEqual(card.action_label.full_text(), "Crawling https://example.com/docs")
+        card.finish(
+            {
+                "name": "crawl_site",
+                "args": {"url": "https://example.com/docs"},
+                "content": "Crawl completed",
+            }
+        )
+        self.assertEqual(card.action_label.full_text(), "Crawled https://example.com/docs")
+        self.assertNotIn("crawl_site", card.action_label.full_text())
+        card.deleteLater()
 
     def test_tool_title_keeps_action_form_for_errors(self):
         card = ToolCardWidget({"name": "read_file", "phase": "running", "is_error": True})

@@ -403,7 +403,7 @@ DISPLAY_RULES: tuple[tuple[set[str], Callable[[str, Dict[str, Any]], str | None]
     ({"grep", "Grep", "glob", "Glob"}, _format_pattern_tool),
     ({"execute", "RunCommand", "cli_exec"}, _format_command_tool),
     ({"ls", "LS", "list_directory"}, _format_list_tool),
-    ({"fetch_url", "WebFetch", "fetch_content", "download_file"}, _format_url_tool),
+    ({"fetch_url", "WebFetch", "fetch_content", "crawl_site", "download_file"}, _format_url_tool),
 )
 
 
@@ -442,7 +442,7 @@ def classify_tool_args_state(tool_name: str, tool_args: Dict[str, Any]) -> str:
         anchor_keys = ("pattern", "name_pattern")
     elif tool_name in {"execute", "RunCommand", "cli_exec"}:
         anchor_keys = ("command",)
-    elif tool_name in {"fetch_url", "WebFetch", "fetch_content", "download_file"}:
+    elif tool_name in {"fetch_url", "WebFetch", "fetch_content", "crawl_site", "download_file"}:
         anchor_keys = ("url", "urls")
 
     if anchor_keys and not any(args.get(key) for key in anchor_keys):
@@ -540,7 +540,7 @@ def tool_target_summary(tool_name: str, tool_args: Dict[str, Any]) -> str:
     if normalized_name in {"execute", "RunCommand", "cli_exec"}:
         command = args.get("command")
         return truncate_value(_single_line_preview(command), 100) if command else ""
-    if normalized_name in {"fetch_url", "WebFetch", "fetch_content", "download_file"}:
+    if normalized_name in {"fetch_url", "WebFetch", "fetch_content", "crawl_site", "download_file"}:
         url_text = _first_non_empty_item(args.get("url") or args.get("urls"))
         return truncate_value(_single_line_preview(url_text), 80) if url_text else ""
     return ""
@@ -578,6 +578,7 @@ def build_tool_ui_labels(
         "fetch_url": "Fetching URL",
         "WebFetch": "Fetching URL",
         "fetch_content": "Fetching content",
+        "crawl_site": "Crawling site",
         "download_file": "Downloading file",
         "execute": "Running command",
         "RunCommand": "Running command",
@@ -603,6 +604,7 @@ def build_tool_ui_labels(
         "fetch_url": "Preparing fetch",
         "WebFetch": "Preparing fetch",
         "fetch_content": "Preparing fetch",
+        "crawl_site": "Preparing crawl",
         "download_file": "Preparing download",
         "execute": "Preparing command",
         "RunCommand": "Preparing command",

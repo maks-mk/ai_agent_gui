@@ -317,6 +317,46 @@ class FetchContentInput(BaseModel):
         return data
 
 
+class CrawlSiteInput(BaseModel):
+    model_config = ConfigDict(extra="ignore")
+
+    url: str = Field(..., description="HTTP(S) root URL to crawl.")
+    max_depth: int = Field(default=1, ge=1, description="Maximum link depth from the root page.")
+    max_breadth: int = Field(default=20, ge=1, description="Maximum links followed per crawl level.")
+    limit: int = Field(default=50, ge=1, description="Maximum total pages to process.")
+    instructions: Optional[str] = Field(
+        default=None,
+        description="Optional natural-language guidance for selecting relevant pages and content.",
+    )
+    select_paths: List[str] = Field(
+        default_factory=list,
+        description="Optional regex patterns for URL paths to include.",
+    )
+    select_domains: List[str] = Field(
+        default_factory=list,
+        description="Optional regex patterns for domains to include.",
+    )
+    exclude_paths: List[str] = Field(
+        default_factory=list,
+        description="Optional regex patterns for URL paths to exclude.",
+    )
+    exclude_domains: List[str] = Field(
+        default_factory=list,
+        description="Optional regex patterns for domains to exclude.",
+    )
+    allow_external: bool = Field(default=False, description="Follow links to external domains.")
+    include_images: bool = Field(default=False, description="Include image URLs found on crawled pages.")
+    advanced: bool = Field(default=False, description="Use advanced extraction for complex pages.")
+    content_format: str = Field(default="markdown", description="Page content format: markdown or text.")
+    timeout: float = Field(default=150, ge=10, le=150, description="Tavily crawl timeout in seconds (10-150).")
+    chunks_per_source: int = Field(
+        default=3,
+        ge=1,
+        le=5,
+        description="Relevant chunks per page when instructions are provided (1-5).",
+    )
+
+
 def _format_tavily_error(exc: Exception) -> str:
     msg = str(exc)
     lower = msg.lower()
@@ -469,6 +509,103 @@ async def fetch_content(
     if usage:
         output_parts.append(f"Usage: {usage}")
     return "\n".join(output_parts) or format_error(ErrorType.EXECUTION, "No content extracted.")
+
+
+@tool("crawl_site", args_schema=CrawlSiteInput)
+@_RUNTIME.with_cache(ttl=900)
+async def crawl_site(
+    url: str,
+    max_depth: int = 1,
+    max_breadth: int = 20,
+    limit: int = 50,
+    instructions: Optional[str] = None,
+    select_paths: Optional[List[str]] = None,
+    select_domains: Optional[List[str]] = None,
+    exclude_paths: Optional[List[str]] = None,
+    exclude_domains: Optional[List[str]] = None,
+    allow_external: bool = False,
+    include_images: bool = False,
+    advanced: bool = False,
+    content_format: str = "markdown",
+    timeout: float = 150,
+    chunks_per_source: int = 3,
+) -> str:
+    """Crawl a website from one HTTP(S) root URL and return page content with URLs."""
+    client = _RUNTIME.get_client()
+    if not client:
+        return format_error(ErrorType.CONFIG, "Crawl unavailable due to missing configuration.")
+
+    root_url = str(url or "").strip()
+    if not _is_valid_http_url(root_url):
+        return format_error(ErrorType.VALIDATION, "A valid HTTP/HTTPS root URL is required.")
+
+    content_format = (content_format or "markdown").strip().lower()
+    content_format = _CONTENT_FORMAT_ALIASES.get(content_format, content_format)
+    if content_format not in _ALLOWED_FORMATS:
+        return format_error(
+            ErrorType.VALIDATION,
+            f"Invalid content_format '{content_format}'. Allowed: {sorted(_ALLOWED_FORMATS)}",
+        )
+
+    instructions = _normalize_query(instructions) if instructions else None
+    request_kwargs: Dict[str, Any] = {
+        "url": root_url,
+        "max_depth": int(max_depth),
+        "max_breadth": int(max_breadth),
+        "limit": int(limit),
+        "allow_external": bool(allow_external),
+        "include_images": bool(include_images),
+        "extract_depth": "advanced" if advanced else "basic",
+        "format": content_format,
+        "timeout": max(10.0, min(float(timeout), 150.0)),
+        "include_usage": True,
+    }
+    for key, value in (
+        ("select_paths", select_paths),
+        ("select_domains", select_domains),
+        ("exclude_paths", exclude_paths),
+        ("exclude_domains", exclude_domains),
+    ):
+        if value:
+            request_kwargs[key] = [str(item).strip() for item in value if str(item).strip()]
+    if instructions:
+        request_kwargs["instructions"] = instructions
+        request_kwargs["chunks_per_source"] = _clamp_int(chunks_per_source, 1, 5, 3)
+
+    try:
+        response = await _RUNTIME.execute_with_retry(client.crawl, **request_kwargs)
+    except Exception as e:
+        return _format_tavily_error(e)
+
+    max_chars = _RUNTIME.safety_policy.max_search_chars if _RUNTIME.safety_policy else 15000
+    output_parts: List[str] = []
+    used_chars = 0
+    for item in response.get("results", []):
+        page_url = item.get("url") or "Unknown"
+        content = item.get("raw_content") or item.get("content") or ""
+        images = item.get("images") or []
+        header = f"=== PAGE: {page_url} ===\n"
+        if include_images and images:
+            header += "Images:\n" + "\n".join(f"- {image}" for image in images) + "\n"
+        remaining = max_chars - used_chars - len(header) - 30
+        if remaining <= 0:
+            break
+        rendered_content = content or "[Empty]"
+        if len(rendered_content) > remaining:
+            footer = f"\n... [TRUNCATED from {len(rendered_content)} chars | source={page_url}]"
+            content_limit = max(0, remaining - len(footer))
+            rendered_content = truncate_output(rendered_content, content_limit, source=page_url)[:remaining]
+        block = f"{header}{rendered_content}\n{'=' * 30}"
+        output_parts.append(block)
+        used_chars += len(block)
+
+    if not output_parts:
+        return format_error(ErrorType.NOT_FOUND, "No pages were crawled.")
+    usage = response.get("usage")
+    if usage:
+        output_parts.append(f"Usage: {usage}")
+    output_parts.append("[Crawl completed. Use the context above.]")
+    return "\n".join(output_parts)
 
 
 @tool("batch_web_search")

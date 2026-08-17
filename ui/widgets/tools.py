@@ -276,6 +276,8 @@ class ToolCardWidget(QFrame):
             return "network"
         if normalized in {"fetch_url", "WebFetch", "fetch_content"}:
             return "fetch"
+        if normalized == "crawl_site":
+            return "crawl"
         if normalized == "download_file":
             return "download"
         if normalized in {"safe_delete_file", "safe_delete_directory"}:
@@ -306,6 +308,7 @@ class ToolCardWidget(QFrame):
             "list": "Listing",
             "network": "Searching",
             "fetch": "Fetching",
+            "crawl": "Crawling",
             "download": "Downloading",
             "delete": "Deleting",
             "start_process": "Starting process",
@@ -322,6 +325,7 @@ class ToolCardWidget(QFrame):
             "list": "Listed",
             "network": "Searched",
             "fetch": "Fetched",
+            "crawl": "Crawled",
             "download": "Downloaded",
             "delete": "Deleted",
             "start_process": "Started process",

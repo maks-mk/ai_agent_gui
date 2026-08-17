@@ -94,6 +94,8 @@ class ToolGroupWidget(QFrame):
             return "network"
         if name in {"fetch_url", "WebFetch", "fetch_content"}:
             return "fetch"
+        if name == "crawl_site":
+            return "crawl"
         if name == "download_file":
             return "download"
         if name in {"ls", "LS", "list_directory"}:
@@ -143,6 +145,7 @@ class ToolGroupWidget(QFrame):
             "search": "Searching",
             "network": "Searching",
             "fetch": "Fetching",
+            "crawl": "Crawling",
             "download": "Downloading",
             "list": "Listing",
             "delete": "Deleting",
@@ -155,6 +158,7 @@ class ToolGroupWidget(QFrame):
             "search": "Searched",
             "network": "Searched",
             "fetch": "Fetched",
+            "crawl": "Crawled",
             "download": "Downloaded",
             "list": "Listed",
             "delete": "Deleted",
@@ -181,6 +185,7 @@ class ToolGroupWidget(QFrame):
                 "search": "Searching failed",
                 "network": "Searching failed",
                 "fetch": "Fetching failed",
+                "crawl": "Crawling failed",
                 "download": "Downloading failed",
                 "list": "Listing failed",
                 "delete": "Deleting failed",

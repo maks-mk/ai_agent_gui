@@ -14,7 +14,7 @@ from core.multimodal import DEFAULT_MODEL_CAPABILITIES
 from core.validation import validate_tool_result
 from tools import process_tools
 from tools.process_tools import run_background_process
-from tools.search_tools import _RUNTIME, _parse_urls_input, fetch_content
+from tools.search_tools import _RUNTIME, _parse_urls_input, crawl_site, fetch_content
 from tools.tool_registry import ToolRegistry
 from ui.runtime_payloads import build_tools_snapshot
 from tools.user_input_tool import request_user_input
@@ -71,6 +71,7 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("read_file", catalog_names)
         self.assertIn("batch_web_search", catalog_names)
         self.assertIn("fetch_content", catalog_names)
+        self.assertIn("crawl_site", catalog_names)
         self.assertNotIn("web_search", catalog_names)
         self.assertIn("cli_exec", catalog_names)
         self.assertNotIn("read_file", {tool.name for tool in registry.active_tools()})
@@ -455,6 +456,72 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
             query="main points",
             chunks_per_source=5,
         )
+
+    async def test_crawl_site_sends_supported_tavily_options_and_formats_pages(self):
+        client = SimpleNamespace(crawl=mock.AsyncMock())
+        client.crawl.return_value = {
+            "results": [
+                {
+                    "url": "https://example.com/docs",
+                    "raw_content": "Documentation content",
+                    "images": ["https://example.com/image.png"],
+                }
+            ],
+            "usage": {"credits": 2},
+        }
+
+        with mock.patch.object(_RUNTIME, "get_client", return_value=client):
+            result = await crawl_site.ainvoke(
+                {
+                    "url": " https://example.com ",
+                    "max_depth": 99,
+                    "max_breadth": 999,
+                    "limit": 9999,
+                    "instructions": " Find API docs ",
+                    "select_paths": ["/docs/.*"],
+                    "select_domains": ["example\\.com"],
+                    "exclude_paths": ["/blog/.*"],
+                    "exclude_domains": ["ads\\.example\\.com"],
+                    "allow_external": True,
+                    "include_images": True,
+                    "advanced": True,
+                    "content_format": "md",
+                    "timeout": 150,
+                    "chunks_per_source": 5,
+                }
+            )
+
+        self.assertIn("https://example.com/docs", result)
+        self.assertIn("Documentation content", result)
+        self.assertIn("https://example.com/image.png", result)
+        self.assertIn("Usage:", result)
+        client.crawl.assert_awaited_once_with(
+            url="https://example.com",
+            max_depth=99,
+            max_breadth=999,
+            limit=9999,
+            instructions="Find API docs",
+            select_paths=["/docs/.*"],
+            select_domains=["example\\.com"],
+            exclude_paths=["/blog/.*"],
+            exclude_domains=["ads\\.example\\.com"],
+            allow_external=True,
+            include_images=True,
+            extract_depth="advanced",
+            format="markdown",
+            timeout=150.0,
+            include_usage=True,
+            chunks_per_source=5,
+        )
+
+    async def test_crawl_site_omits_chunks_without_instructions(self):
+        client = SimpleNamespace(crawl=mock.AsyncMock())
+        client.crawl.return_value = {"results": [{"url": "https://example.com", "raw_content": "Home"}]}
+
+        with mock.patch.object(_RUNTIME, "get_client", return_value=client):
+            await crawl_site.ainvoke({"url": "https://example.com", "chunks_per_source": 5})
+
+        self.assertNotIn("chunks_per_source", client.crawl.await_args.kwargs)
 
     def test_fetch_content_parser_accepts_url_lists_and_discards_invalid_entries(self):
         raw_urls = [
