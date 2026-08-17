@@ -12,7 +12,9 @@ Current version: `v0.67.73.234b`.
 Run from source: `python main.py`.  
 Build a portable Windows `.exe`: `build.bat`.
 
-![Portable Autonomous AI Agent](./img/01.jpg)
+<div align="center">
+  <img src="./img/agent.webp" alt="Portable Autonomous AI Agent" width="800">
+</div>
 
 ---
 

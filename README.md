@@ -4,15 +4,15 @@
 
 > *"Created by a SysAdmin for developers. Focus on safety, portability, and zero-nonsense execution. No Docker, no heavy environments, just one binary."*
 
-Десктопный AI-агент с runtime на `LangGraph` и графическим интерфейсом на `PySide6`.  
+Десктопный AI-агент с runtime на `LangGraph` и графическим интерфейсом на `PySide6`.
 Работает с файлами, shell-командами, процессами, MCP-серверами и веб-поиском.
 
-Текущая версия: `v0.67.73.234b`.
+Запуск из исходников: `python main.py`  
+Сборка в portable `.exe` для Windows: `build.bat`
 
-Запуск из исходников: `python main.py`.  
-Сборка в portable `.exe` для Windows: `build.bat`.
-
-![Portable Autonomous AI Agent](./img/01.jpg)
+<div align="center">
+  <img src="./img/agent.webp" alt="Portable Autonomous AI Agent" width="800">
+</div>
 
 ---
 
