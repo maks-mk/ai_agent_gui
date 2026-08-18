@@ -7,10 +7,6 @@ from dataclasses import dataclass
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtWidgets import QLabel, QStatusBar
 
-from ui.theme import ACCENT_BLUE, ERROR_RED, SUCCESS_GREEN
-from ui.widgets import _fa_icon
-
-
 @dataclass(frozen=True)
 class StatusBarBuildResult:
     status_bar: QStatusBar
@@ -52,18 +48,7 @@ class StatusBarManager:
             status_bar.showMessage(text, max(0, int(timeout_ms)))
 
     def set_status_visual(self, label: str, *, busy: bool = False, success: bool = False, error: bool = False) -> None:
-        color = ACCENT_BLUE if busy else SUCCESS_GREEN if success else ERROR_RED if error else ACCENT_BLUE
-        icon_name = (
-            "fa5s.spinner"
-            if busy
-            else "fa5s.check-circle"
-            if success
-            else "fa5s.times-circle"
-            if error
-            else "fa5s.circle"
-        )
         self.window.status_text.setText(label)
-        self.window.status_icon.setPixmap(_fa_icon(icon_name, color=color, size=14).pixmap(14, 14))
         self.window.top_status_chip.setText(label)
         self.window.top_status_chip.setProperty(
             "statusState",

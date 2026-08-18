@@ -24,7 +24,6 @@ class MenuBuildResult:
     settings_action: QAction
     info_action: QAction
     quit_action: QAction
-    status_icon: QLabel
     status_text: QLabel
     status_meta: QLabel
     top_status_chip: QLabel
@@ -75,7 +74,6 @@ class MenuBuilder:
         view_menu.addAction(settings_action)
         view_menu.addAction(info_action)
 
-        status_icon = QLabel()
         status_text = QLabel("Initializing runtime…")
         status_text.setObjectName("StatusLabel")
         status_meta = QLabel("")
@@ -142,7 +140,6 @@ class MenuBuilder:
             settings_action=settings_action,
             info_action=info_action,
             quit_action=quit_action,
-            status_icon=status_icon,
             status_text=status_text,
             status_meta=status_meta,
             top_status_chip=top_status_chip,

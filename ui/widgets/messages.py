@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
+import qtawesome as qta
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
@@ -102,9 +103,10 @@ class StatusIndicatorWidget(QFrame):
         self.spinner.setObjectName("InlineStatusSpinner")
         self.spinner.setEnabled(False)
         self.spinner.setAutoRaise(True)
-        self.spinner.setIcon(_fa_icon("fa5s.spinner", color=TEXT_MUTED, size=12))
         self.spinner.setIconSize(QSize(12, 12))
         self.spinner.setFixedSize(14, 14)
+        self._spinner_animation = qta.Spin(self.spinner, autostart=True)
+        self._spinner_icon = None
         layout.addWidget(self.spinner, 0, Qt.AlignVCenter)
 
         self.label = QLabel(label)
@@ -130,15 +132,22 @@ class StatusIndicatorWidget(QFrame):
                 style.unpolish(self)
                 style.polish(self)
         if phase == "success":
+            self._spinner_animation.stop()
             icon_name = "fa5s.check-circle"
             icon_color = SUCCESS_GREEN
+            self.spinner.setIcon(_fa_icon(icon_name, color=icon_color, size=12))
         elif phase == "waiting":
+            self._spinner_animation.stop()
             icon_name = "fa5s.pause-circle"
             icon_color = TEXT_MUTED
+            self.spinner.setIcon(_fa_icon(icon_name, color=icon_color, size=12))
         else:
-            icon_name = "fa5s.spinner"
             icon_color = TEXT_MUTED if phase not in {"active", "reviewing"} else ACCENT_BLUE
-        self.spinner.setIcon(_fa_icon(icon_name, color=icon_color, size=12))
+            if self._spinner_icon is None or self.property("spinnerColor") != icon_color:
+                self._spinner_icon = qta.icon("fa5s.spinner", color=icon_color, animation=self._spinner_animation)
+                self.setProperty("spinnerColor", icon_color)
+            self.spinner.setIcon(self._spinner_icon)
+            self._spinner_animation.start()
 
 
 class UserMessageWidget(QFrame):

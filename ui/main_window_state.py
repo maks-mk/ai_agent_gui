@@ -10,8 +10,6 @@ from core.multimodal import (
     normalize_image_attachments,
 )
 from core.text_utils import format_elapsed_seconds
-from ui.theme import ACCENT_BLUE, ERROR_RED, SUCCESS_GREEN
-from ui.widgets import _fa_icon
 
 
 class StreamEventRouter:
@@ -287,28 +285,7 @@ class RunStatusController:
         self.window._status_bar_manager.show_transient_status_message(label, timeout_ms=timeout_ms)
 
     def set_status_visual(self, label: str, *, busy: bool = False, success: bool = False, error: bool = False) -> None:
-        color = ACCENT_BLUE if busy else SUCCESS_GREEN if success else ERROR_RED if error else ACCENT_BLUE
-        icon_name = (
-            "fa5s.spinner"
-            if busy
-            else "fa5s.check-circle"
-            if success
-            else "fa5s.times-circle"
-            if error
-            else "fa5s.circle"
-        )
-        self.window.status_text.setText(label)
-        self.window.status_icon.setPixmap(_fa_icon(icon_name, color=color, size=14).pixmap(14, 14))
-        self.window.top_status_chip.setText(label)
-        self.window.top_status_chip.setProperty(
-            "statusState",
-            "busy" if busy else "success" if success else "error" if error else "idle",
-        )
-        style = self.window.top_status_chip.style()
-        if style is not None:
-            style.unpolish(self.window.top_status_chip)
-            style.polish(self.window.top_status_chip)
-        self.set_primary_status_message(label)
+        self.window._status_bar_manager.set_status_visual(label, busy=busy, success=success, error=error)
 
     def handle_busy_changed(self, busy: bool) -> None:
         self.window.is_busy = busy

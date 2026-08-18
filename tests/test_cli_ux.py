@@ -13,6 +13,8 @@ from PySide6.QtGui import QImage, QKeyEvent, QTextCursor, QTextFormat
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QFrame, QMessageBox, QPushButton, QSizePolicy, QToolBar, QToolButton, QWidget
 
+import qtawesome as qta
+
 import main as agent_cli
 from core.model_fetcher import ModelEntry
 from core.text_utils import prepare_markdown_for_render, split_markdown_segments
@@ -404,6 +406,27 @@ class GuiUxTests(unittest.TestCase):
             ),
             "",
         )
+
+    def test_status_spinner_uses_qtawesome_spin_in_chat_while_busy(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "Проверь"}))
+        self._process_events()
+
+        status_widget = self.window.current_turn.status_widget
+        self.assertIsNotNone(status_widget)
+        status_widget.show()
+        self._process_events()
+        self.assertFalse(hasattr(self.window, "status_icon"))
+        self.assertIsInstance(status_widget.spinner, QToolButton)
+        self.assertIsInstance(status_widget._spinner_animation, qta.Spin)
+        self.assertIs(status_widget._spinner_animation.parent_widget, status_widget.spinner)
+
+        animation = status_widget._spinner_animation
+        with mock.patch.object(animation, "stop", wraps=animation.stop) as stop_mock:
+            status_widget.set_state("Ready", phase="success")
+        stop_mock.assert_called_once_with()
+
+        self.assertIs(status_widget._spinner_animation, animation)
 
     def test_user_cancel_does_not_render_canceled_notice_in_transcript(self):
         self.window._handle_initialized(self._snapshot_payload())

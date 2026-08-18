@@ -168,7 +168,6 @@ class MainWindow(QMainWindow):
         self.settings_action = refs.settings_action
         self.info_action = refs.info_action
         self.quit_action = refs.quit_action
-        self.status_icon = refs.status_icon
         self.status_text = refs.status_text
         self.status_line_label = refs.status_text
         self.status_meta = refs.status_meta
