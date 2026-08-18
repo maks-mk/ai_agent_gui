@@ -6,6 +6,7 @@ from core.model_profiles import (
     ModelProfileStore,
     bootstrap_profiles_from_env,
     find_active_profile,
+    generate_profile_id,
     merge_profiles_with_env,
     normalize_profiles_payload,
 )
@@ -17,6 +18,38 @@ class ModelProfilesTests(unittest.TestCase):
         self._tmpdir = Path.cwd() / ".tmp_tests" / f"model_profiles_{id(self)}"
         self._tmpdir.mkdir(parents=True, exist_ok=True)
         self.addCleanup(lambda: shutil.rmtree(self._tmpdir, ignore_errors=True))
+
+    def test_generate_profile_id_uses_api_domain_consonants(self):
+        self.assertEqual(generate_profile_id("gpt-4o", set(), "https://api.openai.com/v1"), "opn/gpt-4o")
+        self.assertEqual(generate_profile_id("model_name", set(), "openai.com"), "opn/model_name")
+
+    def test_generate_profile_id_uses_domain_without_api_or_www_labels(self):
+        self.assertEqual(
+            generate_profile_id("model_name", set(), "https://api.anthropic.com/v1"),
+            "anthrpc/model_name",
+        )
+        self.assertEqual(
+            generate_profile_id("model_name", set(), "https://www.example-provider.io/v1"),
+            "exmplprvdr/model_name",
+        )
+
+    def test_normalization_preserves_profile_id_namespace(self):
+        payload = normalize_profiles_payload(
+            {
+                "active_profile": "opn/model_name",
+                "profiles": [
+                    {
+                        "id": "opn/model_name",
+                        "provider": "openai",
+                        "model": "model_name",
+                        "api_key": "",
+                        "base_url": "https://api.openai.com/v1",
+                    }
+                ],
+            }
+        )
+        self.assertEqual(payload["profiles"][0]["id"], "opn/model_name")
+        self.assertEqual(payload["active_profile"], "opn/model_name")
 
     def test_bootstrap_uses_generic_env_first(self):
         payload = bootstrap_profiles_from_env(

@@ -3556,7 +3556,32 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(dialog._current_row(), 1)
         self.assertEqual(self._active_badge_row(dialog), 1)
 
-    def test_model_settings_dialog_autofills_name_from_model_suffix(self):
+    def test_model_settings_dialog_autofills_name_from_api_url_and_model(self):
+        dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
+        self.addCleanup(dialog.close)
+        dialog._add_profile()
+        self._process_events()
+        dialog.base_url_edit.setText("https://api.openai.com/v1")
+        dialog.model_edit.setText("openai/gpt-oss-120b")
+        self._process_events()
+
+        self.assertEqual(dialog.name_edit.text(), "opn/gpt-oss-120b")
+        dialog._save_and_accept()
+        result = dialog.result_payload()
+        self.assertEqual(result["profiles"][0]["id"], "opn/gpt-oss-120b")
+
+    def test_model_settings_dialog_updates_auto_name_when_api_url_changes(self):
+        dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
+        self.addCleanup(dialog.close)
+        dialog._add_profile()
+        self._process_events()
+        dialog.model_edit.setText("gpt-4o")
+        dialog.base_url_edit.setText("https://api.openai.com/v1")
+        self._process_events()
+
+        self.assertEqual(dialog.name_edit.text(), "opn/gpt-4o")
+
+    def test_model_settings_dialog_autofills_name_from_model_suffix_without_api_url(self):
         dialog = agent_cli.ModelSettingsDialog({"active_profile": None, "profiles": []}, self.window)
         self.addCleanup(dialog.close)
         dialog._add_profile()

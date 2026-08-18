@@ -7,6 +7,7 @@ import threading
 import time
 from pathlib import Path
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 from core.reasoning_controls import normalize_profile_reasoning
 
@@ -98,11 +99,14 @@ def _normalize_bool(value: Any) -> bool:
 
 def sanitize_profile_id(value: Any) -> str:
     raw = _clean_text(value)
-    if "/" in raw:
-        raw = raw.rsplit("/", 1)[-1]
-    normalized = _ID_ALLOWED_RE.sub("-", raw.lower().replace(" ", "-"))
-    normalized = re.sub(r"-{2,}", "-", normalized).strip("-_")
-    return normalized
+    segments = raw.split("/", 1)
+    normalized_segments: list[str] = []
+    for segment in segments:
+        normalized = _ID_ALLOWED_RE.sub("-", segment.lower().replace(" ", "-"))
+        normalized = re.sub(r"-{2,}", "-", normalized).strip("-_")
+        if normalized:
+            normalized_segments.append(normalized)
+    return "/".join(normalized_segments)
 
 
 def _ensure_unique_id(base_id: str, used_ids: set[str]) -> str:
@@ -116,9 +120,31 @@ def _ensure_unique_id(base_id: str, used_ids: set[str]) -> str:
     return candidate
 
 
-def generate_profile_id(model_name: Any, used_ids: set[str]) -> str:
+def _api_url_prefix(api_url: Any) -> str:
+    raw_url = _clean_text(api_url)
+    if not raw_url:
+        return ""
+    parsed = urlsplit(raw_url if "://" in raw_url else f"//{raw_url}")
+    hostname = str(parsed.hostname or "").strip(".").lower()
+    if not hostname:
+        return ""
+    labels = hostname.split(".")
+    domain_label = next((label for label in reversed(labels[:-1]) if label not in {"api", "www"}), labels[0])
+    letters = "".join(char for char in domain_label if "a" <= char <= "z")
+    if not letters:
+        return ""
+    return letters[0] + "".join(char for char in letters[1:] if char not in "aeiouy")
+
+
+def ensure_unique_profile_id(profile_id: Any, used_ids: set[str]) -> str:
+    return _ensure_unique_id(_clean_text(profile_id), used_ids)
+
+
+def generate_profile_id(model_name: Any, used_ids: set[str], api_url: Any = "") -> str:
     model_text = _clean_text(model_name)
-    base = model_text.rsplit("/", 1)[-1] if "/" in model_text else model_text
+    model_id = sanitize_profile_id(model_text.rsplit("/", 1)[-1] if "/" in model_text else model_text)
+    prefix = _api_url_prefix(api_url)
+    base = f"{prefix}/{model_id}" if prefix and model_id else model_id
     return _ensure_unique_id(base or "profile", used_ids)
 
 
@@ -159,7 +185,8 @@ def normalize_profiles_payload(payload: Any) -> dict[str, Any]:
         seen_profiles.add(profile_fingerprint)
 
         requested_id = sanitize_profile_id(raw.get("id"))
-        profile_id = _ensure_unique_id(requested_id or model_name, used_ids)
+        fallback_id = model_name.rsplit("/", 1)[-1] if "/" in model_name else model_name
+        profile_id = _ensure_unique_id(requested_id or fallback_id, used_ids)
         profile = {
             "id": profile_id,
             "provider": provider,

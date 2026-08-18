@@ -49,6 +49,7 @@ from core.model_fetcher import (
 )
 from core.model_profiles import (
     ALLOWED_PROVIDERS,
+    ensure_unique_profile_id,
     generate_profile_id,
     normalize_api_key_list,
     normalize_profiles_payload,
@@ -979,6 +980,12 @@ class ModelSettingsDialog(QDialog):
     def _on_base_url_changed(self, _text: str) -> None:
         if self._loading_form:
             return
+        row = self._current_row()
+        if 0 <= row < len(self._profiles) and not self._name_manual_flags[row]:
+            current_model = self._get_current_model_value()
+            self._loading_form = True
+            self.name_edit.setText(self._suggest_unique_id(current_model, row=row))
+            self._loading_form = False
         if self._normalized_provider() in {"openai", "anthropic"}:
             self._invalidate_pending_fetches()
             self._clear_model_options()
@@ -1485,13 +1492,15 @@ class ModelSettingsDialog(QDialog):
         )
         self._refresh_profile_counts()
 
-    def _suggest_unique_id(self, model_text: str, *, row: int) -> str:
+    def _suggest_unique_id(self, model_text: str, *, row: int, base_url: str | None = None) -> str:
         used = {
             str(profile.get("id") or "").strip()
             for idx, profile in enumerate(self._profiles)
             if idx != row and str(profile.get("id") or "").strip()
         }
-        return generate_profile_id(model_text, used)
+        if base_url is None:
+            base_url = str(self.base_url_edit.text() or "").strip()
+        return generate_profile_id(model_text, used, base_url)
 
     def _compute_initial_name_manual_flags(self) -> list[bool]:
         flags: list[bool] = []
@@ -1500,7 +1509,11 @@ class ModelSettingsDialog(QDialog):
             if not profile_id:
                 flags.append(False)
                 continue
-            expected_auto_id = self._suggest_unique_id(str(profile.get("model") or ""), row=idx)
+            expected_auto_id = self._suggest_unique_id(
+                str(profile.get("model") or ""),
+                row=idx,
+                base_url=str(profile.get("base_url") or ""),
+            )
             flags.append(profile_id != expected_auto_id)
         return flags
 
@@ -1625,8 +1638,9 @@ class ModelSettingsDialog(QDialog):
 
             requested_id = sanitize_profile_id(profile.get("id") or "")
             if not requested_id:
-                requested_id = model_name
-            profile_id = generate_profile_id(requested_id, used_ids)
+                requested_id = generate_profile_id(model_name, set(), profile.get("base_url"))
+            profile_id = ensure_unique_profile_id(requested_id, used_ids)
+
             validated_profile = {
                 "id": profile_id,
                 "provider": provider,
