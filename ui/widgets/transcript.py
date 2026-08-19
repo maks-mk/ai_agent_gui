@@ -26,7 +26,7 @@ class ConversationTurnWidget(QWidget):
         self._force_new_assistant_block = False
         self._layout = QVBoxLayout(self)
         self._layout.setContentsMargins(0, 0, 0, 0)
-        self._layout.setSpacing(8)
+        self._layout.setSpacing(5)
         self._timeline: list[tuple[str, QWidget]] = []
         self.assistant_segments: list[AssistantMessageWidget] = []
         self.tool_cards: dict[str, ToolCardWidget] = {}

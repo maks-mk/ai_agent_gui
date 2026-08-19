@@ -22,8 +22,8 @@ class ToolGroupWidget(QFrame):
         self._animation_target_expanded = True
 
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(0, 5, 0, 5)
-        layout.setSpacing(5)
+        layout.setContentsMargins(0, 1, 0, 2)
+        layout.setSpacing(2)
 
         self.header_row = QWidget(self)
         self.header_row.setObjectName("ToolGroupHeaderRow")
@@ -63,7 +63,7 @@ class ToolGroupWidget(QFrame):
         self.container.setObjectName("ToolGroupContainer")
         self.inner = QVBoxLayout(self.container)
         self.inner.setContentsMargins(10, 1, 0, 0)
-        self.inner.setSpacing(1)
+        self.inner.setSpacing(0)
         layout.addWidget(self.container)
 
         self._container_animation = QPropertyAnimation(self.container, b"maximumHeight", self)

@@ -195,6 +195,10 @@ class ModelSettingsDialog(QDialog):
         self._fetch_debounce.setSingleShot(True)
         self._fetch_debounce.setInterval(600)
         self._fetch_debounce.timeout.connect(self._start_fetch)
+        self._save_button_reset_timer = QTimer(self)
+        self._save_button_reset_timer.setSingleShot(True)
+        self._save_button_reset_timer.setInterval(3000)
+        self._save_button_reset_timer.timeout.connect(self._restore_save_button_text)
         self._name_manual_flags = self._compute_initial_name_manual_flags()
 
         root = QVBoxLayout(self)
@@ -1680,8 +1684,19 @@ class ModelSettingsDialog(QDialog):
         self.profiles_saved.emit(dict(self._result_payload))
         return True
 
+    def _restore_save_button_text(self) -> None:
+        if self.save_button is not None:
+            self.save_button.setText("Save")
+
+    def _show_saved_button_state(self) -> None:
+        if self.save_button is None:
+            return
+        self.save_button.setText("Saved")
+        self._save_button_reset_timer.start()
+
     def _save_and_accept(self) -> None:
-        self._persist_profiles("Saved. You can keep this window open and continue editing.")
+        if self._persist_profiles("Saved. You can keep this window open and continue editing."):
+            self._show_saved_button_state()
 
 
 class ApprovalDialog(QDialog):

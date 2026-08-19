@@ -227,7 +227,7 @@ class AssistantMessageWidget(QFrame):
         self._rendered_parts: list[tuple[str, str, str]] = []
         
         self._layout = QHBoxLayout(self)
-        self._layout.setContentsMargins(0, 1, 0, 3)
+        self._layout.setContentsMargins(0, 1, 0, 1)
         self._layout.setSpacing(6)
 
         self.content_widget = QWidget()

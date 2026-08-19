@@ -1848,7 +1848,7 @@ def build_stylesheet() -> str:
         background: transparent;
         border: none;
         border-radius: {SOFT_RADIUS_SM}px;
-        padding: 2px 0px;
+        padding: 1px 0px;
         color: {blend_hex(TEXT_MUTED, TEXT_PRIMARY, 0.28)};
         font-size: 10pt;
         font-weight: 500;
