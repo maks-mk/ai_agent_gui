@@ -3457,12 +3457,14 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(saved_payloads[0]["profiles"][0]["id"], "gpt-oss-120b")
         self.assertIn("keep this window open", dialog.save_state_label.text())
         self.assertEqual(dialog.save_button.text(), "Saved")
+        self.assertTrue(bool(dialog.save_button.property("savedState")))
         self.assertEqual(dialog._save_button_reset_timer.interval(), 3000)
         self.assertTrue(dialog._save_button_reset_timer.isActive())
 
         dialog._save_button_reset_timer.start(1)
-        QTest.qWait(10)
+        self._wait_for_gui(10)
         self.assertEqual(dialog.save_button.text(), "Save")
+        self.assertFalse(bool(dialog.save_button.property("savedState")))
 
     def test_model_settings_dialog_opens_with_active_profile_selected(self):
         payload = {

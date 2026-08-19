@@ -760,6 +760,15 @@ def build_stylesheet() -> str:
         background: {blend_hex("#5B8DEF", SURFACE_ALT, 0.20)};
     }}
 
+    QDialog#ModelSettingsDialog QPushButton#PrimaryButton[savedState="true"] {{
+        background: {SUCCESS_GREEN};
+        border-color: {blend_hex(SUCCESS_GREEN, "#FFFFFF", 0.18)};
+    }}
+
+    QDialog#ModelSettingsDialog QPushButton#PrimaryButton[savedState="true"]:hover {{
+        background: {blend_hex(SUCCESS_GREEN, "#FFFFFF", 0.10)};
+    }}
+
     QDialog#ModelSettingsDialog QPushButton {{
         color: {model_dialog_text};
     }}

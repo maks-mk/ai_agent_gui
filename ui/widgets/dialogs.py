@@ -1687,11 +1687,17 @@ class ModelSettingsDialog(QDialog):
     def _restore_save_button_text(self) -> None:
         if self.save_button is not None:
             self.save_button.setText("Save")
+            self.save_button.setProperty("savedState", False)
+            self.save_button.style().unpolish(self.save_button)
+            self.save_button.style().polish(self.save_button)
 
     def _show_saved_button_state(self) -> None:
         if self.save_button is None:
             return
         self.save_button.setText("Saved")
+        self.save_button.setProperty("savedState", True)
+        self.save_button.style().unpolish(self.save_button)
+        self.save_button.style().polish(self.save_button)
         self._save_button_reset_timer.start()
 
     def _save_and_accept(self) -> None:
