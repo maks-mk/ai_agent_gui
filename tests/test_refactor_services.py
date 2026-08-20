@@ -140,7 +140,7 @@ class RefactorServicesTests(unittest.TestCase):
 
     def test_prompt_file_controls_default_response_language(self):
         prompt_text = (Path(__file__).resolve().parents[1] / "prompt.txt").read_text(encoding="utf-8")
-        self.assertIn("Always respond in Russian.", prompt_text)
+        self.assertIn("Always respond in Russian;", prompt_text)
 
     def test_context_builder_keeps_only_workspace_safety_overlay_for_tools(self):
         builder = ContextBuilder(

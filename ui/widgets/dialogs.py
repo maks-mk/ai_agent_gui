@@ -171,8 +171,8 @@ class ModelSettingsDialog(QDialog):
         self.setModal(False)
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
-        self.resize(884, 680)
-        self.setMinimumSize(800, 450)
+        self.resize(824, 680)
+        self.setMinimumSize(755, 450)
 
         normalized = normalize_profiles_payload(payload or {})
         self._profiles: list[dict[str, Any]] = [dict(item) for item in normalized.get("profiles", [])]
@@ -512,10 +512,10 @@ class ModelSettingsDialog(QDialog):
         right.addWidget(editor_scroll, 1)
 
         left_container.setMinimumWidth(285)
-        right_container.setMinimumWidth(450)
+        right_container.setMinimumWidth(405)
         self.body_splitter.addWidget(left_container)
         self.body_splitter.addWidget(right_container)
-        self.body_splitter.setSizes([285, 599])
+        self.body_splitter.setSizes([285, 539])
         root.addWidget(self.body_splitter, 1)
 
         actions = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)

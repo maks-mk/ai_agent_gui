@@ -5,6 +5,7 @@ import logging
 import os
 import random
 import sys
+import threading
 import uuid
 from typing import Any
 
@@ -121,6 +122,7 @@ class AgentRunWorker(QObject):
         super().__init__()
         self._loop: asyncio.AbstractEventLoop | None = None
         self._current_task: asyncio.Task | None = None
+        self._task_state_lock = threading.Lock()
         self.config: AgentConfig | None = None
         self.base_config: AgentConfig | None = None
         self.store: SessionStore | None = None
@@ -150,20 +152,23 @@ class AgentRunWorker(QObject):
         self._coordinator = RuntimeSessionCoordinator(self)
 
     def _ensure_loop(self) -> asyncio.AbstractEventLoop:
-        if self._loop is None:
-            self._loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(self._loop)
-        return self._loop
+        with self._task_state_lock:
+            if self._loop is None:
+                self._loop = asyncio.new_event_loop()
+                asyncio.set_event_loop(self._loop)
+            return self._loop
 
     def _run(self, coro):
         loop = self._ensure_loop()
 
         async def _wrapper():
-            self._current_task = asyncio.current_task()
+            with self._task_state_lock:
+                self._current_task = asyncio.current_task()
             try:
                 return await coro
             finally:
-                self._current_task = None
+                with self._task_state_lock:
+                    self._current_task = None
 
         try:
             return loop.run_until_complete(_wrapper())
@@ -882,17 +887,29 @@ class AgentRunWorker(QObject):
         self.event_emitted.emit(StreamEvent("user_choice_resolved", {"chosen": chosen, "choice_type": choice_type}))
         await self._run_graph_payload(Command(resume=chosen))
 
-    @Slot()
-    def stop_run(self) -> None:
-        if not self._loop or not self._current_task or self._current_task.done():
+    def _request_task_cancellation(self) -> None:
+        with self._task_state_lock:
+            loop = self._loop
+            task = self._current_task
+        if loop is None or task is None:
             return
-        task = self._current_task
 
-        async def _cancel_task() -> None:
+        def _cancel_task() -> None:
             if not task.done():
                 task.cancel()
 
-        self._loop.call_soon_threadsafe(lambda: asyncio.create_task(_cancel_task()))
+        try:
+            loop.call_soon_threadsafe(_cancel_task)
+        except RuntimeError:
+            return
+
+    @Slot()
+    def stop_run(self) -> None:
+        self._request_task_cancellation()
+
+    def request_stop(self) -> None:
+        """Request cancellation without requiring the worker event loop to dispatch a Qt slot."""
+        self._request_task_cancellation()
 
     @Slot()
     def new_session(self) -> None:
@@ -1094,10 +1111,11 @@ class AgentRunWorker(QObject):
 
     def _close_event_loop(self) -> None:
         """Finalize pending async work before releasing the worker event loop."""
-        loop = self._loop
+        with self._task_state_lock:
+            loop = self._loop
+            self._loop = None
         if loop is None:
             return
-        self._loop = None
         try:
             pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
             for task in pending:
@@ -1166,7 +1184,7 @@ class AgentRuntimeController(QObject):
         self._initialize_requested.connect(self._worker.initialize)
         self._reinitialize_requested.connect(self._worker.reinitialize)
         self._start_run_requested.connect(self._worker.start_run)
-        self._stop_run_requested.connect(self._worker.stop_run, Qt.DirectConnection)
+        self._stop_run_requested.connect(self._worker.stop_run, Qt.QueuedConnection)
         self._resume_requested.connect(self._worker.resume_approval)
         self._resume_user_choice_requested.connect(self._worker.resume_user_choice)
         self._new_session_requested.connect(self._worker.new_session)
@@ -1303,6 +1321,9 @@ class AgentRuntimeController(QObject):
         self._start_run_requested.emit(user_text)
 
     def stop_run(self) -> None:
+        worker = self._worker
+        if worker is not None:
+            worker.request_stop()
         self._stop_run_requested.emit()
         if self._worker_busy:
             self._force_stop_timer.start(self._force_stop_timeout_ms)

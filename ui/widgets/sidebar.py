@@ -153,9 +153,57 @@ class SessionListModel(QAbstractListModel):
             self._expanded_projects.remove(normalized)
         else:
             self._expanded_projects.add(normalized)
-        self._rebuild_items()
+
+        old_group_row = next(
+            (row for row, item in enumerate(self._items) if item.get("kind") == "group" and item.get("project_path") == normalized),
+            -1,
+        )
+        new_items = self._build_items()
+        new_group_row = next(
+            (row for row, item in enumerate(new_items) if item.get("kind") == "group" and item.get("project_path") == normalized),
+            -1,
+        )
+        if old_group_row < 0 or new_group_row < 0 or old_group_row != new_group_row:
+            self.beginResetModel()
+            self._items = new_items
+            self.endResetModel()
+            return
+
+        old_end = next(
+            (row for row in range(old_group_row + 1, len(self._items)) if self._items[row].get("kind") == "group"),
+            len(self._items),
+        )
+        new_end = next(
+            (row for row in range(new_group_row + 1, len(new_items)) if new_items[row].get("kind") == "group"),
+            len(new_items),
+        )
+        old_children = self._items[old_group_row + 1 : old_end]
+        new_children = new_items[new_group_row + 1 : new_end]
+        common_prefix = 0
+        for old_item, new_item in zip(old_children, new_children):
+            if old_item != new_item:
+                break
+            common_prefix += 1
+
+        first = old_group_row + 1 + common_prefix
+        old_tail_count = len(old_children) - common_prefix
+        new_tail = new_children[common_prefix:]
+        if old_tail_count:
+            last = first + old_tail_count - 1
+            self.beginRemoveRows(QModelIndex(), first, last)
+            del self._items[first : last + 1]
+            self.endRemoveRows()
+        if new_tail:
+            self.beginInsertRows(QModelIndex(), first, first + len(new_tail) - 1)
+            self._items[first:first] = new_tail
+            self.endInsertRows()
 
     def _rebuild_items(self) -> None:
+        self.beginResetModel()
+        self._items = self._build_items()
+        self.endResetModel()
+
+    def _build_items(self) -> list[dict[str, str]]:
         sessions: list[dict[str, str]] = []
         for raw in self._source_sessions:
             row = dict(raw)
@@ -224,9 +272,7 @@ class SessionListModel(QAbstractListModel):
                     }
                 )
 
-        self.beginResetModel()
-        self._items = items
-        self.endResetModel()
+        return items
 
     def session_id_at(self, index: QModelIndex) -> str:
         if not index.isValid():

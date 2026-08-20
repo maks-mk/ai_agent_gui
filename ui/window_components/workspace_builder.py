@@ -267,7 +267,7 @@ class WorkspaceBuilder:
         send_button.setAccessibleDescription("Submit the current request")
         control_row.addWidget(send_button, 0, Qt.AlignVCenter)
 
-        stop_action_button = QPushButton(_fa_icon("fa5s.stop", color="#FFFFFF", size=14), "")
+        stop_action_button = QPushButton(_fa_icon("fa5s.stop", color="#08090B", size=14), "")
         stop_action_button.setObjectName("ComposerStopButton")
         stop_action_button.setToolTip("Stop")
         stop_action_button.setFixedSize(32, 32)

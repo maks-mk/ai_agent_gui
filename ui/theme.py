@@ -1575,8 +1575,8 @@ def build_stylesheet() -> str:
     }}
 
     QPushButton#ComposerStopButton {{
-        background: {blend_hex(ERROR_RED, "#000000", 0.08)};
-        color: white;
+        background: {_SEND_BTN_BG};
+        color: #08090B;
         border: none;
         border-radius: 15px;
         min-width: 32px;
@@ -1588,11 +1588,11 @@ def build_stylesheet() -> str:
     }}
 
     QPushButton#ComposerStopButton:hover {{
-        background: {blend_hex(ERROR_RED, "#FFFFFF", 0.08)};
+        background: {_SEND_BTN_HOVER};
     }}
 
     QPushButton#ComposerStopButton:pressed {{
-        background: {blend_hex(ERROR_RED, "#000000", 0.18)};
+        background: #C8CACF;
     }}
 
     QToolButton#ComposerAttachButton {{

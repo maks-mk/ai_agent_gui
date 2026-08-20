@@ -203,6 +203,22 @@ class RuntimeControllerStopTests(unittest.TestCase):
         self.assertTrue(loop.is_closed())
         self.assertIsNone(worker._loop)
 
+    def test_stop_signal_uses_queued_connection_for_worker_affinity(self):
+        controller = AgentRuntimeController()
+        worker = controller._worker
+        request_stop = mock.Mock()
+        worker.request_stop = request_stop
+        try:
+            controller.stop_run()
+            request_stop.assert_called_once_with()
+        finally:
+            thread = controller._thread
+            controller._force_stop_timer.stop()
+            controller._disconnect_worker_thread()
+            if thread is not None and thread.isRunning():
+                thread.quit()
+                thread.wait(1000)
+
     def test_controller_shutdown_requests_cancellation_before_stopping_thread(self):
         controller = AgentRuntimeController()
         real_thread = controller._thread
@@ -241,6 +257,30 @@ class GuiUxTests(unittest.TestCase):
     def _wait_for_gui(self, ms: int):
         QTest.qWait(ms)
         self._process_events()
+
+    def test_cli_exec_batches_output_until_timer_flush(self):
+        from ui.widgets.tools import CliExecWidget
+
+        widget = CliExecWidget("echo test")
+        try:
+            widget.append_output("a")
+            widget.append_output("b")
+            self.assertEqual(widget.output_view.toPlainText(), "")
+            widget._flush_pending_output()
+            self.assertEqual(widget.output_view.toPlainText(), "ab")
+        finally:
+            widget.deleteLater()
+
+    def test_cli_exec_final_output_flushes_pending_chunks(self):
+        from ui.widgets.tools import CliExecWidget
+
+        widget = CliExecWidget("echo test")
+        try:
+            widget.append_output("partial")
+            widget.ensure_final_output("partial\nfinal\n")
+            self.assertEqual(widget.output_view.toPlainText(), "partial\nfinal\n")
+        finally:
+            widget.deleteLater()
 
     def test_tool_titles_change_to_past_tense_after_successful_completion(self):
         title_cases = {
@@ -3039,6 +3079,30 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(active_group_titles, ["workspace"])
         self.assertIn("other-project", inactive_group_titles)
 
+    def test_sidebar_expansion_uses_row_notifications_instead_of_reset(self):
+        model = SessionListModel()
+        sessions = [
+            {
+                "session_id": f"session-{index}",
+                "project_path": "D:/demo/workspace",
+                "title": f"Chat {index}",
+                "updated_at": f"2026-03-31T11:{index:02d}:00+00:00",
+            }
+            for index in range(6)
+        ]
+        resets = []
+        model.modelAboutToBeReset.connect(lambda: resets.append(True))
+        model.set_sessions(sessions)
+        resets.clear()
+
+        model.toggle_project_expansion("D:/demo/workspace")
+
+        self.assertEqual(resets, [])
+        self.assertEqual(model.session_row_count(), 6)
+        model.toggle_project_expansion("D:/demo/workspace")
+        self.assertEqual(resets, [])
+        self.assertEqual(model.session_row_count(), 5)
+
     def test_sidebar_has_no_search_and_expands_project_groups(self):
         payload = self._snapshot_payload()
         for index in range(6):
@@ -4030,10 +4094,10 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         self.assertEqual(dialog.objectName(), "ModelSettingsDialog")
-        self.assertEqual(dialog.width(), 884)
-        self.assertEqual(dialog.minimumWidth(), 800)
+        self.assertEqual(dialog.width(), 824)
+        self.assertEqual(dialog.minimumWidth(), 755)
         self.assertEqual(dialog.body_splitter.widget(0).minimumWidth(), 285)
-        self.assertEqual(dialog.body_splitter.widget(1).minimumWidth(), 450)
+        self.assertEqual(dialog.body_splitter.widget(1).minimumWidth(), 405)
         self.assertIsNotNone(dialog.save_button)
         self.assertFalse(dialog.save_button.isEnabled())
         self.assertIn("Add a profile", dialog.form_hint.text())

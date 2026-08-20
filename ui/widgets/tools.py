@@ -4,7 +4,7 @@ import json
 import re
 from typing import Any
 
-from PySide6.QtCore import QSize, Qt
+from PySide6.QtCore import QSize, QTimer, Qt
 from PySide6.QtGui import QTextCursor
 from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPushButton, QSizePolicy, QVBoxLayout, QWidget
 from shiboken6 import isValid
@@ -37,6 +37,11 @@ class CliExecWidget(QFrame):
         self.setFrameShape(QFrame.NoFrame)
         self._programmatic_scroll = False
         self._auto_follow_enabled = True
+        self._pending_output: list[str] = []
+        self._output_flush_timer = QTimer(self)
+        self._output_flush_timer.setSingleShot(True)
+        self._output_flush_timer.setInterval(0)
+        self._output_flush_timer.timeout.connect(self._flush_pending_output)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -113,11 +118,11 @@ class CliExecWidget(QFrame):
     def _sync_output_height(self) -> None:
         _sync_plain_text_height(self.output_view, min_lines=6, max_lines=10, extra_padding=18)
 
-    def append_output(self, text: str, stream: str = "stdout") -> None:
-        chunk = _strip_ansi_for_display(text)
-        if not chunk:
+    def _flush_pending_output(self) -> None:
+        if not self._pending_output:
             return
-        _ = stream
+        chunk = "".join(self._pending_output)
+        self._pending_output.clear()
         scrollbar = self.output_view.verticalScrollBar()
         follow = self._auto_follow_enabled or self._is_near_bottom()
         previous_value = scrollbar.value()
@@ -136,7 +141,18 @@ class CliExecWidget(QFrame):
         scrollbar.setValue(previous_value)
         self._programmatic_scroll = False
 
+    def append_output(self, text: str, stream: str = "stdout") -> None:
+        chunk = _strip_ansi_for_display(text)
+        if not chunk:
+            return
+        _ = stream
+        self._pending_output.append(chunk)
+        if not self._output_flush_timer.isActive():
+            self._output_flush_timer.start()
+
     def ensure_final_output(self, final_text: str) -> None:
+        self._output_flush_timer.stop()
+        self._flush_pending_output()
         target = _strip_ansi_for_display(final_text)
         if not target:
             return
@@ -149,7 +165,8 @@ class CliExecWidget(QFrame):
         if current == target:
             return
         if target.startswith(current):
-            self.append_output(target[len(current) :], stream="stdout")
+            self._pending_output.append(target[len(current) :])
+            self._flush_pending_output()
             return
         self.output_view.setPlainText(target)
         self._sync_output_height()
