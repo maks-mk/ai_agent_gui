@@ -501,57 +501,80 @@ class AgentRunWorker(QObject):
         self.initialized.emit(payload)
         self.session_changed.emit(payload)
 
-    @Slot(object)
-    def set_tool_enabled(self, payload: object) -> None:
+    def _apply_tool_availability_changes(self, changes: list[dict[str, Any]]) -> None:
         if self._is_busy or self._awaiting_approval or self.tool_registry is None:
             return
-        data = payload if isinstance(payload, dict) else {}
-        name = str(data.get("name") or "").strip()
-        enabled = bool(data.get("enabled"))
-        if not name:
+
+        normalized: list[dict[str, Any]] = []
+        seen: set[tuple[str, str]] = set()
+        for item in changes:
+            if not isinstance(item, dict):
+                continue
+            kind = str(item.get("kind") or "").strip()
+            name = str(item.get("name") or "").strip()
+            if kind not in {"server", "tool"} or not name or (kind, name) in seen:
+                continue
+            seen.add((kind, name))
+            normalized.append({"kind": kind, "name": name, "enabled": bool(item.get("enabled"))})
+        if not normalized:
             return
 
         registry = self.tool_registry
-        previous_enabled = name not in registry.disabled_local_tools
+        previous: list[dict[str, Any]] = []
+        requires_reinitialize = False
         try:
-            registry.set_tool_enabled(name, enabled)
-            self._run(self._shutdown_async())
-            self._run(self._initialize_async())
+            for item in normalized:
+                if item["kind"] == "server":
+                    current = registry.mcp_config.get(item["name"])
+                    previous_enabled = bool(current.get("enabled", True)) if isinstance(current, dict) else None
+                    if previous_enabled is None:
+                        continue
+                    previous.append({**item, "enabled": previous_enabled})
+                    registry.set_mcp_server_enabled(item["name"], item["enabled"])
+                    requires_reinitialize = True
+                else:
+                    previous_enabled = item["name"] not in registry.disabled_local_tools
+                    previous.append({**item, "enabled": previous_enabled})
+                    registry.set_tool_enabled(item["name"], item["enabled"])
+
+            if requires_reinitialize:
+                enabled_servers = [
+                    item["name"]
+                    for item in normalized
+                    if item["kind"] == "server" and item["enabled"]
+                ]
+                self._pending_mcp_server_name = enabled_servers[-1] if enabled_servers else ""
+                self._run(self._shutdown_async())
+                self._run(self._initialize_async())
+            else:
+                self._run(self._coordinator.emit_session_payload(include_transcript=False))
         except Exception as exc:
-            logger.exception("Failed to update built-in tool state:")
-            try:
-                registry.set_tool_enabled(name, previous_enabled)
-            except Exception:
-                logger.exception("Failed to restore built-in tool state after initialization failure:")
+            logger.exception("Failed to apply tool availability changes:")
+            for item in reversed(previous):
+                try:
+                    if item["kind"] == "server":
+                        registry.set_mcp_server_enabled(item["name"], item["enabled"])
+                    else:
+                        registry.set_tool_enabled(item["name"], item["enabled"])
+                except Exception:
+                    logger.exception("Failed to restore tool state after apply failure:")
             self.initialization_failed.emit(f"Failed to apply tool change: {exc}")
+        finally:
+            self._pending_mcp_server_name = ""
+
+    @Slot(object)
+    def apply_tool_availability_changes(self, changes: object) -> None:
+        self._apply_tool_availability_changes(changes if isinstance(changes, list) else [])
+
+    @Slot(object)
+    def set_tool_enabled(self, payload: object) -> None:
+        data = payload if isinstance(payload, dict) else {}
+        self._apply_tool_availability_changes([{"kind": "tool", **data}])
 
     @Slot(object)
     def set_mcp_server_enabled(self, payload: object) -> None:
-        if self._is_busy or self._awaiting_approval or self.tool_registry is None or self.config is None:
-            return
         data = payload if isinstance(payload, dict) else {}
-        name = str(data.get("name") or "").strip()
-        enabled = bool(data.get("enabled"))
-        if not name:
-            return
-
-        previous_config = self.tool_registry.mcp_config.get(name)
-        previous_enabled = bool(previous_config.get("enabled", True)) if isinstance(previous_config, dict) else None
-        self._pending_mcp_server_name = name if enabled else ""
-        try:
-            self.tool_registry.set_mcp_server_enabled(name, enabled)
-            self._run(self._shutdown_async())
-            self._run(self._initialize_async())
-        except Exception as exc:
-            logger.exception("Failed to update MCP server state:")
-            if previous_enabled is not None:
-                try:
-                    self.tool_registry.set_mcp_server_enabled(name, previous_enabled)
-                except Exception:
-                    logger.exception("Failed to restore MCP server state after initialization failure:")
-            self.initialization_failed.emit(f"Failed to apply MCP server change: {exc}")
-        finally:
-            self._pending_mcp_server_name = ""
+        self._apply_tool_availability_changes([{"kind": "server", **data}])
 
     @Slot(object)
     def start_run(self, user_text: object) -> None:
@@ -1160,8 +1183,7 @@ class AgentRuntimeController(QObject):
     _delete_session_requested = Signal(str)
     _set_active_profile_requested = Signal(str)
     _save_profiles_requested = Signal(object)
-    _set_mcp_server_enabled_requested = Signal(object)
-    _set_tool_enabled_requested = Signal(object)
+    _apply_tool_availability_changes_requested = Signal(object)
     _reinitialize_requested = Signal(bool)
     _shutdown_requested = Signal()
 
@@ -1174,6 +1196,10 @@ class AgentRuntimeController(QObject):
         self._force_stop_timer = QTimer(self)
         self._force_stop_timer.setSingleShot(True)
         self._force_stop_timer.timeout.connect(self._force_stop_hung_worker)
+        self._pending_tool_availability: dict[tuple[str, str], dict[str, Any]] = {}
+        self._tool_availability_timer = QTimer(self)
+        self._tool_availability_timer.setSingleShot(True)
+        self._tool_availability_timer.timeout.connect(self._flush_tool_availability_changes)
         self._start_worker_thread()
 
     def _start_worker_thread(self) -> None:
@@ -1192,8 +1218,7 @@ class AgentRuntimeController(QObject):
         self._delete_session_requested.connect(self._worker.delete_session)
         self._set_active_profile_requested.connect(self._worker.set_active_profile)
         self._save_profiles_requested.connect(self._worker.save_profiles)
-        self._set_mcp_server_enabled_requested.connect(self._worker.set_mcp_server_enabled)
-        self._set_tool_enabled_requested.connect(self._worker.set_tool_enabled)
+        self._apply_tool_availability_changes_requested.connect(self._worker.apply_tool_availability_changes)
         self._shutdown_requested.connect(self._worker.shutdown)
 
         self._worker.initialized.connect(self.initialized)
@@ -1225,8 +1250,10 @@ class AgentRuntimeController(QObject):
             (self._delete_session_requested, worker.delete_session),
             (self._set_active_profile_requested, worker.set_active_profile),
             (self._save_profiles_requested, worker.save_profiles),
-            (self._set_mcp_server_enabled_requested, worker.set_mcp_server_enabled),
-            (self._set_tool_enabled_requested, worker.set_tool_enabled),
+            (self._apply_tool_availability_changes_requested, worker.apply_tool_availability_changes),
+
+
+
             (self._shutdown_requested, worker.shutdown),
 
             (worker.initialized, self.initialized),
@@ -1349,17 +1376,36 @@ class AgentRuntimeController(QObject):
     def save_profiles(self, config_payload: dict[str, Any]) -> None:
         self._save_profiles_requested.emit(config_payload)
 
+    def _flush_tool_availability_changes(self) -> None:
+        changes = list(self._pending_tool_availability.values())
+        self._pending_tool_availability.clear()
+        if changes:
+            self._apply_tool_availability_changes_requested.emit(changes)
+
+    def _queue_tool_availability_change(self, kind: str, name: str, enabled: bool) -> None:
+        key = (kind, name)
+        self._pending_tool_availability[key] = {
+            "kind": kind,
+            "name": name,
+            "enabled": bool(enabled),
+        }
+        if not self._tool_availability_timer.isActive():
+            self._tool_availability_timer.start(0)
+
     def set_tool_enabled(self, name: str, enabled: bool) -> None:
-        self._set_tool_enabled_requested.emit({"name": name, "enabled": enabled})
+        self._queue_tool_availability_change("tool", name, enabled)
 
     def set_mcp_server_enabled(self, name: str, enabled: bool) -> None:
-        self._set_mcp_server_enabled_requested.emit({"name": name, "enabled": enabled})
+        self._queue_tool_availability_change("server", name, enabled)
 
     def shutdown(self) -> None:
         # The worker can be blocked inside run_until_complete while a provider is
         # streaming. stop_run uses call_soon_threadsafe, allowing that slot to
         # return so the queued shutdown request can be processed normally.
         self.stop_run()
+        if self._tool_availability_timer.isActive():
+            self._tool_availability_timer.stop()
+        self._pending_tool_availability.clear()
         if self._force_stop_timer.isActive():
             self._force_stop_timer.stop()
         self._stop_worker_thread(force=False)

@@ -98,11 +98,15 @@ class ToolsPanelWidget(QWidget):
         root.addWidget(self.scroll)
 
     def set_tools(self, tools: list[dict[str, Any]]) -> None:
+        self._reconcile_pending_tools(tools)
+
         while self._inner.count() > 1:
             item = self._inner.takeAt(0)
             widget = item.widget()
             if widget is not None:
+                widget.setParent(None)
                 widget.deleteLater()
+
 
         grouped: dict[str, list[dict[str, str]]] = {"Read-only": [], "Protected": [], "MCP": []}
         for row in tools:
@@ -251,6 +255,19 @@ class ToolsPanelWidget(QWidget):
         toggle.setEnabled(False)
         self.set_tools_pending_labels()
         self.availability_changed.emit("tool", name, enabled)
+
+    def _reconcile_pending_tools(self, tools: list[dict[str, Any]]) -> None:
+        for row in tools:
+            name = str(row.get("name") or "")
+            enabled = bool(row.get("enabled", True))
+            if row.get("kind") == "server":
+                pending = self._pending_servers.get(name)
+                if pending is not None and enabled != pending:
+                    self._pending_servers.pop(name, None)
+            elif row.get("kind") == "tool":
+                pending = self._pending_tools.get(name)
+                if pending is not None and enabled != pending:
+                    self._pending_tools.pop(name, None)
 
     def set_tools_pending_labels(self) -> None:
         pending_names = set(self._pending_servers) | set(self._pending_tools)

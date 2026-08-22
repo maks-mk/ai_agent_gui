@@ -18,6 +18,7 @@ from core.text_utils import (
     format_elapsed_seconds,
     format_tool_display,
     format_tool_output,
+    has_visible_text,
 )
 from core.reasoning_debug import debug_event, elapsed_since, log_unknown_fields, now, preview_value
 from core.tool_args import canonicalize_tool_args
@@ -592,6 +593,14 @@ class StreamProcessor:
                 sorted((getattr(message, "additional_kwargs", {}) or {}).keys()),
                 sorted((getattr(message, "response_metadata", {}) or {}).keys()),
                 _clip_debug_text(message.content),
+            )
+            return
+        if not has_visible_text(chunk) and (
+            self._post_tool_needs_boundary or not has_visible_text(self.full_text)
+        ):
+            logger.debug(
+                "Stream ignored invisible assistant chunk at section boundary content_preview=%s",
+                _clip_debug_text(chunk),
             )
             return
         chunk = self._filter_visible_text_tool_call_chunk(chunk)

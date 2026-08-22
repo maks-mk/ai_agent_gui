@@ -1,4 +1,5 @@
 import re
+import unicodedata
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Callable, Dict
@@ -9,6 +10,15 @@ _CLEAN_MD_RE = re.compile(r"\n{3,}")
 _INLINE_CODE_RE = re.compile(r"`[^`\n]+`")
 _SIMPLE_LATEX_INLINE_RE = re.compile(r"\$\s*(\\[A-Za-z]+)\s*\$")
 _MARKDOWN_FENCE_RE = re.compile(r"^(?P<indent>[ \t]{0,3})(?P<fence>`{3,}|~{3,})(?P<info>[^`~\r\n]*)[ \t]*(?:\r?\n)?$")
+_INVISIBLE_TEXT_CATEGORIES = frozenset({"Cc", "Cf", "Cs"})
+
+
+def has_visible_text(value: Any) -> bool:
+    """Return whether text contains a character that can produce visible output."""
+    return any(
+        not char.isspace() and unicodedata.category(char) not in _INVISIBLE_TEXT_CATEGORIES
+        for char in str(value or "")
+    )
 
 
 def format_elapsed_seconds(seconds: int) -> str:

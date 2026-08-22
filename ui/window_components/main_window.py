@@ -614,7 +614,6 @@ class MainWindow(QMainWindow):
         return True
 
     def _handle_initialized(self, payload: dict) -> None:
-        self.tools_panel.clear_server_pending()
         self._apply_runtime_payload(payload, restore_transcript=True)
         self._set_status_visual("Ready", success=True)
         self.status_meta.setText("")

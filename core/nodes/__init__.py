@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 from langchain_core.language_models import BaseChatModel
 from langchain_core.tools import BaseTool
@@ -55,6 +55,7 @@ class AgentNodes(
         "recovery_turn",
         "tool_batch",
         "_required_fields_cache",
+        "active_tools_provider",
     )
 
     # Only these tools are allowed to run in parallel in a single tool-call batch.
@@ -92,11 +93,13 @@ class AgentNodes(
         tool_metadata: Optional[Dict[str, ToolMetadata]] = None,
         model_capabilities: Optional[Dict[str, Any]] = None,
         run_logger: Optional[JsonlRunLogger] = None,
+        active_tools_provider: Callable[[], List[BaseTool]] | None = None,
     ):
         self.config = config
         self.llm = llm
         self.tools = tools
         self.llm_with_tools = llm_with_tools or llm
+        self.active_tools_provider = active_tools_provider
 
         # Optimization: O(1) tool lookup instead of O(N) list traversal
         self.tools_map = {t.name: t for t in tools}

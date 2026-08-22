@@ -89,10 +89,11 @@ class ToolRegistry:
 
         self.builtin_tools = list(builtin_by_name.values())
         for name, default_enabled in builtin_defaults.items():
-            enabled = bool(builtin_states.get(name, default_enabled))
-            if enabled and name not in {tool.name for tool in self.tools}:
+            if not default_enabled:
+                continue
+            if name not in {tool.name for tool in self.tools}:
                 self.tools.append(builtin_by_name[name])
-            elif not enabled:
+            if not bool(builtin_states.get(name, default_enabled)):
                 self.disabled_local_tools.add(name)
 
         if self.config.mcp_config_path.exists():
@@ -155,6 +156,10 @@ class ToolRegistry:
             raise
         self.mcp_config = config
 
+    def available_tools(self) -> List[BaseTool]:
+        """Return the loaded runtime tool catalog, including locally disabled tools."""
+        return list(self.tools)
+
     def active_tools(self) -> List[BaseTool]:
         server_by_tool = {
             tool_name: status.get("server", "")
@@ -162,7 +167,7 @@ class ToolRegistry:
             for tool_name in status.get("loaded_tools", [])
         }
         return [
-            tool for tool in self.tools
+            tool for tool in self.available_tools()
             if server_by_tool.get(tool.name, "") not in self.disabled_mcp_servers
             and tool.name not in self.disabled_local_tools
         ]

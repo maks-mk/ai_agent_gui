@@ -190,11 +190,15 @@ def build_compiled_agent(
     tool_registry.checkpoint_info = checkpoint_runtime.to_dict()
     tool_registry.checkpoint_runtime = checkpoint_runtime
 
-    tools = tool_registry.active_tools() if hasattr(tool_registry, "active_tools") else tool_registry.tools
-    tool_calling_enabled = bool(tools) and config.model_supports_tools
+    all_tools = (
+        tool_registry.available_tools()
+        if hasattr(tool_registry, "available_tools")
+        else tool_registry.tools
+    )
+    tool_calling_enabled = bool(all_tools) and config.model_supports_tools
     llm_with_tools = llm
     if tool_calling_enabled:
-        llm_with_tools, tool_calling_enabled, bind_error = prepare_llm_with_tools(llm, tools)
+        llm_with_tools, tool_calling_enabled, bind_error = prepare_llm_with_tools(llm, all_tools)
         if tool_calling_enabled:
             logger.info("🛠️ Tools bound to LLM successfully.")
         else:
@@ -218,16 +222,16 @@ def build_compiled_agent(
         if _register_llm_cleanup_callback(tool_registry, cleanup_target):
             registered_cleanup_ids.add(marker)
 
-    active_tools = tools if tool_calling_enabled else []
     active_tool_metadata = tool_registry.tool_metadata if tool_calling_enabled else {}
     nodes = AgentNodes(
         config=config,
         llm=llm,
-        tools=active_tools,
+        tools=all_tools,
         llm_with_tools=llm_with_tools,
         tool_metadata=active_tool_metadata,
         model_capabilities=effective_model_capabilities,
         run_logger=run_logger,
+        active_tools_provider=tool_registry.active_tools,
     )
     workflow = create_agent_workflow(nodes, config, tools_enabled=tool_calling_enabled)
     return workflow.compile(checkpointer=checkpoint_runtime.checkpointer), tool_registry

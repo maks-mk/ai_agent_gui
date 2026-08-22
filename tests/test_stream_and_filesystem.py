@@ -2881,6 +2881,22 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual([payload["full_text"] for payload in deltas], [previous])
         self.assertIn("call-write", processor.tool_start_times)
 
+    def test_stream_processor_ignores_invisible_chunk_between_tool_calls(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._handle_agent_message(AIMessageChunk(content="Проверю файлы."), source="messages")
+        processor._emit_tool_started({"id": "call-first", "name": "read_file", "args": {"path": "a.txt"}})
+        processor._handle_tool_result(ToolMessage(content="ok", tool_call_id="call-first", name="read_file"))
+        processor._handle_agent_message(AIMessageChunk(content="\u200b\ufeff"), source="messages")
+        processor._emit_tool_started({"id": "call-second", "name": "read_file", "args": {"path": "b.txt"}})
+
+        event_types = [event.type for event in events]
+        deltas = [event.payload for event in events if event.type == "assistant_delta"]
+        self.assertEqual([payload["full_text"] for payload in deltas], ["Проверю файлы."])
+        self.assertEqual(event_types.count("assistant_boundary"), 0)
+        self.assertEqual(event_types.count("tool_started"), 2)
+
     def test_stream_processor_starts_new_assistant_section_after_tool_result(self):
         events = []
         processor = StreamProcessor(events.append)

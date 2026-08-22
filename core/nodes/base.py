@@ -202,7 +202,9 @@ class BaseMixin:
         if not self.config.model_supports_tools:
             return [], []
 
-        active_tools = list(self.tools)
+        active_tools = list(
+            self.active_tools_provider() if self.active_tools_provider is not None else self.tools
+        )
 
         if self._current_turn_has_completed_user_choice(messages):
             active_tools = [

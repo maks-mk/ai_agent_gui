@@ -7,7 +7,7 @@ import qtawesome as qta
 from PySide6.QtCore import QSize, Qt, Signal
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
-from core.text_utils import build_tool_ui_labels, split_markdown_segments
+from core.text_utils import build_tool_ui_labels, has_visible_text, split_markdown_segments
 from ui.theme import ACCENT_BLUE, AMBER_WARNING, ERROR_RED, SUCCESS_GREEN, TEXT_MUTED
 from .attachments import ImageAttachmentStripWidget
 from .foundation import (
@@ -317,9 +317,9 @@ class AssistantMessageWidget(QFrame):
     @classmethod
     def has_renderable_content(cls, markdown: str) -> bool:
         text = str(markdown or "").strip()
-        if not text:
+        if not has_visible_text(text):
             return False
-        return any(part_text.strip() for _kind, part_text, _language in cls._split_markdown_parts(text))
+        return any(has_visible_text(part_text) for _kind, part_text, _language in cls._split_markdown_parts(text))
 
     def _split_markdown_parts_incremental(self, markdown: str) -> list[tuple[str, str, str]]:
         previous_text = self._parts_source_text

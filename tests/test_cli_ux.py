@@ -410,10 +410,12 @@ class GuiUxTests(unittest.TestCase):
     def test_transcript_does_not_create_assistant_block_for_invisible_markdown(self):
         turn = ConversationTurnWidget("user", parent=self.window)
 
-        turn.set_assistant_markdown("```\n")
+        for invisible_markdown in ("```\n", "\u200b\ufeff"):
+            with self.subTest(invisible_markdown=repr(invisible_markdown)):
+                turn.set_assistant_markdown(invisible_markdown)
 
-        self.assertEqual(turn.block_kinds(), ["user"])
-        self.assertEqual(turn.assistant_segments, [])
+                self.assertEqual(turn.block_kinds(), ["user"])
+                self.assertEqual(turn.assistant_segments, [])
 
     def test_invisible_assistant_fragment_does_not_split_tool_group(self):
         turn = ConversationTurnWidget("user", parent=self.window)
@@ -421,7 +423,7 @@ class GuiUxTests(unittest.TestCase):
         turn.finish_tool({"tool_id": "first", "name": "read_file", "content": "a"})
         first_group = turn.tool_group
 
-        turn.set_assistant_markdown("```\n")
+        turn.set_assistant_markdown("\u200b\ufeff")
         turn.start_tool({"tool_id": "second", "name": "read_file", "args": {"path": "b.txt"}})
 
         self.assertIs(turn.tool_group, first_group)
@@ -665,6 +667,43 @@ class GuiUxTests(unittest.TestCase):
         self.assertFalse(updated_switch.isChecked())
         self.assertTrue(updated_switch.isEnabled())
         self.assertIn("Tools: 2", self.window.runtime_meta_label.text())
+
+    def test_multiple_tool_switches_keep_each_pending_until_its_state_is_confirmed(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        switches = {
+            item.accessibleName(): item
+            for item in self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+        }
+
+        switches["edit_file enabled"].setChecked(False)
+        switches["read_file enabled"].setChecked(False)
+
+        self.assertEqual(
+            self.controller.set_tool_enabled_calls,
+            [("edit_file", False), ("read_file", False)],
+        )
+        self.assertFalse(switches["edit_file enabled"].isEnabled())
+        self.assertFalse(switches["read_file enabled"].isEnabled())
+        self.assertEqual(
+            sorted(label.text() for label in self.window.tools_panel.findChildren(QLabel, "MCPServerLoadingLabel")),
+            ["Applying…", "Applying…"],
+        )
+
+        payload = self._snapshot_payload()
+        next(item for item in payload["tools"] if item["name"] == "edit_file")["enabled"] = False
+        payload["snapshot"]["tools"] = payload["tools"]
+        payload["snapshot"]["tools_count"] = 2
+        self.window._handle_initialized(payload)
+        self._process_events()
+
+        updated = {
+            item.accessibleName(): item
+            for item in self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+        }
+        self.assertTrue(updated["edit_file enabled"].isEnabled())
+        self.assertFalse(updated["read_file enabled"].isEnabled())
+        pending_labels = self.window.tools_panel.findChildren(QLabel, "MCPServerLoadingLabel")
+        self.assertEqual([label.text() for label in pending_labels], ["Applying…"])
 
     def test_disabled_local_tool_switch_stays_pending_while_enabling(self):
         payload = self._snapshot_payload()
