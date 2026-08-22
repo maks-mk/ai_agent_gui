@@ -220,20 +220,20 @@ def _validate_reasoning_config(provider_id: str, provider: dict[str, Any]) -> No
         raise RegistryValidationError(f'reasoning.extra_fields must be an object for provider "{provider_id}"')
 
 
-def _resolve_reasoning_value(config: Mapping[str, Any], effort_value: str) -> str:
+def _resolve_reasoning_value(config: Mapping[str, Any], effort_value: str) -> Any:
     provider_id = _clean_text(config.get("id"))
     reasoning = config.get("reasoning") if isinstance(config.get("reasoning"), dict) else {}
     validation = _clean_text(config.get("validation"))
-    value = _clean_text(effort_value).lower()
+    value: Any = _clean_text(effort_value).lower()
 
     if validation == "map":
         value_map = reasoning.get("value_map") if isinstance(reasoning, dict) else {}
         if isinstance(value_map, dict):
-            value = _clean_text(value_map.get(value, value)).lower()
+            value = value_map.get(value, value)
         validation = "strict"
     if validation == "strict":
         allowed_values = _ensure_str_list(reasoning.get("allowed_values"), field="reasoning.allowed_values", provider_id=provider_id)
-        if value not in allowed_values:
+        if _clean_text(value).lower() not in allowed_values:
             raise ProviderValidationError(provider_id, effort_value, allowed_values)
     return value
 
@@ -264,6 +264,8 @@ def build_reasoning_kwargs(
     kwargs: dict[str, Any],
     config: Mapping[str, Any] | None,
     effort_value: str,
+    *,
+    enabled: bool = True,
 ) -> dict[str, Any]:
     if config is None or not bool(config.get("supports_reasoning", False)):
         debug_event(
@@ -274,14 +276,45 @@ def build_reasoning_kwargs(
         )
         return kwargs
 
-    value = _clean_text(effort_value).lower()
-    if value == "none":
-        debug_event("reasoning_kwargs_skipped", provider_id=config.get("id"), reason="effort_none")
+    reasoning = config.get("reasoning") if isinstance(config.get("reasoning"), dict) else {}
+    if not enabled:
+        if "disabled_value" not in reasoning:
+            debug_event("reasoning_kwargs_skipped", provider_id=config.get("id"), reason="effort_disabled")
+            return kwargs
+        resolved_value = reasoning["disabled_value"]
+        path = _clean_text(reasoning.get("path"))
+        set_nested(kwargs, path, resolved_value)
+        debug_event(
+            "reasoning_kwargs_applied",
+            provider_id=config.get("id"),
+            input_effort=effort_value,
+            resolved_effort=resolved_value,
+            paths=[path],
+        )
         return kwargs
 
-    reasoning = config.get("reasoning") if isinstance(config.get("reasoning"), dict) else {}
+    value = _clean_text(effort_value).lower()
+    if value == "none":
+        if "none_value" not in reasoning:
+            debug_event("reasoning_kwargs_skipped", provider_id=config.get("id"), reason="effort_none")
+            return kwargs
+        path = _clean_text(reasoning.get("path"))
+        resolved_value = reasoning["none_value"]
+        set_nested(kwargs, path, resolved_value)
+        debug_event(
+            "reasoning_kwargs_applied",
+            provider_id=config.get("id"),
+            input_effort=effort_value,
+            resolved_effort=resolved_value,
+            paths=[path],
+        )
+        return kwargs
+
     path = _clean_text(reasoning.get("path"))
-    resolved_value = _resolve_reasoning_value(config, value)
+    if "enabled_value" in reasoning:
+        resolved_value = reasoning["enabled_value"]
+    else:
+        resolved_value = _resolve_reasoning_value(config, value)
     set_nested(kwargs, path, resolved_value)
     applied_paths = [path]
     extra_fields = reasoning.get("extra_fields", {})

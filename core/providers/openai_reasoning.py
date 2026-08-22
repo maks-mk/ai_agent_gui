@@ -553,7 +553,14 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
     provider_config = registry.match(config.openai_base_url, config.openai_model)
     reasoning_enabled = bool(getattr(config, "enable_model_reasoning", True))
     provider_model_supports_reasoning = provider_supports_reasoning_for_model(provider_config, config.openai_model)
-    if reasoning_enabled and provider_model_supports_reasoning:
+    if provider_model_supports_reasoning and (
+        reasoning_enabled
+        or (
+            isinstance(provider_config, dict)
+            and isinstance(provider_config.get("reasoning"), dict)
+            and "disabled_value" in provider_config["reasoning"]
+        )
+    ):
         debug_event(
             "reasoning_request",
             provider=provider_config.get("id") if isinstance(provider_config, dict) else None,
@@ -563,7 +570,7 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
             reasoning_effort=normalized_reasoning_effort(getattr(config, "model_reasoning_effort", "medium")),
         )
         reasoning_logger.debug(
-            "openai reasoning registry match model=%s base_url=%s provider_id=%s supports_reasoning=%s model_supported=%s validation=%s path=%s effort=%s",
+            "openai reasoning registry match model=%s base_url=%s provider_id=%s supports_reasoning=%s model_supported=%s validation=%s path=%s effort=%s enabled=%s",
             config.openai_model,
             config.openai_base_url,
             provider_config.get("id") if isinstance(provider_config, dict) else None,
@@ -572,12 +579,15 @@ def create_openai_chat_model(config: AgentConfig, *, api_key_override: str | Non
             provider_config.get("validation") if isinstance(provider_config, dict) else None,
             (provider_config.get("reasoning") or {}).get("path") if isinstance(provider_config, dict) else None,
             normalized_reasoning_effort(getattr(config, "model_reasoning_effort", "medium")),
+            reasoning_enabled,
         )
         build_reasoning_kwargs(
             openai_kwargs,
             provider_config,
             normalized_reasoning_effort(getattr(config, "model_reasoning_effort", "medium")),
+            enabled=reasoning_enabled,
         )
+
         # In chat mode, a top-level "reasoning" dict (set by providers whose registry
         # path is "reasoning.effort") would cause LangChain to auto-switch to the
         # Responses API. Flatten it to the chat-completions "reasoning_effort" string

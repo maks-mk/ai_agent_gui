@@ -214,6 +214,50 @@ class ModelProfilesTests(unittest.TestCase):
         self.assertEqual([option["value"] for option in options], ["low", "medium", "high"])
         self.assertEqual(options[-1]["config"], {"enabled": True, "effort": "high"})
 
+    def test_nvidia_deepseek_v4_reasoning_options_use_documented_effort_levels(self):
+        profile = {
+            "provider": "openai",
+            "model": "deepseek-ai/deepseek-v4-flash-0731",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+        }
+
+        options = reasoning_options_for_profile(profile)
+
+        self.assertEqual([option["value"] for option in options], ["none", "high", "max"])
+        self.assertEqual(
+            options[0],
+            {"value": "none", "label": "None", "config": {"enabled": True, "effort": "none"}},
+        )
+        self.assertEqual(
+            profile_reasoning_overrides({**profile, "reasoning": {"enabled": True, "effort": "max"}}),
+            {"enable_model_reasoning": True, "model_reasoning_effort": "max"},
+        )
+
+    def test_nvidia_thinking_reasoning_options_are_binary(self):
+        profile = {
+            "provider": "openai",
+            "model": "qwen/qwen3-235b-a22b",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+        }
+
+        options = reasoning_options_for_profile(profile)
+
+        self.assertEqual(
+            options,
+            [
+                {"value": "off", "label": "Off", "config": {"enabled": False}},
+                {"value": "true", "label": "On", "config": {"enabled": True}},
+            ],
+        )
+        self.assertEqual(
+            profile_reasoning_overrides({**profile, "reasoning": {"enabled": True}}),
+            {"enable_model_reasoning": True},
+        )
+        self.assertEqual(
+            profile_reasoning_overrides({**profile, "reasoning": {"enabled": False}}),
+            {"enable_model_reasoning": False},
+        )
+
     def test_reasoning_off_option_is_only_exposed_for_providers_that_support_disabling(self):
         openai_options = reasoning_options_for_profile(
             {"provider": "openai", "model": "gpt-5.6", "base_url": "https://api.openai.com/v1"}

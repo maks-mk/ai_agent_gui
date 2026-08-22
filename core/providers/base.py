@@ -55,7 +55,7 @@ def chat_model_accepts_kwarg(model_cls: type, name: str) -> bool:
 def normalized_reasoning_effort(value: str | None) -> str:
     """Clamp *value* to a known reasoning-effort label, defaulting to ``medium``."""
     normalized = str(value or "").strip().lower()
-    if normalized in {"none", "minimal", "low", "medium", "high", "xhigh"}:
+    if normalized in {"none", "true", "minimal", "low", "medium", "high", "xhigh", "max"}:
         return normalized
     return "medium"
 

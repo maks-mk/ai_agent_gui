@@ -1,6 +1,6 @@
 {
   "schema_version": 1,
-  "data_version": 3,
+  "data_version": 5,
   "providers": [
     {
       "id": "openai",
@@ -141,6 +141,33 @@
       "notes": "NVIDIA NIM GPT-OSS Chat Completions API documents top-level reasoning_effort with low, medium, and high values. Ref: docs.api.nvidia.com/nim/reference/openai-gpt-oss-120b-infer."
     },
     {
+      "id": "nvidia_nim_deepseek_v4",
+      "enabled": true,
+      "priority": 72,
+      "match": [
+        "integrate.api.nvidia.com",
+        "api.nvidia.com"
+      ],
+      "match_type": "suffix",
+      "supports_reasoning": true,
+      "validation": "strict",
+      "model_match": {
+        "contains": [
+          "deepseek-v4"
+        ]
+      },
+      "reasoning": {
+        "path": "reasoning_effort",
+        "allowed_values": [
+          "none",
+          "high",
+          "max"
+        ],
+        "none_value": "none"
+      },
+      "notes": "NVIDIA NIM DeepSeek V4 documents top-level reasoning_effort with none, high, and max values. Ref: docs.api.nvidia.com/nim/reference/deepseek-ai-deepseek-v4-flash-0731-infer."
+    },
+    {
       "id": "nvidia_nim",
       "enabled": true,
       "priority": 70,
@@ -150,7 +177,7 @@
       ],
       "match_type": "suffix",
       "supports_reasoning": true,
-      "validation": "map",
+      "validation": "passthrough",
       "model_match": {
         "contains": [
           "deepseek-r1",
@@ -166,23 +193,12 @@
       },
       "reasoning": {
         "path": "extra_body.chat_template_kwargs.enable_thinking",
-        "allowed_values": [
-          "true"
-        ],
-        "value_map": {
-          "minimal": "true",
-          "low": "true",
-          "medium": "true",
-          "high": "true",
-          "xhigh": "true",
-          "max": "true"
-        },
-        "extra_fields": {
-          "extra_body.chat_template_kwargs.clear_thinking": false
-        }
+        "enabled_value": true,
+        "disabled_value": false
       },
-      "notes": "NVIDIA NIM uses chat_template_kwargs to enable thinking (not reasoning_effort). DeepSeek V3.x: {thinking:true}. DeepSeek V4: {thinking:true, reasoning_effort:high|max}. GLM-5/4.7: {enable_thinking:true, clear_thinking:false}. Kimi-K2: {thinking:true}. Qwen3/Gemma-4: {enable_thinking:true}. Models not in model_match either do not support thinking or always think regardless. reasoning_content appears in streaming delta when thinking is enabled. chat_template_kwargs is sent via extra_body to avoid LangChain UserWarning about non-default parameters. Ref: github.com/xRyul/pi-nvidia-nim, NVIDIA docs."
+      "notes": "NVIDIA NIM uses chat_template_kwargs.enable_thinking for documented thinking models. enabled_value and disabled_value send JSON booleans directly because reasoning is enabled by default for some NVIDIA models. Model-specific controls such as reasoning_effort, thinking_token_budget, and low_effort are not assumed universally. Ref: docs.nvidia.com/nim."
     },
+
     {
       "id": "aihubmix",
       "enabled": true,

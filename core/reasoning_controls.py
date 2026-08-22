@@ -69,6 +69,12 @@ def reasoning_options_for_profile(
         if not provider_supports_reasoning_for_model(provider_config, model):
             return []
         reasoning = provider_config.get("reasoning", {}) if isinstance(provider_config, Mapping) else {}
+        if "enabled_value" in reasoning:
+            return [
+                _option("off", "Off", {"enabled": False}),
+                _option("true", "On", {"enabled": True}),
+            ]
+
         values = reasoning.get("allowed_values", []) if isinstance(reasoning, Mapping) else []
         allowed = [_clean_text(value).lower() for value in values if _clean_text(value)]
         return [_option(value, _title(value), {"enabled": True, "effort": value}) for value in allowed]
@@ -121,7 +127,7 @@ def normalize_profile_reasoning(value: Any) -> dict[str, Any]:
     if mode == "adaptive":
         result["mode"] = mode
     effort = _clean_text(raw.get("effort")).lower()
-    if effort in {"minimal", "low", "medium", "high", "xhigh", "max"}:
+    if effort in {"true", "none", "minimal", "low", "medium", "high", "xhigh", "max"}:
         result["effort"] = effort
     try:
         budget = int(raw.get("thinking_budget"))

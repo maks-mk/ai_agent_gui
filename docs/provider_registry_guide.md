@@ -2,7 +2,7 @@
 
 `provider_registry.json` описывает, какие reasoning/thinking параметры нужно передавать OpenAI-compatible агрегаторам. Это нужно потому, что единого стандарта нет: один провайдер принимает `reasoning.effort`, другой `extra_body.reasoning.effort`, третий `reasoning_effort`, а некоторые возвращают `400`, если отправить неизвестное поле.
 
-Текущий registry использует `schema_version: 1` и `data_version: 3`. В нём есть отдельные записи для NVIDIA NIM GPT-OSS, NVIDIA NIM thinking-моделей и Hugging Face/Qwen endpoint `hf_qwen38`; matching выполняется по hostname `OPENAI_BASE_URL`, а для reasoning-профилей дополнительно учитывается имя модели.
+Текущий registry использует `schema_version: 1` и `data_version: 5`. В нём есть отдельные записи для NVIDIA NIM GPT-OSS, NVIDIA NIM DeepSeek V4, NVIDIA NIM thinking-моделей и Hugging Face/Qwen endpoint `hf_qwen38`; matching выполняется по hostname `OPENAI_BASE_URL`, а для reasoning-профилей дополнительно учитывается имя модели.
 
 Registry применяется только к профилям с `provider: openai`. Gemini настраивается отдельно через Google SDK-поля `thinking_budget`, `thinking_level` и `include_thoughts`.
 
@@ -121,7 +121,10 @@ Registry матчится по hostname из `OPENAI_BASE_URL`.
 |---|---|
 | `path` | Dot-path, куда записать значение `MODEL_REASONING_EFFORT` |
 | `allowed_values` | Допустимые значения после нормализации |
-| `value_map` | Маппинг входного effort в значение, которое принимает провайдер |
+| `value_map` | Маппинг входного effort в значение, которое принимает провайдер; результат может быть строкой, boolean или числом |
+| `enabled_value` | Опциональное typed-значение, которое отправляется при `reasoning.enabled: true` |
+| `disabled_value` | Опциональное значение, которое нужно явно отправить при `reasoning.enabled: false` |
+| `none_value` | Опциональное typed-значение для входного `effort: "none"`; если поле отсутствует, payload пропускается |
 | `extra_fields` | Дополнительные постоянные поля, если они документированы провайдером |
 
 `path` пишет в kwargs для `ChatOpenAI`, не напрямую в HTTP JSON. Например:
@@ -142,7 +145,9 @@ Registry матчится по hostname из `OPENAI_BASE_URL`.
 
 Обычно нужен `map`: пользователь может поставить `MODEL_REASONING_EFFORT=xhigh`, а провайдер принимает только `high`.
 
-Особый случай: `MODEL_REASONING_EFFORT=none` выключает добавление reasoning payload на уровне runtime. Это работает даже если provider entry поддерживает reasoning.
+Для бинарного provider-specific режима используются `enabled_value` и `disabled_value`; они передаются в payload как typed-значения без строкового effort. В UI такой entry отображается как `On`/`Off`.
+
+Особый случай: `MODEL_REASONING_EFFORT=none` по-прежнему не добавляет reasoning payload при включённом режиме. Явное `reasoning.enabled: false` отправляет `disabled_value`, только если provider entry его объявляет.
 
 В UI профилей OpenAI-compatible пункт `Default` не является отдельным уровнем и не добавляется в меню. Пользователь выбирает только значения из `allowed_values`; профиль без сохранённого reasoning-выбора сохраняет глобальную runtime-настройку. Старые профили с `reasoning.enabled: false` продолжают отключать reasoning.
 
@@ -303,13 +308,15 @@ Registry матчится по hostname из `OPENAI_BASE_URL`.
 
 ## NVIDIA NIM: особенности reasoning
 
-NVIDIA NIM hosted API (`integrate.api.nvidia.com`, `api.nvidia.com`) разделён в registry на два provider entry с разными payload:
+NVIDIA NIM hosted API (`integrate.api.nvidia.com`, `api.nvidia.com`) разделён в registry на три provider entry с разными payload:
 
-1. **GPT-OSS (`nvidia_nim_gpt_oss`, priority 71)** — применяется только к моделям, содержащим `gpt-oss`. Используется top-level `reasoning_effort`; допустимые значения после mapping: `low`, `medium`, `high`. Входные `minimal` и `xhigh`/`max` преобразуются соответственно в `low` и `high`.
+1. **DeepSeek V4 (`nvidia_nim_deepseek_v4`, priority 72)** — применяется к моделям, содержащим `deepseek-v4`, включая `deepseek-ai/deepseek-v4-flash-0731`. Используется top-level `reasoning_effort`; NVIDIA документирует значения `none`, `high`, `max`. В отличие от общего правила для `none`, этот профиль явно отправляет `reasoning_effort: "none"`, чтобы выбрать режим Non-think.
 
-2. **Остальные thinking-модели (`nvidia_nim`, priority 70)** — применяется к моделям, содержащим `deepseek-r1`, `deepseek-v4`, `deepseek-v3`, `deepseek-prover`, `glm-5`, `glm-4.7`, `kimi-k2`, `qwen3` или `gemma-4`. Thinking включается через `extra_body.chat_template_kwargs.enable_thinking=true`, а `clear_thinking=false` добавляется как дополнительное поле. Значения `minimal`, `low`, `medium`, `high`, `xhigh` и `max` маппятся в `true`; они включают режим thinking, но не задают различимую глубину reasoning.
+2. **GPT-OSS (`nvidia_nim_gpt_oss`, priority 71)** — применяется только к моделям, содержащим `gpt-oss`. Используется top-level `reasoning_effort`; допустимые значения после mapping: `low`, `medium`, `high`. Входные `minimal` и `xhigh`/`max` преобразуются соответственно в `low` и `high`.
 
-Обе записи используют suffix matching для `integrate.api.nvidia.com` и `api.nvidia.com`. Приоритет GPT-OSS нужен, чтобы его запись с `reasoning_effort` побеждала общий NVIDIA entry для тех же hostname.
+3. **Остальные документированные thinking-модели (`nvidia_nim`, priority 70)** — применяется к моделям, содержащим `deepseek-r1`, `deepseek-v3`, `deepseek-prover`, `glm-5`, `glm-4.7`, `kimi-k2`, `qwen3` или `gemma-4`. UI предоставляет бинарный выбор `On`/`Off`. Runtime передаёт настоящий JSON boolean через `extra_body.chat_template_kwargs.enable_thinking`: `true` для включения и `false` для явного выключения. Общий `clear_thinking` не отправляется, потому что NVIDIA не документирует его как универсальный параметр этих моделей.
+
+Все три записи используют suffix matching для `integrate.api.nvidia.com` и `api.nvidia.com`. Приоритеты нужны, чтобы специализированная запись DeepSeek V4 или GPT-OSS побеждала общий NVIDIA entry для тех же hostname.
 
 Reasoning в streaming может возвращаться через нестандартные top-level поля delta: `delta.reasoning`, `delta.reasoning_content`, `delta.thinking`. Если `reasoning_detected=false`, это не доказывает, что thinking не включён: провайдер может не возвращать reasoning tokens клиенту.
 

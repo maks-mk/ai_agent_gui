@@ -1,4 +1,5 @@
 import unittest
+from pathlib import Path
 
 from core.provider_registry import (
     PathConflictError,
@@ -114,6 +115,22 @@ class ProviderRegistryTests(unittest.TestCase):
 
         self.assertEqual(payload, {"model": "x", "extra_body": {"reasoning": {"effort": "high"}}})
 
+    def test_nvidia_deepseek_v4_registry_uses_documented_reasoning_effort(self):
+        registry = ProviderRegistry.from_path(Path(__file__).parents[1] / "provider_registry.json")
+
+        config = registry.match(
+            "https://integrate.api.nvidia.com/v1",
+            "deepseek-ai/deepseek-v4-flash-0731",
+        )
+        self.assertEqual(config["id"], "nvidia_nim_deepseek_v4")
+        self.assertEqual(config["reasoning"]["allowed_values"], ["none", "high", "max"])
+
+        for effort in ("none", "high", "max"):
+            payload = {"model": "deepseek-ai/deepseek-v4-flash-0731"}
+            build_reasoning_kwargs(payload, config, effort)
+            self.assertEqual(payload["reasoning_effort"], effort)
+        self.assertNotIn("extra_body", payload)
+
     def test_baai_registry_entry_uses_top_level_reasoning_effort(self):
         config = ProviderRegistry(
             _registry(
@@ -135,6 +152,28 @@ class ProviderRegistryTests(unittest.TestCase):
         build_reasoning_kwargs(payload, config, "xhigh")
 
         self.assertEqual(payload, {"model": "minimax-m3", "reasoning_effort": "high"})
+
+    def test_build_reasoning_kwargs_preserves_typed_mapped_values(self):
+        config = ProviderRegistry(
+            _registry(
+                _provider(
+                    reasoning={
+                        "path": "extra_body.chat_template_kwargs.enable_thinking",
+                        "allowed_values": ["true"],
+                        "value_map": {"high": True},
+                        "disabled_value": False,
+                    }
+                )
+            )
+        ).match("https://openrouter.ai/v1")
+        enabled_payload = {}
+        disabled_payload = {}
+
+        build_reasoning_kwargs(enabled_payload, config, "high")
+        build_reasoning_kwargs(disabled_payload, config, "high", enabled=False)
+
+        self.assertEqual(enabled_payload, {"extra_body": {"chat_template_kwargs": {"enable_thinking": True}}})
+        self.assertEqual(disabled_payload, {"extra_body": {"chat_template_kwargs": {"enable_thinking": False}}})
 
     def test_build_reasoning_kwargs_supports_extra_fields(self):
         config = ProviderRegistry(
@@ -199,7 +238,14 @@ class ProviderRegistryTests(unittest.TestCase):
         with self.assertRaises(PathConflictError):
             set_nested({"reasoning": "bad"}, "reasoning.effort", "high")
 
-    def test_registry_validation_requires_versions(self):
+    def test_registry_validation_accepts_typed_reasoning_values(self):
+        config = _provider(
+            validation="passthrough",
+            reasoning={"path": "extra_body.thinking", "enabled_value": True, "disabled_value": False},
+        )
+
+        self.assertEqual(ProviderRegistry(_registry(config)).match("https://openrouter.ai/v1")["id"], "openrouter")
+
         with self.assertRaises(RegistryValidationError):
             ProviderRegistry({"providers": []})
 

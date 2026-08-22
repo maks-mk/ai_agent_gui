@@ -137,6 +137,9 @@ class ReasoningEffortNormalizationTests(unittest.TestCase):
         self.assertEqual(normalized_reasoning_effort(None), "medium")
         self.assertEqual(normalized_reasoning_effort(""), "medium")
 
+    def test_normalized_reasoning_effort_preserves_registry_boolean_level(self):
+        self.assertEqual(normalized_reasoning_effort("true"), "true")
+
     def test_gemini_thinking_level_mapping(self):
         self.assertEqual(normalized_gemini_thinking_level("none"), "minimal")
         self.assertEqual(normalized_gemini_thinking_level("minimal"), "minimal")

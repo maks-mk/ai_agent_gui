@@ -3400,6 +3400,37 @@ class GuiUxTests(unittest.TestCase):
             {"enabled": True, "effort": "medium"},
         )
 
+    def test_nvidia_thinking_reasoning_selector_saves_binary_mode(self):
+        payload = self._snapshot_payload()
+        profile = payload["model_profiles"]["profiles"][0]
+        profile.update(
+            {
+                "model": "qwen/qwen3-235b-a22b",
+                "base_url": "https://integrate.api.nvidia.com/v1",
+            }
+        )
+        self.window._handle_initialized(payload)
+
+        self.assertEqual([action.text() for action in self.window.reasoning_chip_menu.actions()], ["Off", "On"])
+        self.assertEqual(self.window.reasoning_chip.text(), "On")
+        action = next(action for action in self.window.reasoning_chip_menu.actions() if action.text() == "On")
+        action.trigger()
+
+        self.assertEqual(self.window.reasoning_chip.text(), "On")
+        self.assertEqual(
+            self.controller.save_profiles_calls[-1]["profiles"][0]["reasoning"],
+            {"enabled": True},
+        )
+
+        action = next(action for action in self.window.reasoning_chip_menu.actions() if action.text() == "Off")
+        action.trigger()
+
+        self.assertEqual(self.window.reasoning_chip.text(), "Off")
+        self.assertEqual(
+            self.controller.save_profiles_calls[-1]["profiles"][0]["reasoning"],
+            {"enabled": False},
+        )
+
     def test_no_models_cta_is_visible_and_send_is_disabled(self):
         payload = self._snapshot_payload()
         payload["model_profiles"] = {"active_profile": None, "profiles": []}

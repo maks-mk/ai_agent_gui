@@ -722,6 +722,16 @@ class MainWindow(QMainWindow):
             selected_value = str(current["effort"])
         elif provider == "anthropic" and current.get("mode"):
             selected_value = str(current["mode"])
+        option_values = {str(option.get("value") or "") for option in options}
+        if not selected_value and current.get("enabled", True) and "true" in option_values:
+            selected_value = "true"
+        elif (
+            selected_value
+            and selected_value not in option_values
+            and "true" in option_values
+            and current.get("enabled", True)
+        ):
+            selected_value = "true"
 
         selected_label = "Off" if selected_value == "off" else "Reasoning"
         for option in options:

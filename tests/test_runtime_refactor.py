@@ -1275,7 +1275,28 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("extra_body", captured)
         self.assertEqual(captured["reasoning_effort"], "high")
 
-    def test_create_llm_for_nvidia_qwen_keeps_registry_thinking_kwargs(self):
+    def test_create_llm_for_nvidia_deepseek_v4_uses_documented_reasoning_effort(self):
+        captured = {}
+
+        class FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_openai": mock.Mock(ChatOpenAI=FakeChatOpenAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="openai",
+                    OPENAI_API_KEY="sk-test",
+                    OPENAI_MODEL="deepseek-ai/deepseek-v4-flash-0731",
+                    OPENAI_BASE_URL="https://integrate.api.nvidia.com/v1",
+                    MODEL_REASONING_EFFORT="max",
+                )
+            )
+
+        self.assertNotIn("reasoning", captured)
+        self.assertNotIn("extra_body", captured)
+        self.assertEqual(captured["reasoning_effort"], "max")
+
         captured = {}
 
         class FakeChatOpenAI:
@@ -1297,7 +1318,30 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("reasoning_effort", captured)
         self.assertEqual(
             captured["extra_body"],
-            {"chat_template_kwargs": {"enable_thinking": "true", "clear_thinking": False}},
+            {"chat_template_kwargs": {"enable_thinking": True}},
+        )
+
+    def test_create_llm_for_nvidia_qwen_explicitly_disables_default_thinking(self):
+        captured = {}
+
+        class FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_openai": mock.Mock(ChatOpenAI=FakeChatOpenAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="openai",
+                    OPENAI_API_KEY="sk-test",
+                    OPENAI_MODEL="qwen/qwen3-235b-a22b",
+                    OPENAI_BASE_URL="https://integrate.api.nvidia.com/v1",
+                    ENABLE_MODEL_REASONING=False,
+                )
+            )
+
+        self.assertEqual(
+            captured["extra_body"],
+            {"chat_template_kwargs": {"enable_thinking": False}},
         )
 
     def test_create_llm_for_fireworks_reasoning_model_uses_registry_reasoning_effort(self):
