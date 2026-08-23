@@ -24,6 +24,26 @@ from .foundation import (
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
 FILE_ACCENT_BLUE = "#7CC7FF"
+TOOL_ICON_SIZE = 12
+MCP_TOOL_ICON = "fa5s.cubes"
+TOOL_ROLE_ICONS = {
+    "write": "fa5s.file-signature",
+    "edit": "fa5s.edit",
+    "read": "fa5s.file-alt",
+    "command": "fa5s.terminal",
+    "search": "fa5s.search",
+    "list": "fa5s.folder-open",
+    "network": "fa5s.globe",
+    "fetch": "fa5s.link",
+    "crawl": "fa5s.spider",
+    "download": "fa5s.download",
+    "delete": "fa5s.trash-alt",
+    "start_process": "fa5s.play",
+    "stop_process": "fa5s.stop",
+    "find_process": "fa5s.network-wired",
+    "input": "fa5s.comment-dots",
+    "tool": "fa5s.tools",
+}
 
 
 def _strip_ansi_for_display(text: Any) -> str:
@@ -197,7 +217,14 @@ class ToolCardWidget(QFrame):
         header.setContentsMargins(0, 0, 0, 0)
         header.setSpacing(6)
         self.icon_label = QLabel(self.header_container)
-        self.icon_label.setPixmap(_fa_icon("fa5s.circle", color=TEXT_MUTED, size=7).pixmap(7, 7))
+        self.icon_label.setFixedSize(TOOL_ICON_SIZE, TOOL_ICON_SIZE)
+        self.icon_label.setAlignment(Qt.AlignCenter)
+        self.icon_label.setPixmap(
+            _fa_icon(TOOL_ROLE_ICONS["tool"], color=TEXT_MUTED, size=TOOL_ICON_SIZE).pixmap(
+                TOOL_ICON_SIZE,
+                TOOL_ICON_SIZE,
+            )
+        )
         header.addWidget(self.icon_label, 0, Qt.AlignVCenter)
 
         self.tool_button = QPushButton(self.header_container)
@@ -308,6 +335,12 @@ class ToolCardWidget(QFrame):
         if normalized == "request_user_input":
             return "input"
         return "tool"
+
+    @classmethod
+    def _tool_icon_name(cls, name: Any, source_kind: Any = "") -> str:
+        if str(source_kind or "").strip().lower() == "mcp":
+            return MCP_TOOL_ICON
+        return TOOL_ROLE_ICONS[cls._tool_role(name)]
 
     @classmethod
     def _localized_title(cls, name: Any, payload: dict[str, Any]) -> str:
@@ -588,17 +621,20 @@ class ToolCardWidget(QFrame):
                 style.unpolish(self.phase_badge)
                 style.polish(self.phase_badge)
 
-        icon_name = "fa5s.circle"
+        icon_name = self._tool_icon_name(tool_name, normalized.get("source_kind", ""))
         icon_color = TEXT_MUTED
         if phase_variant == "active":
             icon_color = "#A8A49E"
         elif phase_variant == "success":
-            icon_name = "fa5s.check-circle"
             icon_color = SUCCESS_GREEN
         elif phase_variant == "error":
-            icon_name = "fa5s.times-circle"
             icon_color = ERROR_RED
-        self.icon_label.setPixmap(_fa_icon(icon_name, color=icon_color, size=7).pixmap(7, 7))
+        self.icon_label.setPixmap(
+            _fa_icon(icon_name, color=icon_color, size=TOOL_ICON_SIZE).pixmap(
+                TOOL_ICON_SIZE,
+                TOOL_ICON_SIZE,
+            )
+        )
 
         if normalized.get("display_state") == "preview" and not normalized.get("refresh") and not finished:
             self._queue_preview_reveal()

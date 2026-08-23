@@ -9,7 +9,7 @@ from unittest import mock
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
 from PySide6.QtCore import QEvent, QMimeData, QModelIndex, QObject, Qt, QtMsgType, Signal
-from PySide6.QtGui import QImage, QKeyEvent, QTextCursor, QTextFormat
+from PySide6.QtGui import QIcon, QImage, QKeyEvent, QTextCursor, QTextFormat
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QFrame, QMessageBox, QPushButton, QSizePolicy, QToolBar, QToolButton, QWidget
 
@@ -281,6 +281,46 @@ class GuiUxTests(unittest.TestCase):
             self.assertEqual(widget.output_view.toPlainText(), "partial\nfinal\n")
         finally:
             widget.deleteLater()
+
+    def test_tool_cards_use_semantic_qtawesome_icons(self):
+        icon_cases = {
+            "read_file": "fa5s.file-alt",
+            "write_file": "fa5s.file-signature",
+            "edit_file": "fa5s.edit",
+            "list_directory": "fa5s.folder-open",
+            "batch_web_search": "fa5s.globe",
+            "fetch_content": "fa5s.link",
+            "crawl_site": "fa5s.spider",
+            "cli_exec": "fa5s.terminal",
+            "safe_delete_file": "fa5s.trash-alt",
+            "download_file": "fa5s.download",
+            "run_background_process": "fa5s.play",
+            "stop_background_process": "fa5s.stop",
+            "find_process_by_port": "fa5s.network-wired",
+            "request_user_input": "fa5s.comment-dots",
+        }
+
+        for name, expected_icon in icon_cases.items():
+            with self.subTest(name=name):
+                self.assertEqual(ToolCardWidget._tool_icon_name(name), expected_icon)
+
+    def test_mcp_tools_share_one_qtawesome_icon(self):
+        expected_icon = "fa5s.cubes"
+
+        self.assertEqual(ToolCardWidget._tool_icon_name("resolve_library_id", "mcp"), expected_icon)
+        self.assertEqual(ToolCardWidget._tool_icon_name("query_docs", "MCP"), expected_icon)
+
+    def test_tool_icon_stays_semantic_after_completion(self):
+        with mock.patch("ui.widgets.tools._fa_icon", return_value=QIcon()) as icon_factory:
+            card = ToolCardWidget({"name": "read_file", "phase": "running"})
+            try:
+                card.finish({"name": "read_file"})
+            finally:
+                card.deleteLater()
+
+        requested_names = [call.args[0] for call in icon_factory.call_args_list]
+        self.assertIn("fa5s.file-alt", requested_names)
+        self.assertNotIn("fa5s.check-circle", requested_names)
 
     def test_tool_titles_change_to_past_tense_after_successful_completion(self):
         title_cases = {
