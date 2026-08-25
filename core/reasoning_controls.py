@@ -12,6 +12,12 @@ from typing import Any, Mapping
 
 from core.constants import BASE_DIR
 from core.provider_registry import ProviderRegistry, provider_supports_reasoning_for_model
+from core.anthropic_capabilities import (
+    anthropic_model_reasoning_efforts,
+    anthropic_model_requires_thinking,
+    anthropic_model_uses_adaptive_thinking,
+    anthropic_model_uses_manual_thinking,
+)
 
 
 def _clean_text(value: Any) -> str:
@@ -43,12 +49,6 @@ def _gemini_model_supports_thinking_budget(model_name: str) -> bool:
 def _gemini_model_supports_thinking_level(model_name: str) -> bool:
     normalized = _normalized_gemini_model_name(model_name)
     return normalized.startswith("gemini-3") or normalized.startswith("gemma-4")
-
-
-def _anthropic_model_uses_adaptive_thinking(model_name: str) -> bool:
-    normalized = _clean_text(model_name).lower()
-    families = ("claude-opus-4-6", "claude-opus-4-7", "claude-opus-4-8", "claude-sonnet-5")
-    return any(normalized == family or normalized.startswith(f"{family}-") for family in families)
 
 
 def reasoning_options_for_profile(
@@ -104,8 +104,14 @@ def reasoning_options_for_profile(
         return []
 
     if provider == "anthropic":
-        if _anthropic_model_uses_adaptive_thinking(model):
-            return [off, _option("adaptive", "Adaptive", {"enabled": True, "mode": "adaptive"})]
+        efforts = anthropic_model_reasoning_efforts(model)
+        off_options = [] if anthropic_model_requires_thinking(model) else [off]
+        if efforts:
+            return [*off_options, *[_option(value, _title(value), {"enabled": True, "effort": value}) for value in efforts]]
+        if anthropic_model_uses_adaptive_thinking(model):
+            return [*off_options, _option("adaptive", "Adaptive", {"enabled": True, "mode": "adaptive"})]
+        if not anthropic_model_uses_manual_thinking(model):
+            return []
         budgets = (1024, 4096, 8192)
         return [
             off,
@@ -114,6 +120,7 @@ def reasoning_options_for_profile(
                 for budget in budgets
             ],
         ]
+
     return []
 
 
@@ -165,10 +172,11 @@ def profile_reasoning_overrides(profile: Mapping[str, Any] | None) -> dict[str, 
     if provider == "anthropic":
         if not enabled:
             overrides["anthropic_reasoning"] = "off"
-        elif reasoning.get("mode") == "adaptive" or effort:
-            # Older persisted profiles used an undocumented effort value. Keep them
-            # working by selecting the official adaptive mode without forwarding it.
-            overrides["anthropic_reasoning"] = "adaptive"
-        elif "thinking_budget" in reasoning:
-            overrides["anthropic_thinking_budget"] = int(reasoning["thinking_budget"])
+        else:
+            if reasoning.get("mode") == "adaptive":
+                overrides["anthropic_reasoning"] = "adaptive"
+            elif effort:
+                overrides["anthropic_reasoning"] = effort
+            if "thinking_budget" in reasoning:
+                overrides["anthropic_thinking_budget"] = int(reasoning["thinking_budget"])
     return overrides

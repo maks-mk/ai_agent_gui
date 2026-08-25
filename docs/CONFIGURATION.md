@@ -18,8 +18,8 @@
 | `ANTHROPIC_MODEL` | `claude-sonnet-4-5-20250929` | Имя модели Anthropic |
 | `ANTHROPIC_BASE_URL` | — | Необязательный URL Anthropic-compatible API (без `/v1` — SDK добавляет его сам) |
 | `ANTHROPIC_MAX_TOKENS` | `8192` | Максимум выходных токенов Anthropic |
-| `ANTHROPIC_THINKING_BUDGET` | `4096` | Fixed-budget thinking для старых Claude; не применяется к Sonnet 5 и Opus 4.7/4.8 |
-| `ANTHROPIC_REASONING` | — | Режим reasoning для Claude: `adaptive` использует официальный `thinking.type=adaptive`; `off` и `none` отключают thinking. Старые значения уровня принимаются как совместимый алиас `adaptive`. |
+| `ANTHROPIC_THINKING_BUDGET` | `4096` | Fixed-budget thinking для Claude Haiku/Sonnet/Opus 4.5; для Opus 4.5 может использоваться вместе с effort `low`, `medium` или `high` |
+| `ANTHROPIC_REASONING` | — | Управление Anthropic reasoning: `off`/`none`, `adaptive` или effort. Для Opus 4.5 доступны `low`, `medium`, `high`; для Claude 4.6+ и 5 набор зависит от модели, включая `max`, а `xhigh` — только для поддерживаемых моделей 4.7+/5. Для effort runtime передаёт adaptive `thinking` и `output_config.effort`. При включённом thinking sampling-параметр `temperature` не передаётся. |
 | `LLM_API_MODE` | `chat` | Режим API для OpenAI-провайдера: `chat` (`/v1/chat/completions`, работает со всеми OpenAI-compatible) или `responses` (`/v1/responses`, для gpt-5/o-series reasoning). Если не указан, LangChain автоопределяет по модели и payload |
 | `ENABLE_MODEL_REASONING` | `true` | Включает provider-side reasoning/thinking для поддерживаемых моделей |
 | `MODEL_REASONING_EFFORT` | `medium` | Усилие reasoning для OpenAI/OpenAI-compatible моделей (`none`, `minimal`, `low`, `medium`, `high`, `xhigh`) |

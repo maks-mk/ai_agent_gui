@@ -424,7 +424,7 @@ class AgentConfig(BaseSettings):
             if reasoning not in allowed:
                 raise ValueError(
                     f"ANTHROPIC_REASONING='{self.anthropic_reasoning}' is invalid. "
-                    "Allowed: adaptive, off, none, or empty. Legacy effort values are accepted as adaptive."
+                    "Allowed: adaptive, off, none, low, medium, high, xhigh, max, or empty."
                 )
             self.anthropic_reasoning = reasoning
             if not self.anthropic_api_key and not self.anthropic_base_url:

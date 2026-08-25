@@ -23,18 +23,166 @@
       "reasoning": {
         "path": "reasoning.effort",
         "allowed_values": [
+          "none",
           "minimal",
           "low",
           "medium",
           "high",
-          "xhigh"
+          "xhigh",
+          "max"
         ],
         "value_map": {},
+        "none_value": "none",
         "extra_fields": {
           "reasoning.summary": "auto"
         }
       },
-      "notes": "Native OpenAI Responses API through LangChain ChatOpenAI."
+      "notes": "Native OpenAI Responses API through LangChain ChatOpenAI. reasoning.effort values are model-dependent; official vocabulary: none, minimal, low, medium, high, xhigh, max. Ref: platform.openai.com/docs/guides/reasoning."
+    },
+    {
+      "id": "deepseek",
+      "enabled": true,
+      "priority": 99,
+      "match": [
+        "api.deepseek.com"
+      ],
+      "match_type": "exact",
+      "supports_reasoning": true,
+      "model_match": {
+        "prefix": [
+          "deepseek-"
+        ]
+      },
+      "validation": "map",
+      "reasoning": {
+        "path": "reasoning_effort",
+        "allowed_values": [
+          "low",
+          "high",
+          "max"
+        ],
+        "value_map": {
+          "minimal": "low",
+          "medium": "high",
+          "xhigh": "max"
+        },
+        "extra_fields": {
+          "extra_body.thinking.type": "enabled"
+        }
+      },
+      "notes": "DeepSeek official Chat Completions thinking mode uses reasoning_effort=low|high|max and extra_body.thinking.type=enabled. Thinking mode does not support temperature or other sampling parameters. Ref: api-docs.deepseek.com/guides/thinking_mode."
+    },
+    {
+      "id": "kimi",
+      "enabled": true,
+      "priority": 99,
+      "match": [
+        "api.moonshot.ai",
+        "api.moonshot.cn"
+      ],
+      "match_type": "exact",
+      "supports_reasoning": true,
+      "model_match": {
+        "prefix": [
+          "kimi-k3"
+        ]
+      },
+      "validation": "map",
+      "reasoning": {
+        "path": "reasoning_effort",
+        "allowed_values": [
+          "low",
+          "high",
+          "max"
+        ],
+        "value_map": {
+          "minimal": "low",
+          "medium": "high",
+          "xhigh": "max"
+        }
+      },
+      "notes": "Kimi K3 official Chat Completions uses top-level reasoning_effort=low|high|max and always enables thinking. Ref: platform.moonshot.ai/docs/api/chat."
+    },
+    {
+      "id": "kimi_k2_thinking",
+      "enabled": true,
+      "priority": 98,
+      "match": [
+        "api.moonshot.ai",
+        "api.moonshot.cn"
+      ],
+      "match_type": "exact",
+      "supports_reasoning": true,
+      "model_match": {
+        "prefix": [
+          "kimi-k2.6"
+        ]
+      },
+      "validation": "strict",
+      "reasoning": {
+        "path": "extra_body.thinking.type",
+        "allowed_values": [
+          "enabled"
+        ],
+        "enabled_value": "enabled",
+        "disabled_value": "disabled"
+      },
+      "notes": "Kimi K2.6 official Chat Completions thinking toggle uses extra_body.thinking.type=enabled|disabled. Ref: platform.moonshot.ai/docs/api/chat."
+    },
+    {
+      "id": "qwen",
+      "enabled": true,
+      "priority": 99,
+      "match": [
+        "dashscope.aliyuncs.com",
+        "dashscope-intl.aliyuncs.com",
+        "dashscope-us.aliyuncs.com"
+      ],
+      "match_type": "exact",
+      "supports_reasoning": true,
+      "model_match": {
+        "contains": [
+          "qwen3",
+          "qwen-plus",
+          "qwen-turbo",
+          "qwen-max"
+        ]
+      },
+      "validation": "strict",
+      "reasoning": {
+        "path": "extra_body.enable_thinking",
+        "allowed_values": [
+          "enabled"
+        ],
+        "enabled_value": true,
+        "disabled_value": false
+      },
+      "notes": "Qwen official OpenAI-compatible Chat Completions uses extra_body.enable_thinking=true|false for hybrid thinking models. Ref: alibabacloud.com/help/en/model-studio/deep-thinking."
+    },
+    {
+      "id": "glm",
+      "enabled": true,
+      "priority": 99,
+      "match": [
+        "open.bigmodel.cn",
+        "api.z.ai"
+      ],
+      "match_type": "exact",
+      "supports_reasoning": true,
+      "model_match": {
+        "prefix": [
+          "glm-"
+        ]
+      },
+      "validation": "strict",
+      "reasoning": {
+        "path": "extra_body.thinking.type",
+        "allowed_values": [
+          "enabled"
+        ],
+        "enabled_value": "enabled"
+      },
+      "notes": "GLM official OpenAI-compatible Chat Completions documents extra_body.thinking.type=enabled for thinking mode. An undocumented disabled value is intentionally not sent. Ref: docs.bigmodel.cn/cn/guide/develop/openai/introduction."
     },
     {
       "id": "openrouter",
@@ -474,6 +622,29 @@
       "notes": "Hugging Face public Qwen3.8-27B endpoint. OpenAI-compatible Chat Completions API. reasoning_effort supports low, medium and xhigh."
     },
     {
+      "id": "tokenbom",
+      "enabled": true,
+      "priority": 60,
+      "match": [
+        "tokenbom.com"
+      ],
+      "match_type": "exact",
+      "supports_reasoning": true,
+      "validation": "map",
+      "reasoning": {
+        "path": "reasoning_effort",
+        "allowed_values": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "value_map": {
+          "xhigh": "high"
+        }
+      },
+      "notes": "tokenbom.com OpenAI-compatible Chat Completions uses top-level reasoning_effort; Responses-only reasoning.summary is not sent in chat mode."
+    },
+	{
       "id": "freetheai",
       "enabled": true,
       "priority": 60,

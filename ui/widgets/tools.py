@@ -215,7 +215,7 @@ class ToolCardWidget(QFrame):
         self.header_container = QWidget(self)
         header = QHBoxLayout(self.header_container)
         header.setContentsMargins(0, 0, 0, 0)
-        header.setSpacing(6)
+        header.setSpacing(4)
         self.icon_label = QLabel(self.header_container)
         self.icon_label.setFixedSize(TOOL_ICON_SIZE, TOOL_ICON_SIZE)
         self.icon_label.setAlignment(Qt.AlignCenter)

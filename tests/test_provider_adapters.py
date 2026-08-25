@@ -654,19 +654,20 @@ class AnthropicReasoningTests(unittest.TestCase):
         with mock.patch.dict(os.environ, env, clear=False):
             return AgentConfig()
 
-    def test_legacy_reasoning_effort_selects_adaptive_thinking_without_forwarding_effort(self):
-        """Legacy effort labels select documented adaptive thinking mode."""
+    def test_reasoning_effort_uses_adaptive_thinking_and_output_config(self):
+        """Supported effort labels are forwarded as output_config.effort."""
         from core.providers.anthropic import create_anthropic_chat_model
 
-        cfg = self._make_config(ANTHROPIC_REASONING="low")
+        cfg = self._make_config(ANTHROPIC_MODEL="claude-opus-4-6", ANTHROPIC_REASONING="low")
         model = create_anthropic_chat_model(cfg)
+        payload = model._get_request_payload([{"role": "user", "content": "hi"}])
         self.assertEqual(model.thinking, {"type": "adaptive"})
-        self.assertNotIn("effort", model._get_request_payload([{"role": "user", "content": "hi"}]))
+        self.assertEqual(payload["output_config"], {"effort": "low"})
 
     def test_reasoning_adaptive_sets_adaptive_thinking(self):
         from core.providers.anthropic import create_anthropic_chat_model
 
-        cfg = self._make_config(ANTHROPIC_REASONING="adaptive")
+        cfg = self._make_config(ANTHROPIC_MODEL="claude-sonnet-4-6", ANTHROPIC_REASONING="adaptive")
         model = create_anthropic_chat_model(cfg)
         self.assertEqual(model.thinking, {"type": "adaptive"})
 
@@ -705,15 +706,14 @@ class AnthropicReasoningTests(unittest.TestCase):
                 self.assertNotIn("budget_tokens", payload["thinking"])
                 self.assertNotIn("temperature", payload)
 
-    def test_adaptive_only_model_does_not_pass_undocumented_effort(self):
+    def test_adaptive_only_model_passes_documented_effort(self):
         from core.providers.anthropic import create_anthropic_chat_model
 
         cfg = self._make_config(ANTHROPIC_MODEL="claude-sonnet-5", ANTHROPIC_REASONING="high")
         model = create_anthropic_chat_model(cfg)
         payload = model._get_request_payload([{"role": "user", "content": "hi"}])
         self.assertEqual(payload["thinking"], {"type": "adaptive"})
-        self.assertNotIn("effort", payload)
-        self.assertNotIn("output_config", payload)
+        self.assertEqual(payload["output_config"], {"effort": "high"})
         self.assertNotIn("temperature", payload)
 
     def test_reasoning_off_disables_adaptive_only_models(self):
@@ -723,7 +723,16 @@ class AnthropicReasoningTests(unittest.TestCase):
         model = create_anthropic_chat_model(cfg)
         self.assertEqual(model.thinking, {"type": "disabled"})
 
-    def test_sonnet_4_5_keeps_budget_thinking_and_temperature(self):
+    def test_always_on_models_reject_disabling_thinking(self):
+        from core.providers.anthropic import create_anthropic_chat_model
+
+        for model_name in ("claude-fable-5", "claude-mythos-5", "claude-mythos-preview"):
+            with self.subTest(model_name=model_name):
+                cfg = self._make_config(ANTHROPIC_MODEL=model_name, ANTHROPIC_REASONING="off")
+                with self.assertRaisesRegex(ValueError, "does not support disabling thinking"):
+                    create_anthropic_chat_model(cfg)
+
+    def test_sonnet_4_5_omits_sampling_with_manual_thinking(self):
         from core.providers.anthropic import create_anthropic_chat_model
 
         cfg = self._make_config(ANTHROPIC_REASONING="")
@@ -731,7 +740,7 @@ class AnthropicReasoningTests(unittest.TestCase):
         payload = model._get_request_payload([{"role": "user", "content": "hi"}])
         self.assertEqual(payload["thinking"]["type"], "enabled")
         self.assertIn("budget_tokens", payload["thinking"])
-        self.assertEqual(payload["temperature"], cfg.temperature)
+        self.assertNotIn("temperature", payload)
 
     def test_opus_4_6_empty_reasoning_uses_adaptive_thinking(self):
         """Opus 4.6 must not receive deprecated budget-based thinking."""
@@ -748,10 +757,50 @@ class AnthropicReasoningTests(unittest.TestCase):
     def test_adaptive_mode_takes_priority_over_budget(self):
         from core.providers.anthropic import create_anthropic_chat_model
 
-        cfg = self._make_config(ANTHROPIC_REASONING="high", ANTHROPIC_THINKING_BUDGET="8192")
+        cfg = self._make_config(
+            ANTHROPIC_MODEL="claude-opus-4-6",
+            ANTHROPIC_REASONING="high",
+            ANTHROPIC_THINKING_BUDGET="8192",
+        )
         model = create_anthropic_chat_model(cfg)
+        payload = model._get_request_payload([{"role": "user", "content": "hi"}])
         self.assertEqual(model.thinking, {"type": "adaptive"})
-        self.assertNotIn("effort", model._get_request_payload([{"role": "user", "content": "hi"}]))
+        self.assertEqual(payload["output_config"], {"effort": "high"})
+
+    def test_opus_4_5_combines_manual_budget_and_effort(self):
+        from core.providers.anthropic import create_anthropic_chat_model
+
+        cfg = self._make_config(
+            ANTHROPIC_MODEL="claude-opus-4-5-20251101",
+            ANTHROPIC_REASONING="high",
+            ANTHROPIC_THINKING_BUDGET="4096",
+        )
+        model = create_anthropic_chat_model(cfg)
+        payload = model._get_request_payload([{"role": "user", "content": "hi"}])
+        self.assertEqual(payload["thinking"], {"type": "enabled", "budget_tokens": 4096})
+        self.assertEqual(payload["output_config"], {"effort": "high"})
+        self.assertNotIn("temperature", payload)
+
+    def test_opus_4_5_rejects_max_effort(self):
+        from core.providers.anthropic import create_anthropic_chat_model
+
+        cfg = self._make_config(ANTHROPIC_MODEL="claude-opus-4-5-20251101", ANTHROPIC_REASONING="max")
+        with self.assertRaisesRegex(ValueError, "does not support reasoning effort"):
+            create_anthropic_chat_model(cfg)
+
+    def test_sonnet_4_5_rejects_effort(self):
+        from core.providers.anthropic import create_anthropic_chat_model
+
+        cfg = self._make_config(ANTHROPIC_REASONING="high")
+        with self.assertRaisesRegex(ValueError, "does not support reasoning effort"):
+            create_anthropic_chat_model(cfg)
+
+    def test_claude_4_6_rejects_xhigh(self):
+        from core.providers.anthropic import create_anthropic_chat_model
+
+        cfg = self._make_config(ANTHROPIC_MODEL="claude-sonnet-4-6", ANTHROPIC_REASONING="xhigh")
+        with self.assertRaisesRegex(ValueError, "does not support reasoning effort"):
+            create_anthropic_chat_model(cfg)
 
     def test_reasoning_budget_clamped_to_max_tokens(self):
         """budget_tokens must be >= 1024 and < max_tokens."""
@@ -796,7 +845,9 @@ class AnthropicHeadersTests(unittest.TestCase):
             "ANTHROPIC_API_KEY": "sk-ant-test",
             "ANTHROPIC_MODEL": "claude-sonnet-4-5-20250929",
             "ANTHROPIC_BASE_URL": "https://proxy.example/v1",
+            "ANTHROPIC_REASONING": "",
         }
+
         with mock.patch.dict(os.environ, env, clear=False):
             cfg = AgentConfig()
         with mock.patch("langchain_anthropic.ChatAnthropic", FakeChatAnthropic):
@@ -834,6 +885,7 @@ class AnthropicHeadersTests(unittest.TestCase):
             "ANTHROPIC_API_KEY": "sk-ant-test",
             "ANTHROPIC_MODEL": "claude-sonnet-4-5-20250929",
             "ANTHROPIC_MAX_TOKENS": "8192",
+            "ANTHROPIC_REASONING": "",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             cfg = AgentConfig()
@@ -858,6 +910,7 @@ class AnthropicHeadersTests(unittest.TestCase):
             "ANTHROPIC_MODEL": "claude-sonnet-4-5-20250929",
             "ANTHROPIC_MAX_TOKENS": "8192",
             "ANTHROPIC_BASE_URL": "https://proxy.example/v1",
+            "ANTHROPIC_REASONING": "",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             cfg = AgentConfig()
@@ -876,6 +929,7 @@ class AnthropicHeadersTests(unittest.TestCase):
             "ANTHROPIC_MODEL": "claude-sonnet-4-5-20250929",
             "ANTHROPIC_MAX_TOKENS": "8192",
             "ANTHROPIC_BASE_URL": "https://proxy.example",
+            "ANTHROPIC_REASONING": "",
         }
         with mock.patch.dict(os.environ, env, clear=False):
             cfg = AgentConfig()

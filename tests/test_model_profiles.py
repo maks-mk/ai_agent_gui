@@ -200,7 +200,10 @@ class ModelProfilesTests(unittest.TestCase):
             {"value": "budget:4096", "label": "Thinking: 4,096", "config": {"enabled": True, "thinking_budget": 4096}},
             gemini_budget_options,
         )
-        self.assertIn({"value": "adaptive", "label": "Adaptive", "config": {"enabled": True, "mode": "adaptive"}}, anthropic_options)
+        self.assertEqual(
+            [option["value"] for option in anthropic_options],
+            ["off", "low", "medium", "high", "max", "xhigh"],
+        )
 
     def test_nvidia_gpt_oss_reasoning_options_use_documented_effort_levels(self):
         options = reasoning_options_for_profile(
@@ -269,10 +272,28 @@ class ModelProfilesTests(unittest.TestCase):
         anthropic_options = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-sonnet-5"})
 
         off_option = {"value": "off", "label": "Off", "config": {"enabled": False}}
+
         self.assertNotIn("off", [option["value"] for option in openai_options])
         self.assertNotIn("off", [option["value"] for option in compatible_options])
         self.assertEqual(gemini_options[0], off_option)
         self.assertEqual(anthropic_options[0], off_option)
+
+    def test_anthropic_reasoning_options_follow_model_capabilities(self):
+        sonnet_45 = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-sonnet-4-5-20250929"})
+        opus_45 = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-opus-4-5-20251101"})
+        sonnet_46 = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-sonnet-4-6"})
+        opus_47 = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-opus-4-7"})
+        mythos_preview = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-mythos-preview"})
+        always_on = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-fable-5"})
+        unknown = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-unknown"})
+
+        self.assertEqual([option["value"] for option in sonnet_45], ["off", "budget:1024", "budget:4096", "budget:8192"])
+        self.assertEqual([option["value"] for option in opus_45], ["off", "low", "medium", "high"])
+        self.assertEqual([option["value"] for option in sonnet_46], ["off", "low", "medium", "high", "max"])
+        self.assertEqual([option["value"] for option in opus_47], ["off", "low", "medium", "high", "max", "xhigh"])
+        self.assertEqual([option["value"] for option in mythos_preview], ["low", "medium", "high", "max"])
+        self.assertEqual([option["value"] for option in always_on], ["low", "medium", "high", "max", "xhigh"])
+        self.assertEqual(unknown, [])
 
     def test_profile_reasoning_overrides_use_provider_specific_fields(self):
         self.assertEqual(
@@ -286,6 +307,19 @@ class ModelProfilesTests(unittest.TestCase):
         self.assertEqual(
             profile_reasoning_overrides({"provider": "anthropic", "reasoning": {"enabled": True, "mode": "adaptive"}}),
             {"enable_model_reasoning": True, "anthropic_reasoning": "adaptive"},
+        )
+        self.assertEqual(
+            profile_reasoning_overrides(
+                {
+                    "provider": "anthropic",
+                    "reasoning": {"enabled": True, "effort": "high", "thinking_budget": 4096},
+                }
+            ),
+            {
+                "enable_model_reasoning": True,
+                "anthropic_reasoning": "high",
+                "anthropic_thinking_budget": 4096,
+            },
         )
 
 

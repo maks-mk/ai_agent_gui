@@ -66,7 +66,7 @@ Copy-Item env_example.txt .env
 python main.py
 ```
 
-Для Claude Sonnet 5 и Opus 4.6+ задавайте `ANTHROPIC_REASONING=adaptive`; `ANTHROPIC_THINKING_BUDGET` предназначен для старых моделей. Полный список параметров находится в [документации конфигурации](./docs/CONFIGURATION.md).
+Для Claude 4.6+ используйте adaptive thinking с effort (`ANTHROPIC_REASONING=low|medium|high|max`, а `xhigh` только для поддерживаемых моделей 4.7+/5). Для Claude 4.5 используется `ANTHROPIC_THINKING_BUDGET`; Opus 4.5 дополнительно поддерживает effort `low|medium|high`. При включённом thinking `temperature` не отправляется согласно ограничениям Anthropic. Полный список параметров находится в [документации конфигурации](./docs/CONFIGURATION.md).
 
 ---
 

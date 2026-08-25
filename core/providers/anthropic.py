@@ -87,6 +87,13 @@ def _build_anthropic_compatible_stream_adapter(base_cls: type) -> type:
 
     return CompatibleStreamChatAnthropic
 
+from core.anthropic_capabilities import (
+    anthropic_model_disallows_sampling,
+    anthropic_model_reasoning_efforts,
+    anthropic_model_requires_thinking,
+    anthropic_model_uses_adaptive_thinking,
+    anthropic_model_uses_manual_thinking,
+)
 from core.config import AgentConfig
 from core.http_headers import load_provider_headers
 from core.reasoning_debug import debug_event
@@ -94,34 +101,11 @@ from core.reasoning_debug import debug_event
 reasoning_logger = logging.getLogger("agent.reasoning_debug")
 
 
-_ADAPTIVE_THINKING_MODELS = (
-    "claude-opus-4-6",
-    "claude-opus-4-7",
-    "claude-opus-4-8",
-    "claude-sonnet-5",
-)
-_ADAPTIVE_THINKING_WITHOUT_SAMPLING_MODELS = (
-    "claude-opus-4-7",
-    "claude-opus-4-8",
-    "claude-sonnet-5",
-)
-
-
-def _normalized_anthropic_model_name(model: str | None) -> str:
-    return str(model or "").strip().lower()
-
-
-def _anthropic_model_matches_family(model: str | None, families: tuple[str, ...]) -> bool:
-    normalized_model = _normalized_anthropic_model_name(model)
-    return any(normalized_model == family or normalized_model.startswith(f"{family}-") for family in families)
-
-
-def _anthropic_model_uses_adaptive_thinking(model: str | None) -> bool:
-    return _anthropic_model_matches_family(model, _ADAPTIVE_THINKING_MODELS)
-
-
-def _anthropic_model_disallows_sampling(model: str | None) -> bool:
-    return _anthropic_model_matches_family(model, _ADAPTIVE_THINKING_WITHOUT_SAMPLING_MODELS)
+def _manual_thinking_config(max_tokens: int, configured_budget: int) -> tuple[dict[str, Any], int | None]:
+    if max_tokens <= 1024:
+        return {"type": "disabled"}, None
+    budget = max(1024, min(configured_budget, max_tokens - 1))
+    return {"type": "enabled", "budget_tokens": budget}, budget
 
 
 def create_anthropic_chat_model(
@@ -145,8 +129,6 @@ def create_anthropic_chat_model(
         "max_retries": 0,
         "default_headers": load_provider_headers(),
     }
-    if not _anthropic_model_disallows_sampling(config.anthropic_model):
-        kwargs["temperature"] = config.temperature
     if config.anthropic_base_url:
         # The Anthropic SDK appends "/v1/messages" itself, so the base URL must
         # NOT end with "/v1" (otherwise requests go to ".../v1/v1/messages").
@@ -156,35 +138,58 @@ def create_anthropic_chat_model(
         kwargs["anthropic_api_url"] = base_url
 
     reasoning_level = str(getattr(config, "anthropic_reasoning", "") or "").strip().lower()
+    supported_efforts = anthropic_model_reasoning_efforts(config.anthropic_model)
+    requested_effort = reasoning_level if reasoning_level in {"low", "medium", "high", "max", "xhigh"} else ""
+    reasoning_enabled = bool(getattr(config, "enable_model_reasoning", True)) and reasoning_level not in {"off", "none"}
+    if not reasoning_enabled and anthropic_model_requires_thinking(config.anthropic_model):
+        raise ValueError(f'Anthropic model "{config.anthropic_model}" does not support disabling thinking')
+    if reasoning_enabled and reasoning_level == "adaptive" and anthropic_model_uses_manual_thinking(config.anthropic_model):
+        raise ValueError(f'Anthropic model "{config.anthropic_model}" does not support adaptive thinking')
+    if reasoning_enabled and requested_effort and requested_effort not in supported_efforts:
+        raise ValueError(
+            f'Anthropic model "{config.anthropic_model}" does not support reasoning effort '
+            f'"{requested_effort}". Allowed: {", ".join(supported_efforts) or "none"}'
+        )
+
     if not bool(getattr(config, "enable_model_reasoning", True)) or reasoning_level in {"off", "none"}:
         kwargs["thinking"] = {"type": "disabled"}
         mode = "disabled"
         budget = None
         effort = None
-    elif reasoning_level:
+    elif anthropic_model_uses_adaptive_thinking(config.anthropic_model):
         kwargs["thinking"] = {"type": "adaptive"}
         mode = "adaptive"
         budget = None
-        effort = None
-    elif _anthropic_model_uses_adaptive_thinking(config.anthropic_model):
-        # These models require adaptive thinking rather than a manual budget.
+        effort = requested_effort or None
+    elif anthropic_model_uses_manual_thinking(config.anthropic_model):
+        thinking, budget = _manual_thinking_config(
+            max_tokens,
+            int(getattr(config, "anthropic_thinking_budget", 4096)),
+        )
+        kwargs["thinking"] = thinking
+        mode = "budget" if budget is not None else "disabled"
+        effort = requested_effort or None
+    elif reasoning_level == "adaptive":
         kwargs["thinking"] = {"type": "adaptive"}
         mode = "adaptive"
         budget = None
         effort = None
     else:
-        budget = int(getattr(config, "anthropic_thinking_budget", 4096))
-        if max_tokens <= 1024:
-            budget = 0
-        else:
-            budget = max(1024, min(budget, max_tokens - 1))
-        if budget:
-            kwargs["thinking"] = {"type": "enabled", "budget_tokens": budget}
-            mode = "budget"
-        else:
-            kwargs["thinking"] = {"type": "disabled"}
-            mode = "disabled"
+        thinking, budget = _manual_thinking_config(
+            max_tokens,
+            int(getattr(config, "anthropic_thinking_budget", 4096)),
+        )
+        kwargs["thinking"] = thinking
+        mode = "budget" if budget is not None else "disabled"
         effort = None
+
+    if mode == "disabled" and not anthropic_model_disallows_sampling(config.anthropic_model):
+        kwargs["temperature"] = config.temperature
+
+    if effort:
+        # ``effort`` is ChatAnthropic's public alias for Anthropic's
+        # ``output_config.effort`` request field.
+        kwargs["effort"] = effort
 
     reasoning_logger.debug(
         "anthropic reasoning config model=%s mode=%s effort=%s budget=%s",
