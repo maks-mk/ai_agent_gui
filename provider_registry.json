@@ -329,7 +329,6 @@
       "model_match": {
         "contains": [
           "deepseek-r1",
-          "deepseek-v4",
           "deepseek-v3",
           "deepseek-prover",
           "glm-5",
@@ -425,18 +424,7 @@
       "enabled": true,
       "priority": 60,
       "match": [
-        "api-inference.modelscope.ai"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": false,
-      "validation": "passthrough",
-      "notes": "Conservative default: do not send undocumented reasoning fields."
-    },
-    {
-      "id": "modelscope_cn",
-      "enabled": true,
-      "priority": 60,
-      "match": [
+        "api-inference.modelscope.ai",
         "api-inference.modelscope.cn"
       ],
       "match_type": "exact",
@@ -444,12 +432,15 @@
       "validation": "passthrough",
       "notes": "Conservative default: do not send undocumented reasoning fields."
     },
+
     {
       "id": "freemodel",
       "enabled": true,
       "priority": 60,
       "match": [
-        "api.freemodel.dev"
+        "api.freemodel.dev",
+        "api.ai-router.dev",
+        "api.freetheai.xyz"
       ],
       "match_type": "exact",
       "supports_reasoning": true,
@@ -498,11 +489,44 @@
       "notes": "Experimental: testing OpenAI-style reasoning payload for GPT-5 models through tokenlayer.net."
     },
     {
+      "id": "agentrouter_glm5",
+      "enabled": true,
+      "priority": 61,
+      "match": [
+        "agentrouter.org"
+      ],
+      "match_type": "exact",
+      "supports_reasoning": true,
+      "model_match": {
+        "contains": [
+          "glm-5"
+        ]
+      },
+      "validation": "map",
+      "reasoning": {
+        "path": "reasoning_effort",
+        "allowed_values": [
+          "low",
+          "high",
+          "max"
+        ],
+        "value_map": {
+          "minimal": "low",
+          "medium": "high",
+          "xhigh": "max"
+        }
+      },
+      "notes": "AgentRouter GLM-5 Chat Completions accepts reasoning_effort=low|high|max."
+    },
+    {
       "id": "agentrouter",
       "enabled": true,
       "priority": 60,
       "match": [
-        "agentrouter.org"
+        "agentrouter.org",
+        "apimaster.ai",
+        "true-sota.com",
+		"tokenbom.com"
       ],
       "match_type": "exact",
       "supports_reasoning": true,
@@ -519,29 +543,6 @@
         }
       },
       "notes": "AgentRouter OpenAI-compatible Chat Completions uses top-level reasoning_effort; Responses-only reasoning.summary is not sent in chat mode."
-    },
-    {
-      "id": "apimaster",
-      "enabled": true,
-      "priority": 60,
-      "match": [
-        "apimaster.ai"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {
-          "xhigh": "high"
-        }
-      },
-      "notes": "apimaster.ai OpenAI-compatible Chat Completions uses top-level reasoning_effort; Responses-only reasoning.summary is not sent in chat mode."
     },
     {
       "id": "tokenbay",
@@ -567,33 +568,7 @@
       },
       "notes": "TokenBay OpenAI-compatible Chat Completions documents top-level reasoning_effort. Responses API documents reasoning.effort and reasoning.summary, but ChatOpenAI uses chat completions here."
     },
-    {
-      "id": "ai-router",
-      "enabled": true,
-      "priority": 60,
-      "match": [
-        "api.ai-router.dev"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning.effort",
-        "allowed_values": [
-          "minimal",
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {
-          "xhigh": "high"
-        },
-        "extra_fields": {
-          "reasoning.summary": "auto"
-        }
-      },
-      "notes": "Experimental: testing OpenAI-style reasoning payload for GPT-5 models through api.ai-router.dev."
-    },
+
     {
       "id": "hf_qwen38",
       "enabled": true,
@@ -620,56 +595,6 @@
         }
       },
       "notes": "Hugging Face public Qwen3.8-27B endpoint. OpenAI-compatible Chat Completions API. reasoning_effort supports low, medium and xhigh."
-    },
-    {
-      "id": "tokenbom",
-      "enabled": true,
-      "priority": 60,
-      "match": [
-        "tokenbom.com"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning_effort",
-        "allowed_values": [
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {
-          "xhigh": "high"
-        }
-      },
-      "notes": "tokenbom.com OpenAI-compatible Chat Completions uses top-level reasoning_effort; Responses-only reasoning.summary is not sent in chat mode."
-    },
-	{
-      "id": "freetheai",
-      "enabled": true,
-      "priority": 60,
-      "match": [
-        "api.freetheai.xyz"
-      ],
-      "match_type": "exact",
-      "supports_reasoning": true,
-      "validation": "map",
-      "reasoning": {
-        "path": "reasoning.effort",
-        "allowed_values": [
-          "minimal",
-          "low",
-          "medium",
-          "high"
-        ],
-        "value_map": {
-          "xhigh": "high"
-        },
-        "extra_fields": {
-          "reasoning.summary": "auto"
-        }
-      },
-      "notes": "Experimental: OpenAI-style reasoning payload for FreeTheAI models; bbl/gemini-3.5-flash and wsf/kimi-k2.6 use the same provider-level reasoning format."
     }
   ]
 }

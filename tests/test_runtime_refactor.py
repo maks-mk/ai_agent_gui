@@ -1522,7 +1522,7 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertNotIn("reasoning", captured)
         self.assertNotIn("extra_body", captured)
-        self.assertNotIn("reasoning_effort", captured)
+        self.assertEqual(captured["reasoning_effort"], "none")
 
     def test_create_llm_for_openai_allows_disabling_reasoning_controls(self):
         captured = {}
@@ -4513,6 +4513,51 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         worker.start_run("hello")
 
         self.assertTrue(any(event.type == "summary_notice" and event.payload.get("kind") == "model_missing" for event in events))
+
+    def test_worker_start_run_with_profile_apply_failure_emits_error_and_clears_busy(self):
+        worker = gui_runtime.AgentRunWorker()
+        worker.model_profiles = {
+            "active_profile": "anthropic-opus",
+            "profiles": [
+                {
+                    "id": "anthropic-opus",
+                    "provider": "anthropic",
+                    "model": "claude-4.8-opus",
+                    "api_key": "sk-demo",
+                    "base_url": "https://proxy.example",
+                }
+            ],
+        }
+        worker.model_capabilities = {"image_input_supported": False}
+        worker.current_session = SessionSnapshot(
+            session_id="session-1",
+            thread_id="thread-1",
+            checkpoint_backend="sqlite",
+            checkpoint_target="demo.sqlite",
+            created_at="2026-01-01T00:00:00+00:00",
+            updated_at="2026-01-01T00:00:00+00:00",
+            project_path=str(Path.cwd()),
+        )
+        events = []
+        busy_values = []
+        worker.event_emitted.connect(events.append)
+        worker.busy_changed.connect(busy_values.append)
+
+        with mock.patch.object(
+            worker,
+            "_rebuild_runtime_for_active_profile",
+            new=mock.AsyncMock(side_effect=ValueError('does not support reasoning effort "medium". Allowed: none')),
+        ):
+            worker.start_run("hello")
+
+        matching = [
+            event for event in events
+            if event.type == "summary_notice" and event.payload.get("kind") == "model_switch_failed"
+        ]
+        self.assertTrue(matching)
+        self.assertEqual(matching[0].payload.get("level"), "error")
+        self.assertIn("does not support reasoning effort", matching[0].payload.get("message", ""))
+        self.assertEqual(busy_values, [True, False])
 
     def test_worker_start_run_with_all_profiles_disabled_emits_enable_notice(self):
         worker = gui_runtime.AgentRunWorker()

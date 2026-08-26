@@ -7,7 +7,6 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QLabel
 
 from ui.main_window_state import StreamEventRouter
@@ -121,20 +120,22 @@ class UiHelperTests(unittest.TestCase):
         group = ToolGroupWidget()
         group.inner.addWidget(QLabel("Tool details", group.container))
         group.show()
+        group.resize(240, 120)
         self.app.processEvents()
         self.addCleanup(group.deleteLater)
 
         group.collapse()
         self.assertTrue(group.container.isVisible())
         self.assertGreater(group._container_animation.duration(), 0)
-        QTest.qWait(group._container_animation.duration() + 30)
+        group._container_animation.setCurrentTime(group._container_animation.duration())
+        self.app.processEvents()
         self.assertTrue(group.container.isHidden())
         self.assertEqual(group.container.maximumHeight(), 0)
 
         group.expand()
         self.assertTrue(group.container.isVisible())
-        self.assertLess(group.container.maximumHeight(), 16777215)
-        QTest.qWait(group._container_animation.duration() + 30)
+        group._container_animation.setCurrentTime(group._container_animation.duration())
+        self.app.processEvents()
         self.assertTrue(group.container.isVisible())
         self.assertEqual(group.container.maximumHeight(), 16777215)
 

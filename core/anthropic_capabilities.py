@@ -60,7 +60,19 @@ _BASE_EFFORTS = ("low", "medium", "high")
 
 def _matches_family(model: str | None, families: tuple[str, ...]) -> bool:
     normalized = str(model or "").strip().lower()
+    if normalized.startswith("claude-4.8-opus"):
+        normalized = "claude-opus-4-8" + normalized[len("claude-4.8-opus") :]
     return any(normalized == family or normalized.startswith(f"{family}-") for family in families)
+
+
+def is_claude_model(model: str | None) -> bool:
+    """Whether *model* uses Anthropic's Claude model naming family.
+
+    Anthropic-compatible aggregators can expose non-Claude models through the
+    Messages API. Those models must not receive Claude-specific thinking or
+    reasoning parameters merely because the selected transport is Anthropic.
+    """
+    return str(model or "").strip().lower().startswith("claude-")
 
 
 def anthropic_model_uses_manual_thinking(model: str | None) -> bool:

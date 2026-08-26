@@ -30,7 +30,7 @@ Runtime загружает registry в `create_llm()` перед создани�
 ```json
 {
   "schema_version": 1,
-  "data_version": 1,
+  "data_version": 5,
   "providers": []
 }
 ```

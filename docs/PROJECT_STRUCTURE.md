@@ -4,8 +4,8 @@
 
 ## Корень проекта
 
-- `main.py` - точка входа GUI, создает `QApplication` и открывает главное окно.
-- `agent.py` - сборка LangGraph-агента: компиляция графа, routing, tool binding и checkpointing. Provider-адаптеры вынесены в `core/providers/`.
+- `main.py` - GUI entrypoint: создает `QApplication` и открывает главное окно.
+- `agent.py` - программная сборка LangGraph-агента: компиляция графа, routing, tool binding и checkpointing. UI запускает этот runtime через `ui/runtime.py`; provider-адаптеры вынесены в `core/providers/`.
 - `prompt.txt` - общий системный промпт агента.
 - `prompt_dev.txt` - дополнительный dev/devops-промпт.
 - `mcp.json` - конфигурация MCP-серверов.
@@ -20,7 +20,7 @@
 ## Директория `docs/`
 
 - `PROJECT_STRUCTURE.md` - данный документ: карта модулей и архитектура.
-- `ARCHITECTURE.md` - Runtime Flow, Prompt Layers, Sessions & Checkpoints.
+- `ARCHITECTURE.md` - Runtime Flow, Prompt Layers, Sessions & Checkpoints. Версия приложения берется из `core/constants.py` (`AGENT_VERSION`).
 - `CONFIGURATION.md` - все переменные `.env` (провайдеры, runtime, фиче-флаги, лимиты, retry, персистентность, диагностика) и provider-заголовки из `headers.json`.
 - `GUI_GUIDE.md` - Transcript, CLI output widget, Composer, горячие клавиши.
 - `SECURITY.md` - Approvals, workspace boundary, `request_user_input`.

@@ -115,6 +115,18 @@ class ProviderRegistryTests(unittest.TestCase):
 
         self.assertEqual(payload, {"model": "x", "extra_body": {"reasoning": {"effort": "high"}}})
 
+    def test_agentrouter_glm5_registry_uses_documented_reasoning_effort(self):
+        registry = ProviderRegistry.from_path(Path(__file__).parents[1] / "provider_registry.json")
+
+        config = registry.match("https://agentrouter.org/v1", "zai-org/glm-5.1")
+        self.assertEqual(config["id"], "agentrouter_glm5")
+        self.assertEqual(config["reasoning"]["allowed_values"], ["low", "high", "max"])
+
+        for effort, expected in (("low", "low"), ("high", "high"), ("max", "max"), ("medium", "high")):
+            payload = {"model": "zai-org/glm-5.1"}
+            build_reasoning_kwargs(payload, config, effort)
+            self.assertEqual(payload["reasoning_effort"], expected)
+
     def test_nvidia_deepseek_v4_registry_uses_documented_reasoning_effort(self):
         registry = ProviderRegistry.from_path(Path(__file__).parents[1] / "provider_registry.json")
 

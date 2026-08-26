@@ -609,14 +609,15 @@ class AgentRunWorker(QObject):
                 )
             )
             return
-        if not self._run(self._ensure_runtime_matches_selected_profile()):
-            return
-        persisted_now = self._ensure_current_session_persisted()
-        title_changed = self._maybe_set_session_title(request_user_text(request_payload))
-        if persisted_now or title_changed:
-            self._run(self._emit_session_payload(include_transcript=False))
         self._set_busy(True)
         try:
+            if not self._run(self._ensure_runtime_matches_selected_profile()):
+                self._set_busy(False)
+                return
+            persisted_now = self._ensure_current_session_persisted()
+            title_changed = self._maybe_set_session_title(request_user_text(request_payload))
+            if persisted_now or title_changed:
+                self._run(self._emit_session_payload(include_transcript=False))
             self._run(self._start_run_async(request_payload))
         except Exception as exc:
             self.event_emitted.emit(StreamEvent("run_failed", {"message": str(exc)}))

@@ -640,6 +640,40 @@ class AnthropicCompatibleStreamTests(unittest.TestCase):
 class AnthropicReasoningTests(unittest.TestCase):
     """Tests for Anthropic effort-based reasoning configuration (section 17.10)."""
 
+    def test_non_claude_model_through_anthropic_endpoint_omits_claude_parameters(self):
+        """Compatible aggregators may expose other models through Messages API."""
+        from core.providers.anthropic import create_anthropic_chat_model
+
+        cfg = self._make_config(
+            ANTHROPIC_MODEL="deepseek-v3.2",
+            ANTHROPIC_BASE_URL="https://proxy.example/v1",
+            ANTHROPIC_REASONING="high",
+        )
+        model = create_anthropic_chat_model(cfg)
+        payload = model._get_request_payload([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(model.model, "deepseek-v3.2")
+        self.assertIsNone(model.thinking)
+        self.assertIsNone(model.reasoning_effort)
+        self.assertEqual(payload["model"], "deepseek-v3.2")
+        self.assertNotIn("thinking", payload)
+        self.assertNotIn("output_config", payload)
+        self.assertEqual(payload["temperature"], cfg.temperature)
+
+    def test_non_claude_model_does_not_reject_anthropic_reasoning_setting(self):
+        from core.providers.anthropic import create_anthropic_chat_model
+
+        cfg = self._make_config(
+            ANTHROPIC_MODEL="zai-org/glm-5",
+            ANTHROPIC_BASE_URL="https://proxy.example",
+            ANTHROPIC_REASONING="max",
+        )
+
+        model = create_anthropic_chat_model(cfg)
+
+        self.assertIsNone(model.thinking)
+        self.assertIsNone(model.reasoning_effort)
+
     def _make_config(self, **overrides) -> "AgentConfig":
         import os
         from core.config import AgentConfig
@@ -714,6 +748,17 @@ class AnthropicReasoningTests(unittest.TestCase):
         payload = model._get_request_payload([{"role": "user", "content": "hi"}])
         self.assertEqual(payload["thinking"], {"type": "adaptive"})
         self.assertEqual(payload["output_config"], {"effort": "high"})
+        self.assertNotIn("temperature", payload)
+
+    def test_claude_48_opus_alias_accepts_medium_effort(self):
+        from core.providers.anthropic import create_anthropic_chat_model
+
+        cfg = self._make_config(ANTHROPIC_MODEL="claude-4.8-opus", ANTHROPIC_REASONING="medium")
+        model = create_anthropic_chat_model(cfg)
+        payload = model._get_request_payload([{"role": "user", "content": "hi"}])
+
+        self.assertEqual(model.thinking, {"type": "adaptive"})
+        self.assertEqual(payload["output_config"], {"effort": "medium"})
         self.assertNotIn("temperature", payload)
 
     def test_reasoning_off_disables_adaptive_only_models(self):

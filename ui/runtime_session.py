@@ -432,6 +432,7 @@ class RuntimeSessionCoordinator:
                     {
                         "message": f"Failed to apply the selected model: {exc}",
                         "kind": "model_switch_failed",
+                        "level": "error",
                     },
                 )
             )

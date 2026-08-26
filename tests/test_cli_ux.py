@@ -3413,7 +3413,7 @@ class GuiUxTests(unittest.TestCase):
         self.assertNotIn("Off", [action.text() for action in self.window.reasoning_chip_menu.actions()])
         self.assertEqual(
             [action.text() for action in self.window.reasoning_chip_menu.actions()],
-            ["Minimal", "Low", "Medium", "High", "X-High"],
+            ["None", "Minimal", "Low", "Medium", "High", "X-High", "Max"],
         )
 
     def test_nvidia_gpt_oss_reasoning_selector_saves_effort_level(self):
@@ -3439,6 +3439,24 @@ class GuiUxTests(unittest.TestCase):
             self.controller.save_profiles_calls[-1]["profiles"][0]["reasoning"],
             {"enabled": True, "effort": "medium"},
         )
+
+    def test_agentrouter_glm5_reasoning_selector_exposes_supported_effort_levels(self):
+        payload = self._snapshot_payload()
+        profile = payload["model_profiles"]["profiles"][0]
+        profile.update(
+            {
+                "model": "zai-org/glm-5.1",
+                "base_url": "https://agentrouter.org/v1",
+                "reasoning": {"enabled": True, "effort": "medium"},
+            }
+        )
+        self.window._handle_initialized(payload)
+
+        self.assertEqual(
+            [action.text() for action in self.window.reasoning_chip_menu.actions()],
+            ["Low", "High", "Max"],
+        )
+        self.assertEqual(self.window.reasoning_chip.text(), "Reasoning")
 
     def test_nvidia_thinking_reasoning_selector_saves_binary_mode(self):
         payload = self._snapshot_payload()

@@ -93,6 +93,7 @@ from core.anthropic_capabilities import (
     anthropic_model_requires_thinking,
     anthropic_model_uses_adaptive_thinking,
     anthropic_model_uses_manual_thinking,
+    is_claude_model,
 )
 from core.config import AgentConfig
 from core.http_headers import load_provider_headers
@@ -137,10 +138,15 @@ def create_anthropic_chat_model(
             base_url = base_url[: -len("/v1")]
         kwargs["anthropic_api_url"] = base_url
 
+    model_is_claude = is_claude_model(config.anthropic_model)
     reasoning_level = str(getattr(config, "anthropic_reasoning", "") or "").strip().lower()
     supported_efforts = anthropic_model_reasoning_efforts(config.anthropic_model)
     requested_effort = reasoning_level if reasoning_level in {"low", "medium", "high", "max", "xhigh"} else ""
-    reasoning_enabled = bool(getattr(config, "enable_model_reasoning", True)) and reasoning_level not in {"off", "none"}
+    reasoning_enabled = (
+        model_is_claude
+        and bool(getattr(config, "enable_model_reasoning", True))
+        and reasoning_level not in {"off", "none"}
+    )
     if not reasoning_enabled and anthropic_model_requires_thinking(config.anthropic_model):
         raise ValueError(f'Anthropic model "{config.anthropic_model}" does not support disabling thinking')
     if reasoning_enabled and reasoning_level == "adaptive" and anthropic_model_uses_manual_thinking(config.anthropic_model):
@@ -151,7 +157,11 @@ def create_anthropic_chat_model(
             f'"{requested_effort}". Allowed: {", ".join(supported_efforts) or "none"}'
         )
 
-    if not bool(getattr(config, "enable_model_reasoning", True)) or reasoning_level in {"off", "none"}:
+    if not model_is_claude:
+        mode = "unsupported_model"
+        budget = None
+        effort = None
+    elif not bool(getattr(config, "enable_model_reasoning", True)) or reasoning_level in {"off", "none"}:
         kwargs["thinking"] = {"type": "disabled"}
         mode = "disabled"
         budget = None
@@ -183,7 +193,7 @@ def create_anthropic_chat_model(
         mode = "budget" if budget is not None else "disabled"
         effort = None
 
-    if mode == "disabled" and not anthropic_model_disallows_sampling(config.anthropic_model):
+    if mode in {"disabled", "unsupported_model"} and not anthropic_model_disallows_sampling(config.anthropic_model):
         kwargs["temperature"] = config.temperature
 
     if effort:

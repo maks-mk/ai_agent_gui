@@ -217,6 +217,21 @@ class ModelProfilesTests(unittest.TestCase):
         self.assertEqual([option["value"] for option in options], ["low", "medium", "high"])
         self.assertEqual(options[-1]["config"], {"enabled": True, "effort": "high"})
 
+    def test_agentrouter_glm5_reasoning_options_use_documented_effort_levels(self):
+        profile = {
+            "provider": "openai",
+            "model": "zai-org/glm-5.1",
+            "base_url": "https://agentrouter.org/v1",
+        }
+
+        options = reasoning_options_for_profile(profile)
+
+        self.assertEqual([option["value"] for option in options], ["low", "high", "max"])
+        self.assertEqual(
+            profile_reasoning_overrides({**profile, "reasoning": {"enabled": True, "effort": "medium"}}),
+            {"enable_model_reasoning": True, "model_reasoning_effort": "medium"},
+        )
+
     def test_nvidia_deepseek_v4_reasoning_options_use_documented_effort_levels(self):
         profile = {
             "provider": "openai",
@@ -283,6 +298,7 @@ class ModelProfilesTests(unittest.TestCase):
         opus_45 = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-opus-4-5-20251101"})
         sonnet_46 = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-sonnet-4-6"})
         opus_47 = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-opus-4-7"})
+        opus_48_alias = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-4.8-opus"})
         mythos_preview = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-mythos-preview"})
         always_on = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-fable-5"})
         unknown = reasoning_options_for_profile({"provider": "anthropic", "model": "claude-unknown"})
@@ -291,6 +307,7 @@ class ModelProfilesTests(unittest.TestCase):
         self.assertEqual([option["value"] for option in opus_45], ["off", "low", "medium", "high"])
         self.assertEqual([option["value"] for option in sonnet_46], ["off", "low", "medium", "high", "max"])
         self.assertEqual([option["value"] for option in opus_47], ["off", "low", "medium", "high", "max", "xhigh"])
+        self.assertEqual([option["value"] for option in opus_48_alias], ["off", "low", "medium", "high", "max", "xhigh"])
         self.assertEqual([option["value"] for option in mythos_preview], ["low", "medium", "high", "max"])
         self.assertEqual([option["value"] for option in always_on], ["low", "medium", "high", "max", "xhigh"])
         self.assertEqual(unknown, [])
