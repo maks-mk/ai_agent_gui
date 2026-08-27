@@ -53,7 +53,7 @@ class MenuBuilder:
         for action, tooltip in (
             (toggle_sidebar_action, "Show or hide chat history (Ctrl+B)"),
             (new_session_action, "Start a new session (Ctrl+N)"),
-            (settings_action, "Manage model profiles"),
+            (settings_action, "Open Settings"),
             (info_action, "Show or hide the inspector (Ctrl+I)"),
             (quit_action, "Quit"),
         ):

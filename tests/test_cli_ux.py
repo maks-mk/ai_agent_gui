@@ -4222,6 +4222,13 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         self.assertEqual(dialog.objectName(), "ModelSettingsDialog")
+        self.assertEqual(dialog.windowTitle(), "Settings")
+        self.assertEqual(dialog.tabs.count(), 2)
+        self.assertEqual(dialog.tabs.tabText(0), "Models")
+        self.assertEqual(dialog.tabs.tabText(1), "Test")
+        self.assertIs(dialog.tabs.widget(0), dialog.models_page)
+        self.assertIs(dialog.tabs.widget(1), dialog.test_page)
+        self.assertIsNone(dialog.test_page.layout())
         self.assertEqual(dialog.width(), 824)
         self.assertEqual(dialog.minimumWidth(), 755)
         self.assertEqual(dialog.body_splitter.widget(0).minimumWidth(), 285)

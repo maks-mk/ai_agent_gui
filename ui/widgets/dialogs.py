@@ -28,6 +28,7 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStyle,
     QStyleOptionButton,
+    QTabWidget,
     QToolButton,
     QVBoxLayout,
     QWidget,
@@ -167,7 +168,7 @@ class ModelSettingsDialog(QDialog):
     def __init__(self, payload: dict[str, Any], parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.setObjectName("ModelSettingsDialog")
-        self.setWindowTitle("Model Profiles")
+        self.setWindowTitle("Settings")
         self.setModal(False)
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
@@ -215,7 +216,7 @@ class ModelSettingsDialog(QDialog):
         hero_copy.setContentsMargins(0, 0, 0, 0)
         hero_copy.setSpacing(3)
 
-        header_title = QLabel("Model Profiles")
+        header_title = QLabel("Settings")
         header_title.setObjectName("ModelSettingsTitle")
         hero_copy.addWidget(header_title, 0, Qt.AlignLeft | Qt.AlignTop)
 
@@ -227,6 +228,20 @@ class ModelSettingsDialog(QDialog):
         hero_layout.addLayout(hero_copy, 1)
 
         root.addWidget(hero_card)
+
+        self.tabs = QTabWidget()
+        self.tabs.setAccessibleName("Settings tabs")
+        self.tabs.setAccessibleDescription("Switch between model settings and future settings")
+        self.models_page = QWidget()
+        self.models_page.setAccessibleName("Models settings")
+        models_page_layout = QVBoxLayout(self.models_page)
+        models_page_layout.setContentsMargins(0, 0, 0, 0)
+        models_page_layout.setSpacing(0)
+        self.test_page = QWidget()
+        self.test_page.setAccessibleName("Test settings")
+        self.tabs.addTab(self.models_page, _fa_icon("fa5s.cubes", color=TEXT_MUTED, size=14), "Models")
+        self.tabs.addTab(self.test_page, _fa_icon("fa5s.flask", color=TEXT_MUTED, size=14), "Test")
+        root.addWidget(self.tabs, 1)
 
         self.body_splitter = QSplitter(Qt.Horizontal)
         self.body_splitter.setChildrenCollapsible(False)
@@ -516,7 +531,7 @@ class ModelSettingsDialog(QDialog):
         self.body_splitter.addWidget(left_container)
         self.body_splitter.addWidget(right_container)
         self.body_splitter.setSizes([285, 539])
-        root.addWidget(self.body_splitter, 1)
+        models_page_layout.addWidget(self.body_splitter, 1)
 
         actions = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
         actions.setObjectName("ModelSettingsActions")
