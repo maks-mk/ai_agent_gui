@@ -26,7 +26,7 @@ from ui.window_components.status_bar_manager import StatusBarManager
 from ui.window_components.workspace_builder import WorkspaceBuilder
 
 logger = logging.getLogger("agent")
-APP_DISPLAY_NAME: Final[str] = "AI Agent"
+APP_DISPLAY_NAME: Final[str] = "KGB|Agent"
 WINDOWS_APP_USER_MODEL_ID: Final[str] = "simple_ai_agent.ai_agent"
 ASSISTANT_DELTA_FLUSH_MS: Final[int] = 32
 
@@ -134,7 +134,7 @@ class MainWindow(QMainWindow):
         self._status_controller.update_realtime_elapsed()
 
     def _build_ui(self) -> None:
-        self.setWindowTitle(f"AI Agent {AGENT_VERSION}")
+        self.setWindowTitle(f"KGB|Agent {AGENT_VERSION}")
         self.resize(1300, 670)
         self.setMinimumSize(900, 600)
         if app := QApplication.instance():
@@ -1154,7 +1154,6 @@ def main() -> int:
     _configure_windows_app_user_model_id()
     QApplication.setApplicationName(APP_DISPLAY_NAME)
     QApplication.setOrganizationName("Simple AI Agent")
-    QApplication.setApplicationDisplayName(APP_DISPLAY_NAME)
     app = QApplication.instance() or QApplication(sys.argv)
     app.setStyle("Fusion")
     app_icon = _build_app_icon()
