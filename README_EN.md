@@ -7,7 +7,7 @@
 A desktop AI agent with a `LangGraph` runtime and a `PySide6` GUI.  
 It works with files, shell commands, process management, MCP servers, and web search.
 
-Current version: `v0.67.73.239b` (the canonical source is `core/constants.py`).
+Current version: `v0.67.73.242b` (the canonical source is `core/constants.py`).
 
 Run from source: `python main.py`.  
 Build a portable Windows `.exe`: `build.bat`.
