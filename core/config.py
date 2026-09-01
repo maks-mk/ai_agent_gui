@@ -164,6 +164,16 @@ class AgentConfig(BaseSettings):
 
     # Tools Limits
     max_tool_output_length: int = Field(default=4000, alias="MAX_TOOL_OUTPUT")
+    max_raw_tool_output_length: int = Field(
+        default=100000,
+        alias="MAX_RAW_TOOL_OUTPUT",
+        description="Maximum characters captured before tool output compression",
+    )
+    enable_headroom_compression: bool = Field(
+        default=False,
+        alias="ENABLE_HEADROOM_COMPRESSION",
+        description="Compress oversized noisy tool outputs (shell/search/listings) with headroom instead of hard truncation",
+    )
     stream_text_max_chars: int = Field(default=120000, alias="STREAM_TEXT_MAX_CHARS")
     stream_events_max: int = Field(default=400, alias="STREAM_EVENTS_MAX")
     stream_tool_buffer_max: int = Field(default=128, alias="STREAM_TOOL_BUFFER_MAX")
@@ -407,6 +417,7 @@ class AgentConfig(BaseSettings):
             from core.safety_policy import SafetyPolicy
             self._cache_safety = SafetyPolicy(
                 max_tool_output=self.max_tool_output_length,
+                max_raw_tool_output=max(self.max_tool_output_length, self.max_raw_tool_output_length),
                 max_file_size=self.max_file_size,
                 max_background_processes=self.max_background_processes,
                 max_search_chars=self.max_search_chars,

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from contextlib import nullcontext
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -121,7 +122,13 @@ class ToolsMixin:
 
             with invoke_scope:
                 raw_result = await tool.ainvoke(args)
-            content = str(raw_result)
+            if isinstance(raw_result, (dict, list)):
+                try:
+                    content = json.dumps(raw_result, ensure_ascii=False)
+                except (TypeError, ValueError):
+                    content = str(raw_result)
+            else:
+                content = str(raw_result)
             if not content.strip():
                 self._log_run_event(
                     state,

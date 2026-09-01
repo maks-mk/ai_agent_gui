@@ -12,6 +12,7 @@ from core.recovery_manager import RecoveryManager
 from core.runtime_prompt_policy import RuntimePromptContext, RuntimePromptPolicyBuilder
 from core.self_correction_engine import RepairPlan
 from core.tool_executor import ToolExecutor
+from core.tool_output_compressor import ToolOutputCompressor
 from core.tool_issues import build_tool_issue
 from core.tool_policy import ToolMetadata
 
@@ -583,6 +584,351 @@ class RefactorServicesTests(unittest.TestCase):
         self.assertFalse(outcome.had_error)
         self.assertIsNone(outcome.issue)
         self.assertEqual(outcome.tool_message.status, "success")
+
+    def test_tool_executor_compresses_oversized_noisy_output_when_enabled(self):
+        executor = ToolExecutor(
+            config=self._make_config(ENABLE_HEADROOM_COMPRESSION=True, MAX_TOOL_OUTPUT=1000),
+            metadata_for_tool=lambda name: ToolMetadata(name=name, read_only=True),
+            log_run_event=lambda *_args, **_kwargs: None,
+            workspace_boundary_violated=lambda *_args, **_kwargs: False,
+        )
+        big_output = "x" * 5000
+
+        with mock.patch.object(
+            executor._output_compressor,
+            "compress",
+            wraps=executor._output_compressor.compress,
+        ) as compress_spy:
+            outcome = executor.handle_result(
+                state={"run_id": "run"},
+                current_turn_id=1,
+                tool_name="cli_exec",
+                tool_args={"command": "pytest"},
+                tool_call_id="call-compress",
+                content=big_output,
+                apply_validation=False,
+            )
+
+        self.assertTrue(compress_spy.called)
+        # headroom passthrough (plain "xxxx" is not compressible) -> truncate fallback
+        self.assertIn("[TRUNCATED from 5000 chars", outcome.content)
+
+    def test_tool_executor_routes_mcp_tools_to_mcp_compression(self):
+        executor = ToolExecutor(
+            config=self._make_config(ENABLE_HEADROOM_COMPRESSION=True, MAX_TOOL_OUTPUT=1000),
+            metadata_for_tool=lambda name: ToolMetadata(name=name, source="mcp"),
+            log_run_event=lambda *_args, **_kwargs: None,
+            workspace_boundary_violated=lambda *_args, **_kwargs: False,
+        )
+
+        with mock.patch.object(
+            executor._output_compressor,
+            "compress",
+            wraps=executor._output_compressor.compress,
+        ) as compress_spy:
+            outcome = executor.handle_result(
+                state={"run_id": "run"},
+                current_turn_id=1,
+                tool_name="resolve-library-id",
+                tool_args={"query": "headroom"},
+                tool_call_id="call-mcp",
+                content="MCP-HEAD\n" + ("z" * 5000) + "\nMCP-TAIL",
+                apply_validation=False,
+            )
+
+        self.assertTrue(compress_spy.called)
+        self.assertTrue(compress_spy.call_args.kwargs["is_mcp"])
+        self.assertLessEqual(len(outcome.content), 1000)
+        self.assertIn("MCP-HEAD", outcome.content)
+        self.assertIn("MCP-TAIL", outcome.content)
+        self.assertIn("[OMITTED", outcome.content)
+
+    def test_tool_executor_limits_mcp_output_after_compression(self):
+        executor = ToolExecutor(
+            config=self._make_config(ENABLE_HEADROOM_COMPRESSION=True, MAX_TOOL_OUTPUT=1000),
+            metadata_for_tool=lambda name: ToolMetadata(name=name, source="mcp"),
+            log_run_event=lambda *_args, **_kwargs: None,
+            workspace_boundary_violated=lambda *_args, **_kwargs: False,
+        )
+        compressed = "COMPRESSED-HEAD\n" + ("z" * 2000) + "\nCOMPRESSED-TAIL"
+
+        with mock.patch.object(executor._output_compressor, "compress", return_value=compressed):
+            outcome = executor.handle_result(
+                state={"run_id": "run"},
+                current_turn_id=1,
+                tool_name="query-docs",
+                tool_args={"query": "headroom"},
+                tool_call_id="call-mcp",
+                content="ORIGINAL-HEAD\n" + ("x" * 5000) + "\nORIGINAL-TAIL",
+                apply_validation=False,
+            )
+
+        self.assertLessEqual(len(outcome.content), 1000)
+        self.assertIn("COMPRESSED-HEAD", outcome.content)
+        self.assertIn("COMPRESSED-TAIL", outcome.content)
+        self.assertNotIn("ORIGINAL-HEAD", outcome.content)
+
+    def test_tool_executor_never_compresses_file_reads(self):
+        executor = ToolExecutor(
+            config=self._make_config(ENABLE_HEADROOM_COMPRESSION=True, MAX_TOOL_OUTPUT=1000),
+            metadata_for_tool=lambda name: ToolMetadata(name=name, read_only=True),
+            log_run_event=lambda *_args, **_kwargs: None,
+            workspace_boundary_violated=lambda *_args, **_kwargs: False,
+        )
+
+        with mock.patch.object(
+            executor._output_compressor,
+            "compress",
+            wraps=executor._output_compressor.compress,
+        ) as compress_spy:
+            outcome = executor.handle_result(
+                state={"run_id": "run"},
+                current_turn_id=1,
+                tool_name="read_file",
+                tool_args={"path": "big.py"},
+                tool_call_id="call-read",
+                content="y" * 5000,
+                apply_validation=False,
+            )
+
+        # compress() is consulted but declines file reads: exact truncate fallback stays
+        self.assertTrue(compress_spy.called)
+        self.assertIn("[TRUNCATED from 5000 chars", outcome.content)
+
+    def test_tool_output_compressor_returns_none_when_disabled(self):
+        compressor = ToolOutputCompressor(enabled=False)
+        self.assertIsNone(
+            compressor.compress(content="z" * 5000, tool_name="cli_exec", tool_args=None, limit=1000)
+        )
+
+    def test_tool_output_compressor_skips_small_and_incompressible_content(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        # below min size
+        self.assertIsNone(
+            compressor.compress(content="z" * 1500, tool_name="cli_exec", tool_args=None, limit=1000)
+        )
+        # non-compressible tool
+        self.assertIsNone(
+            compressor.compress(content="z" * 5000, tool_name="read_file", tool_args=None, limit=1000)
+        )
+
+    def test_tool_output_compressor_uses_crushed_content_when_smaller(self):
+        compressor = ToolOutputCompressor(enabled=True)
+
+        fake_result = mock.Mock()
+        fake_result.compressed = "compressed body"
+        fake_crusher = mock.Mock()
+        fake_crusher.crush.return_value = fake_result
+
+        with mock.patch.object(compressor, "_get_crusher", return_value=fake_crusher):
+            result = compressor.compress(
+                content="z" * 5000,
+                tool_name="cli_exec",
+                tool_args={"command": "ls -la"},
+                limit=1000,
+            )
+
+        self.assertIsNotNone(result)
+        self.assertIn("[COMPRESSED by headroom", result)
+        self.assertIn("compressed body", result)
+        fake_crusher.crush.assert_called_once()
+        self.assertIn("ls -la", fake_crusher.crush.call_args.kwargs["query"])
+
+    def test_tool_output_compressor_routes_mcp_tools_to_mcp_integration(self):
+        compressor = ToolOutputCompressor(enabled=True)
+
+        fake_result = mock.Mock(
+            compressed_content='[{"id": 1}]',
+            was_compressed=True,
+        )
+        fake_mcp = mock.Mock()
+        fake_mcp.compress.return_value = fake_result
+
+        with mock.patch.object(compressor, "_get_mcp_compressor", return_value=fake_mcp):
+            result = compressor.compress(
+                content="z" * 5000,
+                tool_name="resolve-library-id",
+                tool_args={"query": "headroom mcp"},
+                limit=1000,
+                is_mcp=True,
+            )
+
+        self.assertIsNotNone(result)
+        self.assertIn("[COMPRESSED by headroom MCP", result)
+        self.assertIn('[{"id": 1}]', result)
+        fake_mcp.compress.assert_called_once()
+        self.assertEqual("resolve-library-id", fake_mcp.compress.call_args.kwargs["tool_name"])
+        self.assertIn("headroom mcp", fake_mcp.compress.call_args.kwargs["user_query"])
+
+    def test_tool_output_compressor_mcp_passthrough_returns_none(self):
+        compressor = ToolOutputCompressor(enabled=True)
+
+        fake_result = mock.Mock(
+            compressed_content="z" * 5000,
+            was_compressed=False,
+        )
+        fake_mcp = mock.Mock()
+        fake_mcp.compress.return_value = fake_result
+
+        with mock.patch.object(compressor, "_get_mcp_compressor", return_value=fake_mcp):
+            result = compressor.compress(
+                content="z" * 5000,
+                tool_name="some-mcp-tool",
+                tool_args=None,
+                limit=1000,
+                is_mcp=True,
+            )
+
+        self.assertIsNone(result)
+
+    def test_tool_output_compressor_rejects_unresolved_mcp_ccr_marker(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        fake_mcp = mock.Mock()
+        fake_mcp.compress.return_value = mock.Mock(
+            compressed_content='[{"text": "<<ccr:abc123,string,10KB>>"}]',
+            was_compressed=True,
+        )
+
+        with mock.patch.object(compressor, "_get_mcp_compressor", return_value=fake_mcp):
+            result = compressor.compress(
+                content="z" * 5000,
+                tool_name="some-mcp-tool",
+                tool_args=None,
+                limit=1000,
+                is_mcp=True,
+            )
+
+        self.assertIsNone(result)
+
+    def test_tool_output_compressor_skips_mcp_content_within_limit(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        fake_mcp = mock.Mock()
+
+        with mock.patch.object(compressor, "_get_mcp_compressor", return_value=fake_mcp):
+            result = compressor.compress(
+                content="z" * 1000,
+                tool_name="some-mcp-tool",
+                tool_args=None,
+                limit=1000,
+                is_mcp=True,
+            )
+
+        self.assertIsNone(result)
+        fake_mcp.compress.assert_not_called()
+
+    def test_tool_output_compressor_mcp_failure_falls_back_silently(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        fake_mcp = mock.Mock()
+        fake_mcp.compress.side_effect = RuntimeError("boom")
+
+        with mock.patch.object(compressor, "_get_mcp_compressor", return_value=fake_mcp):
+            result = compressor.compress(
+                content="z" * 5000,
+                tool_name="some-mcp-tool",
+                tool_args=None,
+                limit=1000,
+                is_mcp=True,
+            )
+
+        self.assertIsNone(result)
+
+    def test_tool_output_compressor_includes_list_arguments_in_query(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        fake_result = mock.Mock(compressed="short")
+        fake_crusher = mock.Mock()
+        fake_crusher.crush.return_value = fake_result
+
+        with mock.patch.object(compressor, "_get_crusher", return_value=fake_crusher):
+            compressor.compress(
+                content="z" * 5000,
+                tool_name="batch_web_search",
+                tool_args={"queries": ["first query", "second query"]},
+                limit=1000,
+            )
+
+        query = fake_crusher.crush.call_args.kwargs["query"]
+        self.assertIn("first query", query)
+        self.assertIn("second query", query)
+
+    def test_tool_output_reducer_preserves_all_search_sections(self):
+        compressor = ToolOutputCompressor(enabled=False)
+        content = "\n".join(
+            f"Query: query-{index}\n" + (str(index) * 1200)
+            for index in range(5)
+        )
+
+        result = compressor.reduce_to_limit(
+            content=content,
+            tool_name="batch_web_search",
+            limit=1000,
+        )
+
+        self.assertLessEqual(len(result), 1000)
+        for index in range(5):
+            self.assertIn(f"Query: query-{index}", result)
+
+    def test_tool_output_reducer_preserves_shell_head_diagnostics_and_tail(self):
+        compressor = ToolOutputCompressor(enabled=False)
+        content = "HEAD\n" + ("noise\n" * 1000) + "ERROR important failure\n" + ("more\n" * 1000) + "TAIL"
+
+        result = compressor.reduce_to_limit(content=content, tool_name="cli_exec", limit=1000)
+
+        self.assertLessEqual(len(result), 1000)
+        self.assertIn("HEAD", result)
+        self.assertIn("ERROR important failure", result)
+        self.assertIn("TAIL", result)
+
+    def test_tool_output_reducer_preserves_mcp_head_and_tail(self):
+        compressor = ToolOutputCompressor(enabled=False)
+        content = "MCP-HEAD\n" + ("middle\n" * 1000) + "MCP-TAIL"
+
+        result = compressor.reduce_to_limit(
+            content=content,
+            tool_name="query-docs",
+            limit=1000,
+            is_mcp=True,
+        )
+
+        self.assertLessEqual(len(result), 1000)
+        self.assertIn("MCP-HEAD", result)
+        self.assertIn("MCP-TAIL", result)
+        omitted = int(result.split("[OMITTED ", 1)[1].split(" chars]", 1)[0])
+        marker_length = len(f"\n... [OMITTED {omitted} chars] ...\n")
+        self.assertEqual(len(content) - (1000 - marker_length), omitted)
+
+    def test_tool_output_compressor_falls_back_when_crush_grows_content(self):
+        compressor = ToolOutputCompressor(enabled=True)
+
+        fake_result = mock.Mock()
+        fake_result.compressed = "z" * 6000  # larger than original
+        fake_crusher = mock.Mock()
+        fake_crusher.crush.return_value = fake_result
+
+        with mock.patch.object(compressor, "_get_crusher", return_value=fake_crusher):
+            result = compressor.compress(
+                content="z" * 5000,
+                tool_name="cli_exec",
+                tool_args=None,
+                limit=1000,
+            )
+
+        self.assertIsNone(result)
+
+    def test_tool_output_compressor_survives_crush_exception(self):
+        compressor = ToolOutputCompressor(enabled=True)
+
+        fake_crusher = mock.Mock()
+        fake_crusher.crush.side_effect = RuntimeError("boom")
+
+        with mock.patch.object(compressor, "_get_crusher", return_value=fake_crusher):
+            result = compressor.compress(
+                content="z" * 5000,
+                tool_name="cli_exec",
+                tool_args=None,
+                limit=1000,
+            )
+
+        self.assertIsNone(result)
 
     def test_tool_executor_promotes_validation_failure_to_error_status(self):
         executor = ToolExecutor(

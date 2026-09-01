@@ -655,6 +655,28 @@ class GuiUxTests(unittest.TestCase):
         self.assertEqual(self.window.active_session_id, "session-1234567890abcdef")
         self.assertEqual(self.window.status_line_label.text(), "Ready")
 
+    def test_failed_mcp_server_switch_is_unchecked_in_tools_panel(self):
+        payload = self._snapshot_payload()
+        server = next(item for item in payload["tools"] if item["kind"] == "server")
+        server["enabled"] = False
+        server["description"] = "MCP server - error: startup failed"
+        payload["snapshot"]["tools"] = payload["tools"]
+
+        self.window._handle_initialized(payload)
+
+        switch = next(
+            item
+            for item in self.window.tools_panel.findChildren(QCheckBox, "ToolAvailabilitySwitch")
+            if item.accessibleName() == "context7 enabled"
+        )
+        descriptions = [
+            item.text()
+            for item in self.window.tools_panel.findChildren(QLabel, "ToolCardDescription")
+        ]
+        self.assertFalse(switch.isChecked())
+        self.assertTrue(switch.isEnabled())
+        self.assertIn("MCP server - error: startup failed", descriptions)
+
     def test_tool_descriptions_expand_when_title_is_clicked(self):
         self.window._handle_initialized(self._snapshot_payload())
         title = next(
@@ -3840,6 +3862,61 @@ class GuiUxTests(unittest.TestCase):
         self._process_events()
 
         self.assertEqual(dialog.name_edit.text(), "gpt-oss-120b")
+
+    def test_model_settings_dialog_updates_auto_name_when_only_model_is_replaced(self):
+        payload = {
+            "active_profile": "opn/gpt-4o",
+            "profiles": [
+                {
+                    "id": "opn/gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-demo",
+                    "base_url": "https://api.openai.com/v1",
+                    "enabled": True,
+                }
+            ],
+        }
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+            self.addCleanup(dialog.close)
+            self._process_events()
+
+            dialog._apply_loaded_models([ModelEntry("gpt-4.1", "openai", False)])
+            self._process_events()
+
+            self.assertEqual(dialog.model_combo.currentText(), "gpt-4.1")
+            self.assertEqual(dialog.name_edit.text(), "opn/gpt-4-1")
+
+            dialog._save_and_accept()
+            result = dialog.result_payload()
+            self.assertEqual(result["profiles"][0]["model"], "gpt-4.1")
+            self.assertEqual(result["profiles"][0]["id"], "opn/gpt-4-1")
+
+    def test_model_settings_dialog_preserves_manual_name_when_only_model_is_replaced(self):
+        payload = {
+            "active_profile": "custom-profile",
+            "profiles": [
+                {
+                    "id": "custom-profile",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-demo",
+                    "base_url": "https://api.openai.com/v1",
+                    "enabled": True,
+                }
+            ],
+        }
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+            self.addCleanup(dialog.close)
+            self._process_events()
+
+            dialog._apply_loaded_models([ModelEntry("gpt-4.1", "openai", False)])
+            self._process_events()
+
+            self.assertEqual(dialog.model_combo.currentText(), "gpt-4.1")
+            self.assertEqual(dialog.name_edit.text(), "custom-profile")
 
     def test_model_settings_dialog_saves_manual_image_support_checkbox(self):
         with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):

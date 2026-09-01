@@ -8,6 +8,7 @@ from unittest import mock
 import httpx
 from langchain_core.messages import AIMessage, AIMessageChunk, RemoveMessage, ToolMessage
 
+from core.safety_policy import SafetyPolicy
 from core.text_utils import (
     extract_cache_hit_tokens,
     format_compact_tokens,
@@ -2350,6 +2351,30 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertTrue(all(item.get("tool_id") == "call-cli-1" for item in live_events))
         self.assertTrue(any(item.get("stream") == "stdout" for item in live_events))
         self.assertTrue(any(item.get("stream") == "stderr" for item in live_events))
+
+    def test_cli_exec_uses_raw_limit_before_tool_executor(self):
+        process = self._FakeProcess(
+            stdout_chunks=[b"x" * 2000],
+            stderr_chunks=[],
+            returncode=0,
+        )
+        previous_policy = local_shell._SAFETY_POLICY
+        self.addCleanup(lambda: local_shell.set_safety_policy(previous_policy))
+        local_shell.set_safety_policy(
+            SafetyPolicy(allow_shell=True, max_tool_output=500, max_raw_tool_output=1500)
+        )
+
+        async def _fake_create_subprocess(*_args, **_kwargs):
+            return process
+
+        with (
+            mock.patch.object(local_shell.asyncio, "create_subprocess_exec", side_effect=_fake_create_subprocess),
+            mock.patch.object(local_shell.asyncio, "create_subprocess_shell", side_effect=_fake_create_subprocess),
+        ):
+            result = asyncio.run(local_shell.cli_exec.ainvoke({"command": "demo"}))
+
+        self.assertGreater(len(result), 500)
+        self.assertIn("[TRUNCATED from 2000 chars | source=shell-raw]", result)
 
     def test_cli_exec_uses_non_interactive_stdin_and_npm_env(self):
         process = self._FakeProcess(

@@ -11,6 +11,8 @@ from uuid import uuid4
 
 from core.config import AgentConfig
 from core.multimodal import DEFAULT_MODEL_CAPABILITIES
+from core.nodes.tools import ToolsMixin
+from core.safety_policy import SafetyPolicy
 from core.validation import validate_tool_result
 from tools import process_tools
 from tools.process_tools import run_background_process
@@ -39,6 +41,26 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         path.mkdir(parents=True, exist_ok=True)
         self.addCleanup(lambda: shutil.rmtree(path, ignore_errors=True))
         return path
+
+    async def test_execute_tool_serializes_structured_results_as_json(self):
+        owner = ToolsMixin()
+        owner.tools_map = {
+            "mcp-tool": mock.Mock(ainvoke=mock.AsyncMock(return_value=[{"type": "text", "text": "данные"}]))
+        }
+        owner._log_run_event = mock.Mock()
+
+        result = await owner._execute_tool("mcp-tool", {})
+
+        self.assertEqual([{"type": "text", "text": "данные"}], json.loads(result))
+
+    async def test_execute_tool_preserves_string_results(self):
+        owner = ToolsMixin()
+        owner.tools_map = {"text-tool": mock.Mock(ainvoke=mock.AsyncMock(return_value="plain text"))}
+        owner._log_run_event = mock.Mock()
+
+        result = await owner._execute_tool("text-tool", {})
+
+        self.assertEqual("plain text", result)
 
     async def test_tool_registry_preserves_filesystem_delete_tools(self):
         registry = ToolRegistry(self._make_config())
@@ -183,6 +205,31 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("context7:resolve-library-id", {tool.name for tool in registry.active_tools()})
         await registry.cleanup()
         fake_client.aclose.assert_awaited_once()
+
+    async def test_failed_mcp_server_is_disabled_in_tools_snapshot(self):
+        tmp = self._workspace_tempdir()
+        mcp_config_path = tmp / "mcp.json"
+        mcp_config_path.write_text(
+            json.dumps({"broken": {"command": "missing-mcp", "enabled": True}}),
+            encoding="utf-8",
+        )
+        registry = ToolRegistry(self._make_config(MCP_CONFIG_PATH=mcp_config_path))
+
+        with mock.patch.object(
+            ToolRegistry,
+            "_load_single_mcp_server",
+            new=mock.AsyncMock(return_value=("broken", None, None, RuntimeError("startup failed"))),
+        ):
+            await registry.load_all()
+
+        self.assertEqual(
+            registry.mcp_server_status,
+            [{"server": "broken", "loaded_tools": [], "error": "startup failed", "enabled": True}],
+        )
+        self.assertTrue(registry.mcp_config["broken"]["enabled"])
+        server_row = next(row for row in build_tools_snapshot(registry) if row.get("name") == "broken")
+        self.assertFalse(server_row["enabled"])
+        self.assertEqual(server_row["description"], "MCP server - error: startup failed")
 
     async def test_tool_registry_cleanup_awaits_registered_async_callbacks(self):
         registry = ToolRegistry(self._make_config())
@@ -456,6 +503,29 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
             query="main points",
             chunks_per_source=5,
         )
+
+    async def test_fetch_content_raw_limit_preserves_all_sources(self):
+        client = SimpleNamespace(extract=mock.AsyncMock())
+        client.extract.return_value = {
+            "results": [
+                {"url": f"https://example.com/{index}", "raw_content": str(index) * 2000}
+                for index in range(3)
+            ],
+            "failed_results": [],
+        }
+        previous_policy = _RUNTIME.safety_policy
+        self.addCleanup(lambda: setattr(_RUNTIME, "safety_policy", previous_policy))
+        _RUNTIME.safety_policy = SafetyPolicy(max_tool_output=500, max_raw_tool_output=1200)
+
+        with mock.patch.object(_RUNTIME, "get_client", return_value=client):
+            result = await fetch_content.ainvoke(
+                {"urls": [f"https://example.com/{index}" for index in range(3)]}
+            )
+
+        self.assertLessEqual(len(result), 1200)
+        self.assertGreater(len(result), 500)
+        for index in range(3):
+            self.assertIn(f"=== SOURCE: https://example.com/{index} ===", result)
 
     async def test_crawl_site_sends_supported_tavily_options_and_formats_pages(self):
         client = SimpleNamespace(crawl=mock.AsyncMock())

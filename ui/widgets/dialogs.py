@@ -905,6 +905,11 @@ class ModelSettingsDialog(QDialog):
         self.model_combo.blockSignals(False)
 
         self._set_current_model_widgets_text(selected_model)
+        current_row = self._current_row()
+        if selected_model and 0 <= current_row < len(self._profiles) and not self._name_manual_flags[current_row]:
+            self._loading_form = True
+            self.name_edit.setText(self._suggest_unique_id(selected_model, row=current_row))
+            self._loading_form = False
         if not selected_model and provider == "openai":
             self._set_model_state(
                 ModelLoadState.LOADED,

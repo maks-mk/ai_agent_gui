@@ -14,7 +14,7 @@ from pydantic import BaseModel, ConfigDict, Field, model_validator
 from core.config import AgentConfig
 from core.errors import ErrorType, format_error
 from core.safety_policy import SafetyPolicy
-from core.utils import truncate_output
+from core.tool_output_compressor import ToolOutputCompressor
 
 logger = logging.getLogger(__name__)
 
@@ -203,6 +203,32 @@ def _clamp_int(value: Any, low: int, high: int, default: int) -> int:
 
 def _normalize_query(query: str) -> str:
     return " ".join((query or "").strip().split())
+
+
+def _raw_output_limit() -> int:
+    policy = _RUNTIME.safety_policy
+    return policy.max_raw_tool_output if policy else 100000
+
+
+def _fit_raw_sections(sections: List[str], *, source: str, preamble: Optional[List[str]] = None) -> str:
+    rendered_preamble = [str(item) for item in (preamble or []) if str(item)]
+    content = "\n".join(rendered_preamble + sections)
+    limit = _raw_output_limit()
+    if len(content) <= limit:
+        return content
+
+    prefix = {
+        "batch_web_search": "Query: ",
+        "fetch_content": "=== SOURCE: ",
+        "crawl_site": "=== PAGE: ",
+    }.get(source)
+    if not prefix:
+        return content[:limit]
+    return ToolOutputCompressor(enabled=False).reduce_to_limit(
+        content=content,
+        tool_name=source,
+        limit=limit,
+    )
 
 
 def _normalize_search_depth(search_depth: str) -> str:
@@ -430,7 +456,7 @@ async def _search_impl(
         return "\n".join(parts) if parts else format_error(ErrorType.NOT_FOUND, "No results found.")
 
     max_chars = _RUNTIME.safety_policy.max_search_chars if _RUNTIME.safety_policy else 10000
-    total_chars = 0
+    result_blocks: List[str] = []
     for item in items:
         title = item.get("title") or "Untitled"
         url = item.get("url") or ""
@@ -438,13 +464,14 @@ async def _search_impl(
         content = item.get("content") or ""
         if not content:
             continue
+        result_blocks.append(f"Source: {title} (score: {float(score):.2f})\nURL: {url}\n{content}")
 
-        block = f"Source: {title} (score: {float(score):.2f})\nURL: {url}\n{content}"
-        if total_chars + len(block) > max_chars:
-            break
-        parts.append(block)
-        parts.append("-" * 40)
-        total_chars += len(block) + 40
+    if result_blocks:
+        fixed_chars = (len(result_blocks) - 1) * 41
+        per_result = max(1, (max_chars - fixed_chars) // len(result_blocks))
+        for block in result_blocks:
+            parts.append(block if len(block) <= per_result else block[:per_result])
+            parts.append("-" * 40)
 
     usage = response.get("usage")
     if usage:
@@ -491,14 +518,10 @@ async def fetch_content(
         return _format_tavily_error(e)
 
     output_parts: List[str] = []
-    max_chars_limit = _RUNTIME.safety_policy.max_search_chars if _RUNTIME.safety_policy else 15000
-    max_chars_per_url = max(1000, int(max_chars_limit / max(1, len(clean_urls))))
     for item in response.get("results", []):
         url = item.get("url", "Unknown")
         content = item.get("raw_content") or item.get("content") or ""
-        output_parts.append(
-            f"=== SOURCE: {url} ===\n{truncate_output(content, max_chars_per_url, source=url) or '[Empty]'}\n{'=' * 30}"
-        )
+        output_parts.append(f"=== SOURCE: {url} ===\n{content or '[Empty]'}\n{'=' * 30}")
 
     for failed_item in response.get("failed_results", []):
         output_parts.append(
@@ -508,7 +531,9 @@ async def fetch_content(
     usage = response.get("usage")
     if usage:
         output_parts.append(f"Usage: {usage}")
-    return "\n".join(output_parts) or format_error(ErrorType.EXECUTION, "No content extracted.")
+    if not output_parts:
+        return format_error(ErrorType.EXECUTION, "No content extracted.")
+    return _fit_raw_sections(output_parts, source="fetch_content")
 
 
 @tool("crawl_site", args_schema=CrawlSiteInput)
@@ -577,9 +602,7 @@ async def crawl_site(
     except Exception as e:
         return _format_tavily_error(e)
 
-    max_chars = _RUNTIME.safety_policy.max_search_chars if _RUNTIME.safety_policy else 15000
     output_parts: List[str] = []
-    used_chars = 0
     for item in response.get("results", []):
         page_url = item.get("url") or "Unknown"
         content = item.get("raw_content") or item.get("content") or ""
@@ -587,17 +610,7 @@ async def crawl_site(
         header = f"=== PAGE: {page_url} ===\n"
         if include_images and images:
             header += "Images:\n" + "\n".join(f"- {image}" for image in images) + "\n"
-        remaining = max_chars - used_chars - len(header) - 30
-        if remaining <= 0:
-            break
-        rendered_content = content or "[Empty]"
-        if len(rendered_content) > remaining:
-            footer = f"\n... [TRUNCATED from {len(rendered_content)} chars | source={page_url}]"
-            content_limit = max(0, remaining - len(footer))
-            rendered_content = truncate_output(rendered_content, content_limit, source=page_url)[:remaining]
-        block = f"{header}{rendered_content}\n{'=' * 30}"
-        output_parts.append(block)
-        used_chars += len(block)
+        output_parts.append(f"{header}{content or '[Empty]'}\n{'=' * 30}")
 
     if not output_parts:
         return format_error(ErrorType.NOT_FOUND, "No pages were crawled.")
@@ -605,7 +618,7 @@ async def crawl_site(
     if usage:
         output_parts.append(f"Usage: {usage}")
     output_parts.append("[Crawl completed. Use the context above.]")
-    return "\n".join(output_parts)
+    return _fit_raw_sections(output_parts, source="crawl_site")
 
 
 @tool("batch_web_search")
@@ -649,6 +662,4 @@ async def batch_web_search(
             else str(result)
         )
         output.append(f"Query: {query}\n{rendered}\n{'=' * 50}")
-    return "\n".join(output)
-
-
+    return _fit_raw_sections(output, source="batch_web_search")

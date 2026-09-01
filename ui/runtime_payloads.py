@@ -131,8 +131,8 @@ def build_tools_snapshot(tool_registry) -> list[dict[str, Any]]:
         if not isinstance(cfg, dict):
             continue
         status = statuses.get(str(server_name), {})
-        enabled = bool(cfg.get("enabled", status.get("enabled", True)))
         error = str(status.get("error", "") or "")
+        enabled = bool(cfg.get("enabled", status.get("enabled", True))) and not error
         loaded_names = {str(name) for name in status.get("loaded_tools", [])}
         server_tools = []
         for tool in tools:
@@ -151,10 +151,10 @@ def build_tools_snapshot(tool_registry) -> list[dict[str, Any]]:
                     }
                 )
         server_tools.sort(key=lambda item: item["name"])
-        if not enabled:
-            description = "MCP server - disabled"
-        elif error:
+        if error:
             description = f"MCP server - error: {error}"
+        elif not enabled:
+            description = "MCP server - disabled"
         else:
             description = f"MCP server - {len(server_tools)} tool(s)"
         rows.append(

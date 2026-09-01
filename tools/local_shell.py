@@ -299,6 +299,12 @@ def set_safety_policy(policy: SafetyPolicy):
     global _SAFETY_POLICY
     _SAFETY_POLICY = policy
 
+
+def _limit_raw_output(content: str) -> str:
+    limit = _SAFETY_POLICY.max_raw_tool_output if _SAFETY_POLICY else 100000
+    return truncate_output(content, limit, source="shell-raw")
+
+
 def set_working_directory(cwd: str):
     """
     Syncs the shell's working directory with the FilesystemManager's workspace.
@@ -472,10 +478,13 @@ async def cli_exec(
 
         if timed_out:
             details = f"\nPartial output:\n{output}" if output else ""
-            return format_error(
-                ErrorType.TIMEOUT,
-                f"Command timed out after {timeout} seconds. Did you run an interactive command (like nano/vim) or a blocking server?{details}"
+            return _limit_raw_output(
+                format_error(
+                    ErrorType.TIMEOUT,
+                    f"Command timed out after {timeout} seconds. Did you run an interactive command (like nano/vim) or a blocking server?{details}",
+                )
             )
+
         
         if process.returncode != 0:
             # Some commands use a non-zero exit code as part of their normal
@@ -487,8 +496,7 @@ async def cli_exec(
                 if output:
                     neutral_parts.append(output)
                 result = "\n".join(neutral_parts)
-                limit = _SAFETY_POLICY.max_tool_output if _SAFETY_POLICY else 5000
-                return truncate_output(result, limit, source="shell")
+                return _limit_raw_output(result)
 
             error_msg = f"Command failed with Exit Code {process.returncode}."
             cmd_hint = _get_windows_command_hint(command, stderr)
@@ -503,13 +511,12 @@ async def cli_exec(
                 error_msg += " (No output)"
             if cmd_hint:
                 error_msg += cmd_hint
-            return format_error(ErrorType.EXECUTION, error_msg)
+            return _limit_raw_output(format_error(ErrorType.EXECUTION, error_msg))
 
         if not output:
             output = "Command executed successfully (no output)."
         
-        limit = _SAFETY_POLICY.max_tool_output if _SAFETY_POLICY else 5000
-        return truncate_output(output, limit, source="shell")
+        return _limit_raw_output(output)
 
     except Exception as e:
         return format_error(ErrorType.EXECUTION, f"Error executing command: {str(e)}")

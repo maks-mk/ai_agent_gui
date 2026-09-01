@@ -14,7 +14,7 @@ from core.self_correction_engine import repair_fingerprint
 from core.tool_issues import build_tool_issue, enrich_tool_issue_details, merge_tool_issues
 from core.tool_policy import ToolMetadata
 from core.tool_results import ToolExecutionResult, parse_tool_execution_result
-from core.utils import truncate_output
+from core.tool_output_compressor import ToolOutputCompressor
 from core.validation import validate
 
 
@@ -45,6 +45,9 @@ class ToolExecutor:
         self._metadata_for_tool = metadata_for_tool
         self._log_run_event = log_run_event
         self._workspace_boundary_violated = workspace_boundary_violated
+        self._output_compressor = ToolOutputCompressor(
+            enabled=getattr(config, "enable_headroom_compression", False),
+        )
 
     @staticmethod
     def _result_log_payload(parsed_result: ToolExecutionResult) -> Dict[str, Any]:
@@ -94,7 +97,20 @@ class ToolExecutor:
                 had_error = True
 
         limit = self.config.safety.max_tool_output
-        content = truncate_output(content, limit, source=tool_name)
+        is_mcp = self._metadata_for_tool(tool_name).source == "mcp"
+        compressed = self._output_compressor.compress(
+            content=content,
+            tool_name=tool_name,
+            tool_args=tool_args if isinstance(tool_args, dict) else None,
+            limit=limit,
+            is_mcp=is_mcp,
+        )
+        content = self._output_compressor.reduce_to_limit(
+            content=compressed if compressed is not None else content,
+            tool_name=tool_name,
+            limit=limit,
+            is_mcp=is_mcp,
+        )
         parsed_result = parse_tool_execution_result(content)
         if not parsed_result.ok:
             had_error = True

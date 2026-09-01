@@ -428,11 +428,23 @@
         "api-inference.modelscope.cn"
       ],
       "match_type": "exact",
-      "supports_reasoning": false,
-      "validation": "passthrough",
-      "notes": "Conservative default: do not send undocumented reasoning fields."
+      "supports_reasoning": true,
+      "validation": "map",
+      "reasoning": {
+        "path": "reasoning_effort",
+        "allowed_values": [
+          "low",
+          "medium",
+          "high"
+        ],
+        "value_map": {
+          "minimal": "low",
+          "xhigh": "high",
+          "max": "high"
+        }
+      },
+      "notes": "Official ModelScope API. Supports top-level reasoning_effort for Qwen3.x and other deep thinking models."
     },
-
     {
       "id": "freemodel",
       "enabled": true,
