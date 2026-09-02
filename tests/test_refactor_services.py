@@ -15,6 +15,7 @@ from core.tool_executor import ToolExecutor
 from core.tool_output_compressor import ToolOutputCompressor
 from core.tool_issues import build_tool_issue
 from core.tool_policy import ToolMetadata
+from core.tool_results import parse_tool_execution_result
 
 
 class RefactorServicesTests(unittest.TestCase):
@@ -613,7 +614,37 @@ class RefactorServicesTests(unittest.TestCase):
         # headroom passthrough (plain "xxxx" is not compressible) -> truncate fallback
         self.assertIn("[TRUNCATED from 5000 chars", outcome.content)
 
-    def test_tool_executor_routes_mcp_tools_to_mcp_compression(self):
+    def test_tool_executor_compresses_real_build_log_through_headroom(self):
+        executor = ToolExecutor(
+            config=self._make_config(ENABLE_HEADROOM_COMPRESSION=True, MAX_TOOL_OUTPUT=4000),
+            metadata_for_tool=lambda name: ToolMetadata(name=name, read_only=True),
+            log_run_event=lambda *_args, **_kwargs: None,
+            workspace_boundary_violated=lambda *_args, **_kwargs: False,
+        )
+        lines = []
+        for index in range(600):
+            lines.append(f"[{index:04d}] INFO  compiling module_{index % 40}.py ... ok in {index % 7}ms")
+            if index % 250 == 0:
+                lines.append(f"[{index:04d}] WARNING deprecated call in module_{index % 40}.py:12")
+        lines.append("ERROR: build failed: module_37.py:88 SyntaxError: invalid syntax")
+        build_log = "\n".join(lines)
+
+        outcome = executor.handle_result(
+            state={"run_id": "run", "messages": [HumanMessage(content="why does the build fail")]},
+            current_turn_id=1,
+            tool_name="cli_exec",
+            tool_args={"command": "make build"},
+            tool_call_id="call-build",
+            content=build_log,
+            apply_validation=False,
+        )
+
+        self.assertIn("[COMPRESSED by headroom", outcome.content)
+        self.assertIn("build failed: module_37.py:88", outcome.content)
+        self.assertLess(len(outcome.content), len(build_log))
+        self.assertLessEqual(len(outcome.content), 4000)
+
+    def test_tool_executor_marks_mcp_tools_for_compression(self):
         executor = ToolExecutor(
             config=self._make_config(ENABLE_HEADROOM_COMPRESSION=True, MAX_TOOL_OUTPUT=1000),
             metadata_for_tool=lambda name: ToolMetadata(name=name, source="mcp"),
@@ -712,15 +743,16 @@ class RefactorServicesTests(unittest.TestCase):
             compressor.compress(content="z" * 5000, tool_name="read_file", tool_args=None, limit=1000)
         )
 
-    def test_tool_output_compressor_uses_crushed_content_when_smaller(self):
+    def test_tool_output_compressor_uses_routed_content_when_smaller(self):
         compressor = ToolOutputCompressor(enabled=True)
 
         fake_result = mock.Mock()
-        fake_result.compressed = "compressed body"
-        fake_crusher = mock.Mock()
-        fake_crusher.crush.return_value = fake_result
+        fake_result.compressed = "compressed body\n" * 30
+        fake_result.strategy_used = mock.Mock(value="log")
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = fake_result
 
-        with mock.patch.object(compressor, "_get_crusher", return_value=fake_crusher):
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
             result = compressor.compress(
                 content="z" * 5000,
                 tool_name="cli_exec",
@@ -729,22 +761,79 @@ class RefactorServicesTests(unittest.TestCase):
             )
 
         self.assertIsNotNone(result)
-        self.assertIn("[COMPRESSED by headroom", result)
         self.assertIn("compressed body", result)
-        fake_crusher.crush.assert_called_once()
-        self.assertIn("ls -la", fake_crusher.crush.call_args.kwargs["query"])
+        self.assertIn("[COMPRESSED by headroom", result)
+        self.assertIn("strategy=log", result)
+        # marker must be a footer so a leading ERROR[...] envelope stays detectable
+        self.assertTrue(result.startswith("compressed body"))
+        fake_router.compress.assert_called_once()
+        self.assertIn("ls -la", fake_router.compress.call_args.kwargs["context"])
 
-    def test_tool_output_compressor_routes_mcp_tools_to_mcp_integration(self):
+    def test_tool_output_compressor_compresses_directory_listings(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = mock.Mock(
+            compressed="listing body\n" * 40, strategy_used=mock.Mock(value="text")
+        )
+
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
+            result = compressor.compress(
+                content="[FILE] name\n" * 500,
+                tool_name="list_directory",
+                tool_args={"path": "core"},
+                limit=1000,
+            )
+
+        self.assertIsNotNone(result)
+        fake_router.compress.assert_called_once()
+
+    def test_tool_output_compressor_forwards_user_query_as_question(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = mock.Mock(
+            compressed="body\n" * 100, strategy_used=mock.Mock(value="log")
+        )
+
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
+            compressor.compress(
+                content="z" * 5000,
+                tool_name="cli_exec",
+                tool_args={"command": "pytest"},
+                limit=1000,
+                user_query="  why do the tests fail  ",
+            )
+
+        self.assertEqual(
+            "why do the tests fail", fake_router.compress.call_args.kwargs["question"]
+        )
+
+    def test_tool_output_compressor_omits_empty_question(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = mock.Mock(
+            compressed="body\n" * 100, strategy_used=mock.Mock(value="log")
+        )
+
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
+            compressor.compress(
+                content="z" * 5000,
+                tool_name="cli_exec",
+                tool_args=None,
+                limit=1000,
+                user_query="   ",
+            )
+
+        self.assertIsNone(fake_router.compress.call_args.kwargs["question"])
+
+    def test_tool_output_compressor_routes_mcp_tools_through_same_router(self):
         compressor = ToolOutputCompressor(enabled=True)
 
-        fake_result = mock.Mock(
-            compressed_content='[{"id": 1}]',
-            was_compressed=True,
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = mock.Mock(
+            compressed='[{"id": 1}]\n' * 40, strategy_used=mock.Mock(value="smart_crusher")
         )
-        fake_mcp = mock.Mock()
-        fake_mcp.compress.return_value = fake_result
 
-        with mock.patch.object(compressor, "_get_mcp_compressor", return_value=fake_mcp):
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
             result = compressor.compress(
                 content="z" * 5000,
                 tool_name="resolve-library-id",
@@ -754,23 +843,20 @@ class RefactorServicesTests(unittest.TestCase):
             )
 
         self.assertIsNotNone(result)
-        self.assertIn("[COMPRESSED by headroom MCP", result)
         self.assertIn('[{"id": 1}]', result)
-        fake_mcp.compress.assert_called_once()
-        self.assertEqual("resolve-library-id", fake_mcp.compress.call_args.kwargs["tool_name"])
-        self.assertIn("headroom mcp", fake_mcp.compress.call_args.kwargs["user_query"])
+        self.assertIn("tool=resolve-library-id", result)
+        fake_router.compress.assert_called_once()
+        self.assertIn("headroom mcp", fake_router.compress.call_args.kwargs["context"])
 
-    def test_tool_output_compressor_mcp_passthrough_returns_none(self):
+    def test_tool_output_compressor_passthrough_returns_none(self):
         compressor = ToolOutputCompressor(enabled=True)
 
-        fake_result = mock.Mock(
-            compressed_content="z" * 5000,
-            was_compressed=False,
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = mock.Mock(
+            compressed="z" * 5000, strategy_used=mock.Mock(value="passthrough")
         )
-        fake_mcp = mock.Mock()
-        fake_mcp.compress.return_value = fake_result
 
-        with mock.patch.object(compressor, "_get_mcp_compressor", return_value=fake_mcp):
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
             result = compressor.compress(
                 content="z" * 5000,
                 tool_name="some-mcp-tool",
@@ -781,30 +867,298 @@ class RefactorServicesTests(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    def test_tool_output_compressor_rejects_unresolved_mcp_ccr_marker(self):
+    def test_tool_output_compressor_rejects_unresolved_retrieval_markers(self):
         compressor = ToolOutputCompressor(enabled=True)
-        fake_mcp = mock.Mock()
-        fake_mcp.compress.return_value = mock.Mock(
-            compressed_content='[{"text": "<<ccr:abc123,string,10KB>>"}]',
-            was_compressed=True,
+        marker_bodies = (
+            '[{"text": "<<ccr:abc123,string,10KB>>"}]' + ("\npadding" * 200),
+            "[1000 items compressed to 20. Retrieve more: hash=abc123.]" + ("\npadding" * 200),
+            "[items compressed. Retrieve original: hash=abc123.]" + ("\npadding" * 200),
         )
 
-        with mock.patch.object(compressor, "_get_mcp_compressor", return_value=fake_mcp):
+        for body in marker_bodies:
+            for is_mcp in (True, False):
+                fake_router = mock.Mock()
+                fake_router.compress.return_value = mock.Mock(
+                    compressed=body, strategy_used=mock.Mock(value="smart_crusher")
+                )
+                with mock.patch.object(compressor, "_get_router", return_value=fake_router):
+                    result = compressor.compress(
+                        content="z" * 5000,
+                        tool_name="cli_exec" if not is_mcp else "some-mcp-tool",
+                        tool_args=None,
+                        limit=1000,
+                        is_mcp=is_mcp,
+                    )
+                self.assertIsNone(result, msg=f"marker leaked (is_mcp={is_mcp}): {body[:40]}")
+
+    def test_tool_output_compressor_rejects_results_that_delete_content(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        content = "\n".join(f"[{index:04d}] INFO compiling module_{index}.py ... ok" for index in range(400))
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = mock.Mock(
+            compressed="[400 lines omitted: 400 INFO]", strategy_used=mock.Mock(value="log")
+        )
+
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
             result = compressor.compress(
-                content="z" * 5000,
-                tool_name="some-mcp-tool",
+                content=content,
+                tool_name="cli_exec",
                 tool_args=None,
-                limit=1000,
-                is_mcp=True,
+                limit=4000,
             )
 
         self.assertIsNone(result)
+
+    def test_tool_output_compressor_accepts_pure_deduplication(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        content = "ERROR[EXECUTION]: boom\nOutput:\n" + ('  File "x.py", line 1\n' * 400)
+        deduped = 'ERROR[EXECUTION]: boom\nOutput:\n  File "x.py", line 1\n... (repeated 400 times)'
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = mock.Mock(
+            compressed=deduped, strategy_used=mock.Mock(value="text")
+        )
+
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
+            result = compressor.compress(
+                content=content,
+                tool_name="cli_exec",
+                tool_args=None,
+                limit=4000,
+            )
+
+        self.assertIsNotNone(result)
+        self.assertTrue(result.startswith("ERROR[EXECUTION]: boom"))
+
+    def test_tool_output_compressor_rejects_results_that_drop_diagnostics(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        content = "\n".join(
+            f"ERROR: module_{index}.py:{index} undefined reference to symbol_{index}"
+            if index % 10 == 0
+            else f"[{index:04d}] INFO compiling module_{index}.py ... ok"
+            for index in range(400)
+        )
+        # headroom's log compressor caps how many errors it keeps, so most of them vanish
+        kept_errors = "\n".join(
+            f"ERROR: module_{index}.py:{index} undefined reference to symbol_{index}"
+            for index in range(0, 100, 10)
+        )
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = mock.Mock(
+            compressed=kept_errors, strategy_used=mock.Mock(value="log")
+        )
+
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
+            result = compressor.compress(
+                content=content,
+                tool_name="cli_exec",
+                tool_args={"command": "make build"},
+                limit=15000,
+            )
+
+        self.assertIsNone(result)
+
+    def test_tool_output_compressor_accepts_the_candidate_that_keeps_more_diagnostics(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        content = "\n".join(
+            f"ERROR: shard-{index:03d} unreachable after {index} retries"
+            if index % 2
+            else f"[{index:04d}] INFO  visiting shard-{index:03d}"
+            for index in range(400)
+        )
+        # more failures than the budget can carry: keeping 70 of them beats the
+        # deterministic reducer, which spends most of the budget on head and tail
+        kept_errors = "\n".join(
+            f"ERROR: shard-{index:03d} unreachable after {index} retries"
+            for index in range(1, 140, 2)
+        )
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = mock.Mock(
+            compressed=kept_errors, strategy_used=mock.Mock(value="log")
+        )
+
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
+            result = compressor.compress(
+                content=content,
+                tool_name="cli_exec",
+                tool_args={"command": "make build"},
+                limit=4000,
+            )
+
+        self.assertIsNotNone(result)
+        self.assertIn("shard-139 unreachable", result)
+
+    def test_tool_output_compressor_scales_log_caps_to_budget(self):
+        from headroom.transforms import LogCompressorConfig
+
+        defaults = LogCompressorConfig()
+        small = ToolOutputCompressor._log_compressor_config(4000, dedupe_warnings=False)
+        large = ToolOutputCompressor._log_compressor_config(60000, dedupe_warnings=False)
+
+        # headroom's defaults are the floor, so a small budget is never made worse
+        self.assertEqual(defaults.max_total_lines, small.max_total_lines)
+        self.assertGreater(large.max_total_lines, small.max_total_lines)
+        for config in (small, large):
+            self.assertGreaterEqual(config.max_errors, defaults.max_errors)
+            self.assertGreaterEqual(config.max_warnings, defaults.max_warnings)
+            self.assertGreaterEqual(config.max_stack_traces, defaults.max_stack_traces)
+            # no retrieval tool is exposed, so markers must stay off
+            self.assertFalse(config.enable_ccr)
+
+    def test_tool_output_compressor_condenses_a_log_the_router_only_folded(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        lines = []
+        for index in range(400):
+            lines.append(
+                f"2026-09-03 10:{index // 60:02d}:{index % 60:02d} INFO  [build] compiling "
+                f"pkg/module_{index:03d}.py ok size={1000 + index}"
+            )
+            if index % 20 == 7:
+                lines.append(
+                    f"2026-09-03 10:{index // 60:02d}:{index % 60:02d} ERROR [build] "
+                    f"pkg/module_{index:03d}.py: undefined reference to symbol_{index}"
+                )
+        content = "\n".join(lines)
+
+        result = compressor.compress(
+            content=content,
+            tool_name="cli_exec",
+            tool_args={"command": "make build"},
+            limit=15000,
+        )
+
+        # the router stops at its lossless fold, which stays above the budget; the
+        # log pass has to condense it instead of leaving the cut to the reducer
+        self.assertIsNotNone(result)
+        self.assertIn("strategy=log", result)
+        self.assertLessEqual(len(result), 15000)
+        for index in range(7, 400, 20):
+            self.assertIn(f"undefined reference to symbol_{index}", result)
+
+    def test_tool_output_compressor_keeps_warnings_that_differ_only_in_an_identifier(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        lines = []
+        for index in range(400):
+            stamp = f"2026-09-03 11:{index // 60:02d}:{index % 60:02d}"
+            lines.append(f"{stamp} INFO  [build] compiled pkg/module_{index:03d}.py in {index}ms")
+            if index and index % 100 == 0:
+                lines.append(f"{stamp} WARNING [deps] version drift detected for package-{index}")
+        lines.append("2026-09-03 11:07:00 ERROR [build] BUILD FAILED: 1 error, 3 warnings")
+        content = "\n".join(lines)
+
+        result = compressor.compress(
+            content=content,
+            tool_name="cli_exec",
+            tool_args={"command": "make build"},
+            limit=15000,
+        )
+
+        # headroom's warning dedupe normalises digits, so these three warnings look
+        # identical to it; collapsing them would hide which packages drifted
+        self.assertIsNotNone(result)
+        self.assertLessEqual(len(result), 15000)
+        for index in (100, 200, 300):
+            self.assertIn(f"package-{index}", result)
+
+    def test_tool_output_compressor_folds_warnings_that_only_repeat(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        lines = [
+            f"2026-09-03 13:{index // 60:02d}:{index % 60:02d} WARNING [cache] "
+            f"miss for key=session-token"
+            for index in range(400)
+        ]
+        lines.append("2026-09-03 13:07:00 ERROR [cache] eviction storm: 400 misses in 7 minutes")
+        content = "\n".join(lines)
+
+        result = compressor.compress(
+            content=content,
+            tool_name="cli_exec",
+            tool_args={"command": "cat cache.log"},
+            limit=15000,
+        )
+
+        # the same warning 400 times carries no more information than once, so it must
+        # not be spread over the budget just because identifiers are preserved elsewhere
+        self.assertIsNotNone(result)
+        self.assertLess(len(result), 15000 // 4)
+        self.assertIn("session-token", result)
+        self.assertIn("eviction storm", result)
+
+    def test_tool_output_compressor_keeps_routed_result_when_log_pass_deletes_content(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        content = "\n".join(
+            f"2026-09-03 12:00:{index % 60:02d} INFO  [sync] processed record {index:04d} status=ok"
+            for index in range(420)
+        )
+
+        result = compressor.compress(
+            content=content,
+            tool_name="cli_exec",
+            tool_args={"command": "cat sync.log"},
+            limit=15000,
+        )
+
+        # a log without diagnostics collapses to a line-count marker, so the router's
+        # lossless fold must survive instead of being replaced by it
+        self.assertIsNotNone(result)
+        self.assertIn("processed record 0000", result)
+        self.assertNotIn("lines omitted", result)
+
+    def test_tool_output_compressor_leaves_prose_to_the_deterministic_reducer(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        nouns = ("scheduler", "cache", "queue", "router", "worker", "index")
+        verbs = ("retries", "drains", "rebuilds", "validates", "compacts")
+        lines = [
+            f"Section {index}: the {nouns[index % len(nouns)]} {verbs[index % len(verbs)]} batch "
+            f"{index} whenever the operator adjusts threshold {index} in the configuration file, "
+            f"which keeps throughput stable during the maintenance window."
+            for index in range(400)
+        ]
+        lines.insert(137, "Section 137b: a warning is emitted when retention drops below one day.")
+        content = "\n".join(lines)
+
+        for tool_name, is_mcp in (("fetch_content", False), ("cli_exec", False), ("query-docs", True)):
+            result = compressor.compress(
+                content=content,
+                tool_name=tool_name,
+                tool_args={"url": "https://example.test/doc"},
+                limit=15000,
+                is_mcp=is_mcp,
+            )
+            # dropping log lines out of prose would delete most of it
+            self.assertIsNone(result, msg=f"{tool_name}: prose was log-compressed")
+
+    def test_tool_output_compressor_accepts_reserialised_diagnostics(self):
+        compressor = ToolOutputCompressor(enabled=True)
+        rows = [
+            f'{{"id": "REC-{index:04d}", "status": "ok", "message": "processed record {index:04d}"}}'
+            for index in range(1, 200)
+        ]
+        rows.append('{"id": "REC-0200", "status": "error", "message": "timeout on shard-05"}')
+        content = "\n".join(rows)
+        # tabular compressors re-serialise records: same data, different shape
+        compressed = "id,status,message\nREC-0200,error,timeout on shard-05\n[199 ok rows]"
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = mock.Mock(
+            compressed=compressed, strategy_used=mock.Mock(value="tabular")
+        )
+
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
+            result = compressor.compress(
+                content=content,
+                tool_name="query-docs",
+                tool_args={"query": "failed records"},
+                limit=4000,
+                is_mcp=True,
+            )
+
+        self.assertIsNotNone(result)
+        self.assertIn("REC-0200,error,timeout on shard-05", result)
 
     def test_tool_output_compressor_skips_mcp_content_within_limit(self):
         compressor = ToolOutputCompressor(enabled=True)
-        fake_mcp = mock.Mock()
+        fake_router = mock.Mock()
 
-        with mock.patch.object(compressor, "_get_mcp_compressor", return_value=fake_mcp):
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
             result = compressor.compress(
                 content="z" * 1000,
                 tool_name="some-mcp-tool",
@@ -814,31 +1168,16 @@ class RefactorServicesTests(unittest.TestCase):
             )
 
         self.assertIsNone(result)
-        fake_mcp.compress.assert_not_called()
+        fake_router.compress.assert_not_called()
 
-    def test_tool_output_compressor_mcp_failure_falls_back_silently(self):
+    def test_tool_output_compressor_includes_list_arguments_in_context(self):
         compressor = ToolOutputCompressor(enabled=True)
-        fake_mcp = mock.Mock()
-        fake_mcp.compress.side_effect = RuntimeError("boom")
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = mock.Mock(
+            compressed="short", strategy_used=mock.Mock(value="text")
+        )
 
-        with mock.patch.object(compressor, "_get_mcp_compressor", return_value=fake_mcp):
-            result = compressor.compress(
-                content="z" * 5000,
-                tool_name="some-mcp-tool",
-                tool_args=None,
-                limit=1000,
-                is_mcp=True,
-            )
-
-        self.assertIsNone(result)
-
-    def test_tool_output_compressor_includes_list_arguments_in_query(self):
-        compressor = ToolOutputCompressor(enabled=True)
-        fake_result = mock.Mock(compressed="short")
-        fake_crusher = mock.Mock()
-        fake_crusher.crush.return_value = fake_result
-
-        with mock.patch.object(compressor, "_get_crusher", return_value=fake_crusher):
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
             compressor.compress(
                 content="z" * 5000,
                 tool_name="batch_web_search",
@@ -846,9 +1185,9 @@ class RefactorServicesTests(unittest.TestCase):
                 limit=1000,
             )
 
-        query = fake_crusher.crush.call_args.kwargs["query"]
-        self.assertIn("first query", query)
-        self.assertIn("second query", query)
+        context = fake_router.compress.call_args.kwargs["context"]
+        self.assertIn("first query", context)
+        self.assertIn("second query", context)
 
     def test_tool_output_reducer_preserves_all_search_sections(self):
         compressor = ToolOutputCompressor(enabled=False)
@@ -896,15 +1235,90 @@ class RefactorServicesTests(unittest.TestCase):
         marker_length = len(f"\n... [OMITTED {omitted} chars] ...\n")
         self.assertEqual(len(content) - (1000 - marker_length), omitted)
 
-    def test_tool_output_compressor_falls_back_when_crush_grows_content(self):
+    def test_tool_output_reducer_keeps_error_envelope_detectable(self):
+        compressor = ToolOutputCompressor(enabled=False)
+        error_head = "ERROR[EXECUTION]: Command failed with Exit Code 1.\nOutput:\n"
+        payloads = {
+            "cli_exec": error_head + ("stderr noise line\n" * 900),
+            "batch_web_search": error_head
+            + "".join(f"Query: q{index}\n" + ("y" * 300) + "\n" for index in range(10)),
+            "read_file": error_head + ("payload line\n" * 900),
+        }
+
+        for tool_name, content in payloads.items():
+            reduced = compressor.reduce_to_limit(content=content, tool_name=tool_name, limit=4000)
+            self.assertFalse(
+                parse_tool_execution_result(reduced).ok,
+                msg=f"{tool_name}: reduction hid the ERROR envelope",
+            )
+
+    def test_tool_executor_keeps_error_status_for_oversized_shell_failure(self):
+        executor = ToolExecutor(
+            config=self._make_config(MAX_TOOL_OUTPUT=1000),
+            metadata_for_tool=lambda name: ToolMetadata(name=name, mutating=True),
+            log_run_event=lambda *_args, **_kwargs: None,
+            workspace_boundary_violated=lambda *_args, **_kwargs: False,
+        )
+
+        outcome = executor.handle_result(
+            state={"run_id": "run"},
+            current_turn_id=1,
+            tool_name="cli_exec",
+            tool_args={"command": "npm install"},
+            tool_call_id="call-shell-error",
+            content="ERROR[EXECUTION]: Command failed with Exit Code 1.\nOutput:\n"
+            + ("stderr noise line\n" * 400),
+            apply_validation=False,
+        )
+
+        self.assertTrue(outcome.had_error)
+        self.assertFalse(outcome.parsed_result.ok)
+        self.assertEqual("EXECUTION", outcome.parsed_result.error_type)
+        self.assertEqual("error", outcome.tool_message.status)
+        self.assertIsNotNone(outcome.issue)
+
+    def test_tool_executor_forwards_latest_user_query_to_compressor(self):
+        executor = ToolExecutor(
+            config=self._make_config(ENABLE_HEADROOM_COMPRESSION=True, MAX_TOOL_OUTPUT=1000),
+            metadata_for_tool=lambda name: ToolMetadata(name=name, read_only=True),
+            log_run_event=lambda *_args, **_kwargs: None,
+            workspace_boundary_violated=lambda *_args, **_kwargs: False,
+        )
+
+        with mock.patch.object(
+            executor._output_compressor, "compress", return_value=None
+        ) as compress_spy:
+            executor.handle_result(
+                state={
+                    "run_id": "run",
+                    "messages": [
+                        HumanMessage(content="first question"),
+                        AIMessage(content="answer"),
+                        HumanMessage(content="why does the build fail"),
+                    ],
+                },
+                current_turn_id=1,
+                tool_name="cli_exec",
+                tool_args={"command": "make"},
+                tool_call_id="call-query",
+                content="x" * 5000,
+                apply_validation=False,
+            )
+
+        self.assertEqual(
+            "why does the build fail", compress_spy.call_args.kwargs["user_query"]
+        )
+
+    def test_tool_output_compressor_falls_back_when_compression_grows_content(self):
         compressor = ToolOutputCompressor(enabled=True)
 
         fake_result = mock.Mock()
         fake_result.compressed = "z" * 6000  # larger than original
-        fake_crusher = mock.Mock()
-        fake_crusher.crush.return_value = fake_result
+        fake_result.strategy_used = mock.Mock(value="text")
+        fake_router = mock.Mock()
+        fake_router.compress.return_value = fake_result
 
-        with mock.patch.object(compressor, "_get_crusher", return_value=fake_crusher):
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
             result = compressor.compress(
                 content="z" * 5000,
                 tool_name="cli_exec",
@@ -914,13 +1328,13 @@ class RefactorServicesTests(unittest.TestCase):
 
         self.assertIsNone(result)
 
-    def test_tool_output_compressor_survives_crush_exception(self):
+    def test_tool_output_compressor_survives_compression_exception(self):
         compressor = ToolOutputCompressor(enabled=True)
 
-        fake_crusher = mock.Mock()
-        fake_crusher.crush.side_effect = RuntimeError("boom")
+        fake_router = mock.Mock()
+        fake_router.compress.side_effect = RuntimeError("boom")
 
-        with mock.patch.object(compressor, "_get_crusher", return_value=fake_crusher):
+        with mock.patch.object(compressor, "_get_router", return_value=fake_router):
             result = compressor.compress(
                 content="z" * 5000,
                 tool_name="cli_exec",

@@ -246,6 +246,7 @@ def _suppress_library_logs(root_level: int) -> None:
         "langgraph",
         "langchain_mcp_adapters",
         "mcp",
+        "headroom",
         "pydantic",
         "jsonschema",
         "chromadb",

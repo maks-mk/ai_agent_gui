@@ -3,12 +3,12 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, Callable, Dict
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import HumanMessage, ToolMessage
 
 from core.config import AgentConfig
 from core.errors import ErrorType, format_error
 from core.fast_copy import copy_jsonish
-from core.message_utils import compact_text, is_error_text
+from core.message_utils import compact_text, is_error_text, stringify_content
 from core.policy_engine import classify_shell_command
 from core.self_correction_engine import repair_fingerprint
 from core.tool_issues import build_tool_issue, enrich_tool_issue_details, merge_tool_issues
@@ -64,6 +64,17 @@ class ToolExecutor:
             payload["retryable"] = True
         return payload
 
+    @staticmethod
+    def _latest_user_query(state: Dict[str, Any] | None) -> str:
+        """Latest human turn, used by headroom for relevance-aware compression."""
+        if not state:
+            return ""
+        messages = state.get("messages") or []
+        for message in reversed(messages):
+            if isinstance(message, HumanMessage):
+                return compact_text(stringify_content(message.content), 2000)
+        return ""
+
     def merge_issues(self, issues: list[Dict[str, Any]], *, current_turn_id: int) -> Dict[str, Any] | None:
         return merge_tool_issues(issues, current_turn_id=current_turn_id)
 
@@ -104,6 +115,7 @@ class ToolExecutor:
             tool_args=tool_args if isinstance(tool_args, dict) else None,
             limit=limit,
             is_mcp=is_mcp,
+            user_query=self._latest_user_query(state),
         )
         content = self._output_compressor.reduce_to_limit(
             content=compressed if compressed is not None else content,

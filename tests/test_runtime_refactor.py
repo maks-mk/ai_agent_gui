@@ -1474,11 +1474,10 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("extra_body", captured)
         self.assertNotIn("reasoning_effort", captured)
 
-    def test_create_llm_for_conservative_registry_entries_skips_reasoning_kwargs(self):
+    def test_create_llm_for_modelscope_reasoning_model_uses_registry_reasoning_effort(self):
         for base_url in (
             "https://api-inference.modelscope.ai/v1",
             "https://api-inference.modelscope.cn/v1",
-            "http://localhost:3002/v1",
         ):
             with self.subTest(base_url=base_url):
                 captured = {}
@@ -1494,13 +1493,35 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
                             OPENAI_API_KEY="sk-test",
                             OPENAI_MODEL="openai/gpt-oss-120b",
                             OPENAI_BASE_URL=base_url,
-                            MODEL_REASONING_EFFORT="high",
+                            MODEL_REASONING_EFFORT="xhigh",
                         )
                     )
 
                 self.assertNotIn("reasoning", captured)
                 self.assertNotIn("extra_body", captured)
-                self.assertNotIn("reasoning_effort", captured)
+                self.assertEqual(captured["reasoning_effort"], "high")
+
+    def test_create_llm_for_base_url_without_registry_entry_skips_reasoning_kwargs(self):
+        captured = {}
+
+        class FakeChatOpenAI:
+            def __init__(self, **kwargs):
+                captured.update(kwargs)
+
+        with mock.patch.dict(sys.modules, {"langchain_openai": mock.Mock(ChatOpenAI=FakeChatOpenAI)}):
+            create_llm(
+                self._make_config(
+                    PROVIDER="openai",
+                    OPENAI_API_KEY="sk-test",
+                    OPENAI_MODEL="openai/gpt-oss-120b",
+                    OPENAI_BASE_URL="http://localhost:3002/v1",
+                    MODEL_REASONING_EFFORT="high",
+                )
+            )
+
+        self.assertNotIn("reasoning", captured)
+        self.assertNotIn("extra_body", captured)
+        self.assertNotIn("reasoning_effort", captured)
 
     def test_create_llm_for_reasoning_effort_none_skips_reasoning_kwargs(self):
         captured = {}
