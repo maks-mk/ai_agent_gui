@@ -126,6 +126,14 @@ class StreamAndFilesystemTests(unittest.TestCase):
             ({"usageMetadata": {"cachedContentTokenCount": 105}}, 105),
             ({"usage": {"cached_prompt_text_tokens": 106}}, 106),
             ({"input_token_details": {"cache_read": 107}}, 107),
+            (
+                {
+                    "input_tokens": 9000,
+                    "input_token_details": {"priority_cache_read": 109, "priority": 8891},
+                },
+                109,
+            ),
+            ({"input_token_details": {"flex_cache_read": 110}}, 110),
             ({"provider": {"details": {"cached_tokens": 108}}}, 108),
         )
 
@@ -700,6 +708,134 @@ class StreamAndFilesystemTests(unittest.TestCase):
 
         self.assertEqual([event.payload["tokens"] for event in events if event.type == "cache_hit"], [8192, 4096])
         self.assertEqual(processor.tracker.total_cache_hit, 12_288)
+
+    def test_stream_processor_does_not_double_count_usage_with_removal_messages(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        usage = {
+            "input_tokens": 9000,
+            "output_tokens": 10,
+            "total_tokens": 9010,
+            "input_token_details": {"cache_read": 8192},
+        }
+        message = AIMessage(content="done", id="cache-message-removals", usage_metadata=usage)
+
+        processor._handle_messages((message, {"langgraph_node": "agent"}))
+        processor._handle_updates(
+            {
+                "agent": {
+                    "messages": [RemoveMessage(id="internal-retry-prompt"), message],
+                    "token_usage": usage,
+                }
+            }
+        )
+
+        self.assertEqual([event.payload["tokens"] for event in events if event.type == "cache_hit"], [8192])
+        self.assertEqual(processor.tracker.total_cache_hit, 8192)
+        self.assertEqual(processor.tracker.total_input, 9000)
+        self.assertEqual(processor.tracker.total_output, 10)
+
+    def test_stream_processor_sums_usage_reported_as_streamed_deltas(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        # langchain-google-genai converts Gemini's already-accumulated counts into
+        # per-chunk deltas, so streamed usage has to be added up, not maximised.
+        deltas = [
+            {
+                "input_tokens": 1000,
+                "output_tokens": 10,
+                "total_tokens": 1010,
+                "input_token_details": {"cache_read": 800},
+            },
+            {
+                "input_tokens": 0,
+                "output_tokens": 30,
+                "total_tokens": 30,
+                "input_token_details": {"cache_read": 0},
+            },
+            {
+                "input_tokens": 0,
+                "output_tokens": 50,
+                "total_tokens": 50,
+                "input_token_details": {"cache_read": 0},
+            },
+        ]
+        chunks = [
+            AIMessageChunk(content=f"part{index} ", id="delta-usage-message", usage_metadata=usage)
+            for index, usage in enumerate(deltas)
+        ]
+        aggregated = chunks[0] + chunks[1] + chunks[2]
+
+        for chunk in chunks:
+            processor._handle_messages((chunk, {"langgraph_node": "summarize"}))
+
+        self.assertEqual(processor.tracker.total_input, aggregated.usage_metadata["input_tokens"])
+        self.assertEqual(processor.tracker.total_output, aggregated.usage_metadata["output_tokens"])
+        self.assertEqual(processor.tracker.total_cache_hit, 800)
+        self.assertEqual([event.payload["tokens"] for event in events if event.type == "cache_hit"], [800])
+
+    def test_stream_processor_does_not_double_count_delta_usage_with_node_update(self):
+        events = []
+        processor = StreamProcessor(events.append)
+        cumulative = {
+            "input_tokens": 1000,
+            "output_tokens": 90,
+            "total_tokens": 1090,
+            "input_token_details": {"cache_read": 800},
+        }
+        deltas = [
+            {
+                "input_tokens": 1000,
+                "output_tokens": 40,
+                "total_tokens": 1040,
+                "input_token_details": {"cache_read": 800},
+            },
+            {
+                "input_tokens": 0,
+                "output_tokens": 50,
+                "total_tokens": 50,
+                "input_token_details": {"cache_read": 0},
+            },
+        ]
+        for index, usage in enumerate(deltas):
+            processor._handle_messages(
+                (
+                    AIMessageChunk(content=f"part{index} ", id="delta-update-message", usage_metadata=usage),
+                    {"langgraph_node": "agent"},
+                )
+            )
+        processor._handle_updates(
+            {
+                "agent": {
+                    "messages": [AIMessage(content="part0 part1 ", id="delta-update-message")],
+                    "token_usage": cumulative,
+                }
+            }
+        )
+
+        self.assertEqual(processor.tracker.total_input, 1000)
+        self.assertEqual(processor.tracker.total_output, 90)
+        self.assertEqual(processor.tracker.total_cache_hit, 800)
+        self.assertEqual([event.payload["tokens"] for event in events if event.type == "cache_hit"], [800])
+
+    def test_stream_processor_applies_negative_input_token_delta_compensation(self):
+        processor = StreamProcessor()
+        # Gemini 2.0 lowers the cumulative prompt count in the final chunk, which
+        # langchain-google-genai forwards as a negative input-token delta.
+        deltas = [
+            {"input_tokens": 1200, "output_tokens": 10, "total_tokens": 1210},
+            {"input_tokens": -200, "output_tokens": 80, "total_tokens": 80},
+        ]
+        for index, usage in enumerate(deltas):
+            processor._handle_messages(
+                (
+                    AIMessageChunk(content=f"part{index} ", id="compensated-message", usage_metadata=usage),
+                    {"langgraph_node": "agent"},
+                )
+            )
+
+        self.assertEqual(processor.tracker.total_input, 1000)
+        self.assertEqual(processor.tracker.total_output, 90)
 
     def test_stream_processor_uses_total_tokens_when_output_is_zero(self):
         processor = StreamProcessor()

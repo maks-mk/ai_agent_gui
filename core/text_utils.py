@@ -56,8 +56,12 @@ _CACHE_HIT_EXACT_PATHS = (
     ("cache_read_input_tokens",),
     ("cachedContentTokenCount",),
     ("cached_prompt_text_tokens",),
-    ("input_token_details", "cache_read"),
 )
+# LangChain reports cache reads in ``usage_metadata["input_token_details"]``, where
+# the key carries a service-tier prefix for non-default tiers (OpenAI's "priority"
+# and "flex" tiers yield ``priority_cache_read`` / ``flex_cache_read``).
+_CACHE_HIT_DETAIL_PATHS = (("input_token_details",),)
+_CACHE_HIT_DETAIL_KEY = "cache_read"
 _CACHE_HIT_FALLBACK_NAMES = frozenset(
     {
         "cached_tokens",
@@ -90,19 +94,46 @@ def _mapping_value(value: Any, key: str) -> tuple[bool, Any]:
         return (False, None)
 
 
+def _resolve_path(payload: Any, path: tuple[str, ...]) -> tuple[bool, Any]:
+    current = payload
+    for key in path:
+        found, current = _mapping_value(current, key)
+        if not found:
+            return (False, None)
+    return (True, current)
+
+
+def _cache_hit_from_details(details: Any) -> int | None:
+    found, value = _mapping_value(details, _CACHE_HIT_DETAIL_KEY)
+    if found:
+        reported = _reported_token_count(value)
+        if reported is not None:
+            return reported
+    if not isinstance(details, dict):
+        return None
+    for key, value in details.items():
+        if isinstance(key, str) and key.endswith(f"_{_CACHE_HIT_DETAIL_KEY}"):
+            reported = _reported_token_count(value)
+            if reported is not None:
+                return reported
+    return None
+
+
 def extract_cache_hit_tokens(payload: Any) -> int | None:
     if payload is None:
         return None
 
     for path in _CACHE_HIT_EXACT_PATHS:
-        current = payload
-        found = True
-        for key in path:
-            found, current = _mapping_value(current, key)
-            if not found:
-                break
+        found, current = _resolve_path(payload, path)
         if found:
             reported = _reported_token_count(current)
+            if reported is not None:
+                return reported
+
+    for path in _CACHE_HIT_DETAIL_PATHS:
+        found, current = _resolve_path(payload, path)
+        if found:
+            reported = _cache_hit_from_details(current)
             if reported is not None:
                 return reported
 
@@ -814,6 +845,11 @@ class TokenTracker:
                 self._streaming_len = chunk_len
 
         msg_id = getattr(msg, "id", None)
+        # Streamed chunks report additive usage: LangChain merges them with
+        # ``add_usage``, so providers that send already-accumulated counts (Gemini)
+        # publish a per-chunk delta. Complete messages and node updates instead
+        # report the cumulative usage of the whole response.
+        is_delta = isinstance(msg, AIMessageChunk)
         usage_candidates = (
             getattr(msg, "usage_metadata", None),
             getattr(msg, "response_metadata", None),
@@ -826,9 +862,14 @@ class TokenTracker:
                     usage,
                     msg_id=msg_id,
                     source="message",
+                    accumulate=is_delta,
                 )
                 if reported_cache_hit is not None:
                     return delta
+                if is_delta and any(self._usage_token_counts(usage, allow_negative=True)):
+                    # A chunk publishes its usage once; adding a second candidate
+                    # of the same chunk would inflate the totals.
+                    return 0
         return 0
 
     def update_from_node_update(self, update: Dict) -> int:
@@ -850,7 +891,16 @@ class TokenTracker:
                 for m in node_messages
                 if str(getattr(m, "id", "")).strip()
             ]
-            primary_msg_id = msg_ids[0] if msg_ids else None
+            # ``token_usage`` always belongs to the AI response a node appends last.
+            # Keying it by an unrelated leading message (e.g. a RemoveMessage emitted
+            # for internal-retry cleanup) creates a second key for usage already
+            # tracked from the streamed chunks, double-counting cache hits and tokens.
+            ai_msg_ids = [
+                str(getattr(m, "id", "")).strip()
+                for m in node_messages
+                if isinstance(m, (AIMessage, AIMessageChunk)) and str(getattr(m, "id", "")).strip()
+            ]
+            primary_msg_id = ai_msg_ids[-1] if ai_msg_ids else (msg_ids[0] if msg_ids else None)
 
             usage = node_payload.get("token_usage")
             if isinstance(usage, dict) and usage:
@@ -862,15 +912,15 @@ class TokenTracker:
         return cache_hit_delta
 
     @staticmethod
-    def _coerce_token_int(value: Any) -> int:
+    def _coerce_token_int(value: Any, *, allow_negative: bool = False) -> int:
         try:
             coerced = int(value)
         except (TypeError, ValueError):
             return 0
-        return max(0, coerced)
+        return coerced if allow_negative else max(0, coerced)
 
     @classmethod
-    def _extract_output_tokens(cls, usage: Dict[str, Any]) -> int:
+    def _extract_output_tokens(cls, usage: Dict[str, Any], *, allow_negative: bool = False) -> int:
         for key in (
             "output_tokens",
             "completion_tokens",
@@ -879,11 +929,17 @@ class TokenTracker:
             "candidates_token_count",
         ):
             if key in usage and usage.get(key) is not None:
-                return cls._coerce_token_int(usage.get(key))
+                return cls._coerce_token_int(usage.get(key), allow_negative=allow_negative)
         return 0
 
     @classmethod
-    def _extract_input_tokens(cls, usage: Dict[str, Any], output_tokens: int) -> int:
+    def _extract_input_tokens(
+        cls,
+        usage: Dict[str, Any],
+        output_tokens: int,
+        *,
+        allow_negative: bool = False,
+    ) -> int:
         for key in (
             "input_tokens",
             "prompt_tokens",
@@ -891,18 +947,34 @@ class TokenTracker:
             "input_token_count",
         ):
             if key in usage and usage.get(key) is not None:
-                return cls._coerce_token_int(usage.get(key))
+                return cls._coerce_token_int(usage.get(key), allow_negative=allow_negative)
         total_tokens = cls._coerce_token_int(usage.get("total_tokens"))
         if total_tokens > 0:
             return max(0, total_tokens - output_tokens)
         return 0
 
-    def _apply_metadata(self, usage: Dict[str, Any], msg_id: str | None = None, source: str = "") -> int:
+    @classmethod
+    def _usage_token_counts(
+        cls,
+        usage: Dict[str, Any],
+        *,
+        allow_negative: bool = False,
+    ) -> tuple[int, int]:
+        out_t = cls._extract_output_tokens(usage, allow_negative=allow_negative)
+        in_t = cls._extract_input_tokens(usage, out_t, allow_negative=allow_negative)
+        return in_t, out_t
+
+    def _apply_metadata(
+        self,
+        usage: Dict[str, Any],
+        msg_id: str | None = None,
+        source: str = "",
+        accumulate: bool = False,
+    ) -> int:
         if not isinstance(usage, dict) or not usage:
             return 0
 
-        out_t = self._extract_output_tokens(usage)
-        in_t = self._extract_input_tokens(usage, out_t)
+        in_t, out_t = self._usage_token_counts(usage, allow_negative=accumulate)
         reported_cache_hit = extract_cache_hit_tokens(usage)
         cache_hit = reported_cache_hit if reported_cache_hit is not None else 0
 
@@ -914,9 +986,16 @@ class TokenTracker:
             msg_key = f"_unkeyed_step_{self._unkeyed_step_index}"
 
         existing_in, existing_out, existing_cache_hit = self._step_usage.get(msg_key, (0, 0, 0))
-        new_in = max(existing_in, in_t)
-        new_out = max(existing_out, out_t)
-        new_cache_hit = max(existing_cache_hit, cache_hit)
+        if accumulate:
+            # A negative delta compensates an earlier over-reported chunk count
+            # (Gemini 2.0 lowers the cumulative prompt count in the final chunk).
+            new_in = max(0, existing_in + in_t)
+            new_out = max(0, existing_out + out_t)
+            new_cache_hit = existing_cache_hit + cache_hit
+        else:
+            new_in = max(existing_in, in_t)
+            new_out = max(existing_out, out_t)
+            new_cache_hit = max(existing_cache_hit, cache_hit)
         self._step_usage[msg_key] = (new_in, new_out, new_cache_hit)
         self._active_step_has_data = True
         return new_cache_hit - existing_cache_hit

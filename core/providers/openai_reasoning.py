@@ -39,6 +39,7 @@ from core.reasoning_debug import (
     now,
     preview_value,
 )
+from core.text_utils import extract_cache_hit_tokens
 
 logger = logging.getLogger("agent")
 reasoning_logger = logging.getLogger("agent.reasoning_debug")
@@ -166,6 +167,27 @@ def extract_openai_reasoning_delta(chunk: Any) -> Any:
 
 
 # ---------------------------------------------------------------------------
+# Cache-hit normalization
+# ---------------------------------------------------------------------------
+
+
+def extract_openai_stream_cache_read_tokens(chunk: Any) -> int | None:
+    """Extract cache-hit tokens from a raw chat-completions stream chunk.
+
+    ``langchain_openai`` maps only ``usage.prompt_tokens_details.cached_tokens``
+    into ``usage_metadata``, so OpenAI-compatible providers that report cache
+    hits through other usage fields (for example DeepSeek's
+    ``usage.prompt_cache_hit_tokens``) would lose the count while streaming.
+    """
+    if not isinstance(chunk, dict):
+        return None
+    usage = chunk.get("usage")
+    if not isinstance(usage, dict) or not usage:
+        return None
+    return extract_cache_hit_tokens(usage)
+
+
+# ---------------------------------------------------------------------------
 # Reasoning-debug chat model
 # ---------------------------------------------------------------------------
 
@@ -220,6 +242,29 @@ def _build_reasoning_debug_chat_openai(base_cls: type) -> type:
         def _attach_raw_reasoning_delta(self, generation_chunk: Any, chunk: Any) -> None:
             reasoning_delta = extract_openai_reasoning_delta(chunk)
             self._attach_reasoning_content(generation_chunk, reasoning_delta)
+
+        def _convert_chunk_to_generation_chunk(self, chunk: Any, *args: Any, **kwargs: Any):
+            generation_chunk = super()._convert_chunk_to_generation_chunk(chunk, *args, **kwargs)
+            self._attach_provider_cache_read_tokens(generation_chunk, chunk)
+            return generation_chunk
+
+        @staticmethod
+        def _attach_provider_cache_read_tokens(generation_chunk: Any, chunk: Any) -> None:
+            """Report non-OpenAI cache-hit usage fields as standard ``cache_read``."""
+            message = getattr(generation_chunk, "message", None)
+            usage_metadata = getattr(message, "usage_metadata", None)
+            if not isinstance(usage_metadata, dict) or not usage_metadata:
+                return
+            details = usage_metadata.get("input_token_details")
+            details = dict(details) if isinstance(details, dict) else {}
+            # ``cache_read`` is prefixed with the service tier for priority/flex requests.
+            if any(str(key).endswith("cache_read") for key in details):
+                return
+            cache_read = extract_openai_stream_cache_read_tokens(chunk)
+            if cache_read is None:
+                return
+            details["cache_read"] = cache_read
+            message.usage_metadata = {**usage_metadata, "input_token_details": details}
 
         @staticmethod
         def _attach_reasoning_content(generation_chunk: Any, reasoning_delta: Any) -> None:

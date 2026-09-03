@@ -383,7 +383,7 @@ class CrawlSiteInput(BaseModel):
     )
 
 
-def _format_tavily_error(exc: Exception) -> str:
+def _classify_tavily_error(exc: Exception) -> str:
     msg = str(exc)
     lower = msg.lower()
 
@@ -408,6 +408,14 @@ def _format_tavily_error(exc: Exception) -> str:
     if "limit" in lower or "quota" in lower:
         return format_error(ErrorType.LIMIT_EXCEEDED, f"Usage limit reached: {msg}")
     return format_error(ErrorType.NETWORK, f"Tavily request failed: {msg}")
+
+
+def _format_tavily_error(exc: Exception) -> str:
+    formatted = _classify_tavily_error(exc)
+    # Failed Tavily calls are otherwise only visible in the tool result, which makes
+    # transient upstream rejections (403, timeouts) impossible to diagnose afterwards.
+    logger.warning("Tavily request failed (%s): %s", type(exc).__name__, formatted)
+    return formatted
 
 
 @_RUNTIME.with_cache(ttl=600)

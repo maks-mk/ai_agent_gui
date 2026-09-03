@@ -46,6 +46,7 @@ from core.providers.openai_reasoning import (
     _safe_openai_model_dump,
     create_openai_chat_model,
 )
+from core.text_utils import extract_cache_hit_tokens
 
 
 class ProviderPackageExportsTests(unittest.TestCase):
@@ -598,6 +599,77 @@ class LlmApiModeTests(unittest.TestCase):
         model = create_openai_chat_model(cfg)
         payload = model._get_request_payload([{"role": "user", "content": "hi"}])
         self.assertTrue(model._use_responses_api(payload))
+
+
+class OpenAIStreamCacheHitTests(unittest.TestCase):
+    """Streamed chunks must expose provider cache-hit tokens as ``cache_read``."""
+
+    def setUp(self):
+        from langchain_openai import ChatOpenAI as BaseChatOpenAI
+
+        adapter_cls = _build_reasoning_debug_chat_openai(BaseChatOpenAI)
+        self.model = adapter_cls(model="deepseek-chat", api_key="sk-test", base_url="https://api.deepseek.com/v1")
+
+    def _convert_usage_chunk(self, usage: dict) -> dict:
+        from langchain_core.messages import AIMessageChunk
+
+        generation_chunk = self.model._convert_chunk_to_generation_chunk(
+            {"id": "chatcmpl-1", "model": "deepseek-chat", "choices": [], "usage": usage},
+            AIMessageChunk,
+            None,
+        )
+        return dict(generation_chunk.message.usage_metadata or {})
+
+    def test_deepseek_cache_hit_tokens_are_reported_as_cache_read(self):
+        usage_metadata = self._convert_usage_chunk(
+            {
+                "prompt_tokens": 5000,
+                "completion_tokens": 7,
+                "total_tokens": 5007,
+                "prompt_cache_hit_tokens": 4608,
+                "prompt_cache_miss_tokens": 392,
+            }
+        )
+
+        self.assertEqual(usage_metadata["input_token_details"], {"cache_read": 4608})
+        self.assertEqual(extract_cache_hit_tokens(usage_metadata), 4608)
+        self.assertEqual(usage_metadata["input_tokens"], 5000)
+
+    def test_openai_cached_tokens_are_reported_once(self):
+        usage_metadata = self._convert_usage_chunk(
+            {
+                "prompt_tokens": 9000,
+                "completion_tokens": 10,
+                "total_tokens": 9010,
+                "prompt_tokens_details": {"cached_tokens": 8192},
+            }
+        )
+
+        self.assertEqual(usage_metadata["input_token_details"], {"cache_read": 8192})
+        self.assertEqual(extract_cache_hit_tokens(usage_metadata), 8192)
+
+    def test_usage_without_cache_fields_reports_no_cache_read(self):
+        usage_metadata = self._convert_usage_chunk(
+            {"prompt_tokens": 900, "completion_tokens": 10, "total_tokens": 910}
+        )
+
+        self.assertEqual(usage_metadata["input_token_details"], {})
+        self.assertIsNone(extract_cache_hit_tokens(usage_metadata))
+
+    def test_content_chunk_without_usage_is_untouched(self):
+        from langchain_core.messages import AIMessageChunk
+
+        generation_chunk = self.model._convert_chunk_to_generation_chunk(
+            {
+                "id": "chatcmpl-1",
+                "choices": [{"index": 0, "delta": {"role": "assistant", "content": "Hi"}, "finish_reason": None}],
+            },
+            AIMessageChunk,
+            None,
+        )
+
+        self.assertEqual(generation_chunk.message.content, "Hi")
+        self.assertIsNone(generation_chunk.message.usage_metadata)
 
 
 class AnthropicCompatibleStreamTests(unittest.TestCase):

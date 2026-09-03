@@ -16,7 +16,7 @@ from core.safety_policy import SafetyPolicy
 from core.validation import validate_tool_result
 from tools import process_tools
 from tools.process_tools import run_background_process
-from tools.search_tools import _RUNTIME, _parse_urls_input, crawl_site, fetch_content
+from tools.search_tools import _RUNTIME, _format_tavily_error, _parse_urls_input, crawl_site, fetch_content
 from tools.tool_registry import ToolRegistry
 from ui.runtime_payloads import build_tools_snapshot
 from tools.user_input_tool import request_user_input
@@ -619,6 +619,19 @@ class ToolingRefactorTests(unittest.IsolatedAsyncioTestCase):
                 "https://example.com/docs",
             ],
         )
+
+    def test_tavily_error_formatter_logs_a_warning(self):
+        from tavily import errors as tavily_errors
+
+        forbidden = tavily_errors.ForbiddenError("403 Forbidden for https://example.com")
+
+        with self.assertLogs("tools.search_tools", level="WARNING") as captured:
+            formatted = _format_tavily_error(forbidden)
+
+        self.assertIn("ACCESS_DENIED", formatted)
+        self.assertEqual(len(captured.records), 1)
+        self.assertIn("ForbiddenError", captured.output[0])
+        self.assertIn("403 Forbidden for https://example.com", captured.output[0])
 
     def test_run_background_process_schema_uses_array_command_for_gemini_compatibility(self):
         schema = run_background_process.get_input_schema().model_json_schema()
