@@ -2,6 +2,8 @@ import asyncio
 import shutil
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest import mock
 
 from core.api_key_rotation import (
     ApiKeyRotationExhaustedError,
@@ -392,6 +394,193 @@ class ApiKeyRotationTests(unittest.TestCase):
             asyncio.run(model.ainvoke("hello"))
 
         self.assertEqual(calls, ["sk-1", "sk-2"])
+
+    def _rotation_model(self, profile_path: Path, outcomes: dict[str, list[object]], calls: list[str]):
+        def factory(config, *, api_key_override=None):
+            _ = config
+            return _FakeModel(str(api_key_override or ""), outcomes, calls)
+
+        return RotatingChatModel(
+            config=self._config(profile_path),
+            profile_id="gpt-4o",
+            profile_store_path=profile_path,
+            llm_factory=factory,
+        )
+
+    def test_rotating_model_emits_rotation_event_only_before_next_attempt(self):
+        profile_path = self._tmpdir / "config.json"
+        self._store(profile_path)
+        calls: list[str] = []
+        outcomes = {
+            "sk-1": [_FakeProviderError("429 Too Many Requests", status_code=429)],
+            "sk-2": ["success-from-sk-2"],
+        }
+        model = self._rotation_model(profile_path, outcomes, calls)
+
+        with mock.patch("core.api_key_rotation.get_stream_writer") as writer_factory:
+            asyncio.run(model.ainvoke("hello"))
+
+        self.assertEqual(calls, ["sk-1", "sk-2"])
+        writer = writer_factory.return_value
+        self.assertEqual(writer.call_count, 1)
+        event = writer.call_args.args[0]
+        self.assertEqual(event["type"], "api_key_rotated")
+        self.assertEqual(event["error_kind"], "rate_limit")
+        self.assertEqual(event["from_index"], 0)
+        self.assertEqual(event["to_index"], 1)
+
+    def test_rotating_model_skips_rotation_event_for_single_key_pool(self):
+        profile_path = self._tmpdir / "config.json"
+        store = ModelProfileStore(profile_path)
+        store.save(
+            {
+                "active_profile": "gpt-4o",
+                "profiles": [
+                    {
+                        "id": "gpt-4o",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "api_keys": ["sk-1"],
+                        "api_key_index": 0,
+                        "api_key": "sk-1",
+                        "base_url": "",
+                    }
+                ],
+            }
+        )
+        calls: list[str] = []
+        outcomes = {
+            "sk-1": [_FakeProviderError("429 Too Many Requests", status_code=429)],
+        }
+        model = self._rotation_model(profile_path, outcomes, calls)
+
+        with mock.patch("core.api_key_rotation.get_stream_writer") as writer:
+            with self.assertRaises(ApiKeyRotationExhaustedError):
+                asyncio.run(model.ainvoke("hello"))
+
+        self.assertEqual(calls, ["sk-1"])
+        writer.assert_not_called()
+
+    def test_rotating_model_skips_rotation_event_on_last_key_of_pool(self):
+        profile_path = self._tmpdir / "config.json"
+        store = ModelProfileStore(profile_path)
+        store.save(
+            {
+                "active_profile": "gpt-4o",
+                "profiles": [
+                    {
+                        "id": "gpt-4o",
+                        "provider": "openai",
+                        "model": "gpt-4o",
+                        "api_keys": ["sk-1", "sk-2"],
+                        "api_key_index": 0,
+                        "api_key": "sk-1",
+                        "base_url": "",
+                    }
+                ],
+            }
+        )
+        calls: list[str] = []
+        outcomes = {
+            "sk-1": [_FakeProviderError("429 Too Many Requests", status_code=429)],
+            "sk-2": [_FakeProviderError("Quota exceeded", status_code=429)],
+        }
+        model = self._rotation_model(profile_path, outcomes, calls)
+
+        with mock.patch("core.api_key_rotation.get_stream_writer") as writer_factory:
+            with self.assertRaises(ApiKeyRotationExhaustedError):
+                asyncio.run(model.ainvoke("hello"))
+
+        self.assertEqual(calls, ["sk-1", "sk-2"])
+        # Only the sk-1 -> sk-2 switch announces a retry; the final sk-2
+        # failure goes straight to run_failed via the exhausted error.
+        writer = writer_factory.return_value
+        self.assertEqual(writer.call_count, 1)
+        self.assertEqual(writer.call_args.args[0]["from_index"], 0)
+        self.assertEqual(writer.call_args.args[0]["to_index"], 1)
+
+    def test_rotating_model_survives_missing_stream_writer_context(self):
+        profile_path = self._tmpdir / "config.json"
+        self._store(profile_path)
+        calls: list[str] = []
+        outcomes = {
+            "sk-1": [_FakeProviderError("429 Too Many Requests", status_code=429)],
+            "sk-2": ["success-from-sk-2"],
+        }
+        model = self._rotation_model(profile_path, outcomes, calls)
+
+        # Direct unit invocations run outside any LangGraph streaming context.
+        response = asyncio.run(model.ainvoke("hello"))
+
+        self.assertEqual(response.content, "success-from-sk-2")
+        self.assertEqual(calls, ["sk-1", "sk-2"])
+
+    def test_bind_tools_descendants_share_model_cache_per_key_and_tools(self):
+        profile_path = self._tmpdir / "config.json"
+        self._store(profile_path)
+        calls: list[str] = []
+        outcomes: dict[str, list[object]] = {}
+        created: list[_FakeModel] = []
+
+        def factory(config, *, api_key_override=None):
+            _ = config
+            model = _FakeModel(str(api_key_override or ""), outcomes, calls)
+            created.append(model)
+            return model
+
+        root = RotatingChatModel(
+            config=self._config(profile_path),
+            profile_id="gpt-4o",
+            profile_store_path=profile_path,
+            llm_factory=factory,
+        )
+        tool_a = SimpleNamespace(name="read_file")
+        tool_b = SimpleNamespace(name="write_file")
+        bound_a = root.bind_tools([tool_a])
+        bound_ab = root.bind_tools([tool_a, tool_b])
+
+        asyncio.run(bound_a.ainvoke("hello"))
+        asyncio.run(bound_ab.ainvoke("hello"))
+        asyncio.run(bound_a.ainvoke("hello"))
+
+        # One provider model per (api_key, tools) pair, shared between the
+        # root and its bind_tools() descendants.
+        sk1_models = [m for m in created if m.api_key == "sk-1"]
+        self.assertEqual(len(sk1_models), 2)
+        self.assertIs(root._model_cache[bound_a._model_cache_key("sk-1")], sk1_models[0])
+        self.assertIs(root._model_cache[bound_ab._model_cache_key("sk-1")], sk1_models[1])
+        self.assertIs(bound_a._model_cache, root._model_cache)
+        self.assertIs(bound_ab._model_cache, root._model_cache)
+
+    def test_bind_tools_descendant_cache_key_includes_tool_names(self):
+        profile_path = self._tmpdir / "config.json"
+        self._store(profile_path)
+        calls: list[str] = []
+        outcomes: dict[str, list[object]] = {}
+
+        def factory(config, *, api_key_override=None):
+            _ = config
+            return _FakeModel(str(api_key_override or ""), outcomes, calls)
+
+        root = RotatingChatModel(
+            config=self._config(profile_path),
+            profile_id="gpt-4o",
+            profile_store_path=profile_path,
+            llm_factory=factory,
+        )
+        tool_a = SimpleNamespace(name="read_file")
+        openai_tool = {"type": "function", "function": {"name": "search_web"}}
+
+        bound_a = root.bind_tools([tool_a])
+        bound_openai = root.bind_tools([openai_tool])
+
+        self.assertNotEqual(
+            bound_a._model_cache_key("sk-1"),
+            bound_openai._model_cache_key("sk-1"),
+        )
+        self.assertIn("read_file", bound_a._model_cache_key("sk-1"))
+        self.assertIn("search_web", bound_openai._model_cache_key("sk-1"))
+        self.assertEqual(root._model_cache_key("sk-1"), "sk-1")
 
 
 if __name__ == "__main__":

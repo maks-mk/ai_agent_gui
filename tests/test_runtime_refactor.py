@@ -22,6 +22,7 @@ from agent import _register_llm_cleanup_callback, create_agent_workflow, create_
 from core.api_key_rotation import ApiKeyRotationExhaustedError, RotatingChatModel, describe_provider_error
 from core.checkpointing import create_checkpoint_runtime
 from core.config import AgentConfig
+from core.constants import REFLECTION_PROMPT
 from core.multimodal import (
     extract_model_capabilities,
     materialize_user_message_content_for_model,
@@ -33,7 +34,15 @@ from core.nodes import AgentNodes
 from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, SessionStore
 from core.state import AgentState
-from core.summarize_policy import format_history_for_summary, should_summarize
+from core.summarize_policy import (
+    choose_summary_boundary,
+    estimate_summary_tokens,
+    format_history_for_summary,
+    should_summarize,
+    summary_progress_ratio,
+    summary_trigger_tokens,
+    truncate_summary_to_token_budget,
+)
 from core.tool_policy import ToolMetadata
 from core.turn_outcomes import (
     TURN_OUTCOME_CONTINUE_AGENT,
@@ -2909,6 +2918,109 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
             )
         )
 
+    def test_truncate_summary_to_token_budget_keeps_leading_memory_items(self):
+        summary = "\n".join(f"- fact {index}: keep the audit going with detail {index}" for index in range(40))
+
+        truncated = truncate_summary_to_token_budget(summary, 120)
+
+        self.assertLessEqual(estimate_summary_tokens(truncated), 120)
+        self.assertTrue(truncated.startswith("- fact 0:"))
+        self.assertTrue(truncated.endswith("... [memory truncated]"))
+        self.assertNotIn("- fact 39:", truncated)
+
+    def test_truncate_summary_to_token_budget_keeps_memory_within_budget(self):
+        summary = "- single oversized memory item: " + "деталь конфигурации " * 400
+
+        truncated = truncate_summary_to_token_budget(summary, 120)
+
+        self.assertLessEqual(estimate_summary_tokens(truncated), 120)
+        self.assertIn("single oversized memory item", truncated)
+        self.assertTrue(truncated.endswith("... [memory truncated]"))
+
+    def test_truncate_summary_to_token_budget_keeps_memory_within_budget_unchanged(self):
+        summary = "- short memory"
+
+        self.assertEqual(truncate_summary_to_token_budget(summary, 120), summary)
+        self.assertEqual(truncate_summary_to_token_budget(summary, 0), summary)
+
+    def test_summary_progress_ratio_excludes_fixed_overhead(self):
+        trigger = summary_trigger_tokens(8000, has_summary=True)
+        baseline = 5000
+
+        just_compacted = summary_progress_ratio(
+            baseline + 400,
+            threshold=8000,
+            baseline_tokens=baseline,
+            has_summary=True,
+        )
+        at_trigger = summary_progress_ratio(
+            trigger,
+            threshold=8000,
+            baseline_tokens=baseline,
+            has_summary=True,
+        )
+
+        self.assertGreater(trigger, 8000)
+        self.assertLess(just_compacted, 0.2)
+        self.assertEqual(at_trigger, 1.0)
+        self.assertEqual(summary_progress_ratio(1000, threshold=0), 0.0)
+        self.assertEqual(
+            summary_progress_ratio(1000, threshold=100, baseline_tokens=10_000),
+            1.0,
+        )
+
+    def test_choose_summary_boundary_never_splits_tool_call_and_result(self):
+        messages = [
+            HumanMessage(content="Проверь конфиг"),
+            AIMessage(content="Читаю файл", tool_calls=[{"id": "tc-1", "name": "read_file", "args": {}}]),
+            ToolMessage(tool_call_id="tc-1", name="read_file", content="ok"),
+            AIMessage(content="Правлю файл", tool_calls=[{"id": "tc-2", "name": "edit_file", "args": {}}]),
+            ToolMessage(tool_call_id="tc-2", name="edit_file", content="ok"),
+            AIMessage(content="Готово"),
+        ]
+
+        self.assertEqual(choose_summary_boundary(messages, keep_last=4), 0)
+
+    def test_choose_summary_boundary_keeps_at_least_keep_last_messages(self):
+        messages = [
+            HumanMessage(content="Первая задача"),
+            AIMessage(content="Ответ по первой задаче"),
+            HumanMessage(content="Вторая задача"),
+            AIMessage(content="Шаг 1"),
+            AIMessage(content="Шаг 2"),
+            AIMessage(content="Шаг 3"),
+            HumanMessage(content="продолжай"),
+        ]
+
+        boundary = choose_summary_boundary(messages, keep_last=4)
+
+        self.assertEqual(boundary, 2)
+        self.assertEqual(messages[boundary].content, "Вторая задача")
+
+    def test_choose_summary_boundary_escalates_when_retained_history_exceeds_threshold(self):
+        messages = [
+            HumanMessage(content="Первая задача"),
+            AIMessage(content="Ответ по первой задаче"),
+            HumanMessage(content="Вторая задача"),
+            AIMessage(content="деталь " * 4000),
+            AIMessage(content="ещё деталь " * 4000),
+            HumanMessage(content="продолжай"),
+        ]
+
+        self.assertEqual(choose_summary_boundary(messages, keep_last=4), 2)
+        self.assertEqual(choose_summary_boundary(messages, keep_last=4, threshold=200), 5)
+
+    def test_choose_summary_boundary_ignores_internal_retry_hint(self):
+        messages = [
+            HumanMessage(content="Проверь конфиг"),
+            AIMessage(content="Читаю файл", tool_calls=[{"id": "tc-1", "name": "read_file", "args": {}}]),
+            ToolMessage(tool_call_id="tc-1", name="read_file", content="ERROR[EXECUTION]: fail"),
+            HumanMessage(content=REFLECTION_PROMPT),
+            AIMessage(content="Повторяю"),
+        ]
+
+        self.assertEqual(choose_summary_boundary(messages, keep_last=2), 0)
+
     def test_format_history_for_summary_keeps_tool_call_names_and_args(self):
         rendered = format_history_for_summary(
             [
@@ -3016,6 +3128,36 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(store.get_session(second.session_id))
         self.assertEqual(store.get_last_active_session().session_id, first.session_id)
         self.assertEqual(SessionStore(tmp / "session.json").load_active_session().session_id, first.session_id)
+
+    def test_session_store_delete_project_removes_every_chat_of_that_project(self):
+        tmp = self._workspace_tempdir()
+        store = SessionStore(tmp / "session.json")
+        kept = store.new_session("sqlite", "demo.sqlite", project_path=tmp / "project-a", title="Kept")
+        first = store.new_session("sqlite", "demo.sqlite", project_path=tmp / "project-b", title="First")
+        second = store.new_session("sqlite", "demo.sqlite", project_path=tmp / "project-b", title="Second")
+        store.save_active_session(kept, touch=False, set_active=True)
+        store.save_active_session(first, touch=False, set_active=True)
+        store.save_active_session(second, touch=False, set_active=True)
+
+        deleted = store.delete_project(tmp / "project-b")
+
+        self.assertCountEqual(deleted, [first.session_id, second.session_id])
+        self.assertEqual([entry.session_id for entry in store.list_sessions()], [kept.session_id])
+        self.assertEqual(store.list_sessions(tmp / "project-b"), [])
+        self.assertIsNone(store.get_active_session_for_project(tmp / "project-b"))
+        self.assertEqual(store.get_last_active_session().session_id, kept.session_id)
+        self.assertEqual(SessionStore(tmp / "session.json").load_active_session().session_id, kept.session_id)
+
+    def test_session_store_delete_project_ignores_unknown_and_empty_project(self):
+        tmp = self._workspace_tempdir()
+        store = SessionStore(tmp / "session.json")
+        kept = store.new_session("sqlite", "demo.sqlite", project_path=tmp / "project-a", title="Kept")
+        store.save_active_session(kept, touch=False, set_active=True)
+
+        self.assertEqual(store.delete_project(tmp / "project-missing"), [])
+        self.assertEqual(store.delete_project(""), [])
+        self.assertEqual(store.delete_project(None), [])
+        self.assertEqual([entry.session_id for entry in store.list_sessions()], [kept.session_id])
 
     def test_session_store_migrates_legacy_session_into_index(self):
         tmp = self._workspace_tempdir()
@@ -3179,7 +3321,11 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         payload = progress_events[0].payload
         self.assertGreater(payload["estimated_tokens"], 3000)
         self.assertNotEqual(payload["estimated_tokens"], payload["reserved_tokens"])
-        self.assertLess(payload["remaining_tokens"], 37000)
+        self.assertLess(payload["estimated_tokens"], 37000)
+        self.assertEqual(
+            payload["remaining_tokens"],
+            payload["trigger_tokens"] - payload["estimated_tokens"],
+        )
         self.assertEqual(payload["message_count"], 2)
         self.assertTrue(payload["has_summary"])
         self.assertTrue(payload["live"])
@@ -4105,6 +4251,107 @@ class RuntimeRefactorTests(unittest.IsolatedAsyncioTestCase):
         response = result["messages"][-1]
         self.assertIsInstance(response, AIMessage)
         self.assertIn("The model returned an empty response", str(response.content))
+
+    async def test_worker_delete_project_removes_all_project_chats_and_switches_session(self):
+        tmp = self._workspace_tempdir()
+        session_path = tmp / "session.json"
+        store = SessionStore(session_path)
+        project_a = tmp / "project-a"
+        project_b = tmp / "project-b"
+        project_a.mkdir()
+        project_b.mkdir()
+        kept = store.new_session("sqlite", "demo.sqlite", project_path=project_a, title="Kept")
+        first = store.new_session("sqlite", "demo.sqlite", project_path=project_b, title="First")
+        second = store.new_session("sqlite", "demo.sqlite", project_path=project_b, title="Second")
+        store.save_active_session(kept, touch=False, set_active=True)
+        store.save_active_session(first, touch=False, set_active=True)
+        store.save_active_session(second, touch=False, set_active=True)
+
+        worker = gui_runtime.AgentRunWorker()
+        events = []
+        worker.event_emitted.connect(events.append)
+        worker.store = store
+        worker.config = self._make_config(SESSION_STATE_PATH=session_path)
+        worker.current_session = second
+        worker.tool_registry = type(
+            "ToolRegistryStub",
+            (),
+            {
+                "checkpoint_info": {"resolved_backend": "sqlite", "target": "demo.sqlite"},
+                "tools": [],
+                "tool_metadata": {},
+                "mcp_server_status": [],
+                "get_runtime_status_lines": lambda self: [],
+                "sync_working_directory": lambda self, _path: None,
+            },
+        )()
+        worker.agent_app = type(
+            "FakeApp",
+            (),
+            {"get_state": lambda self, _config: type("State", (), {"values": {}})()},
+        )()
+
+        with (
+            mock.patch.object(gui_runtime, "repair_session_if_needed", new=mock.AsyncMock(return_value=[])),
+            mock.patch.object(gui_runtime.Path, "cwd", return_value=project_b),
+            mock.patch.object(gui_runtime.os, "chdir"),
+        ):
+            await worker._delete_project_async(str(project_b))
+
+        reopened = SessionStore(session_path)
+        self.assertEqual([entry.session_id for entry in reopened.list_sessions()], [kept.session_id])
+        self.assertEqual(worker.current_session.session_id, kept.session_id)
+        notices = [
+            (event.payload or {}).get("message")
+            for event in events
+            if getattr(event, "type", "") == "summary_notice" and (event.payload or {}).get("kind") == "project_delete"
+        ]
+        self.assertEqual(notices, ["Deleted 2 chats of the project from history."])
+
+    async def test_worker_delete_project_keeps_active_session_from_other_project(self):
+        tmp = self._workspace_tempdir()
+        session_path = tmp / "session.json"
+        store = SessionStore(session_path)
+        project_a = tmp / "project-a"
+        project_b = tmp / "project-b"
+        project_a.mkdir()
+        project_b.mkdir()
+        active = store.new_session("sqlite", "demo.sqlite", project_path=project_a, title="Active")
+        other = store.new_session("sqlite", "demo.sqlite", project_path=project_b, title="Other")
+        store.save_active_session(other, touch=False, set_active=True)
+        store.save_active_session(active, touch=False, set_active=True)
+
+        worker = gui_runtime.AgentRunWorker()
+        events = []
+        worker.event_emitted.connect(events.append)
+        worker.store = store
+        worker.config = self._make_config(SESSION_STATE_PATH=session_path)
+        worker.current_session = active
+        worker.tool_registry = type(
+            "ToolRegistryStub",
+            (),
+            {
+                "checkpoint_info": {"resolved_backend": "sqlite", "target": "demo.sqlite"},
+                "tools": [],
+                "tool_metadata": {},
+                "mcp_server_status": [],
+                "get_runtime_status_lines": lambda self: [],
+                "sync_working_directory": lambda self, _path: None,
+            },
+        )()
+        worker.agent_app = type(
+            "FakeApp",
+            (),
+            {"get_state": lambda self, _config: type("State", (), {"values": {}})()},
+        )()
+
+        with mock.patch.object(gui_runtime.os, "chdir") as chdir_mock:
+            await worker._delete_project_async(str(project_b))
+
+        self.assertEqual(worker.current_session.session_id, active.session_id)
+        chdir_mock.assert_not_called()
+        self.assertIsNone(SessionStore(session_path).get_session(other.session_id))
+        self.assertFalse(any(getattr(event, "type", "") == "chat_reset" for event in events))
 
     async def test_worker_delete_active_session_switches_to_fallback_session(self):
         tmp = self._workspace_tempdir()

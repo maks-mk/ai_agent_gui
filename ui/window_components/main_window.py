@@ -233,6 +233,7 @@ class MainWindow(QMainWindow):
         self.info_button.clicked.connect(lambda _checked=False: self.info_action.trigger())
         self.sidebar.session_activated.connect(self._switch_session)
         self.sidebar.session_delete_requested.connect(self._request_delete_session)
+        self.sidebar.project_delete_requested.connect(self._request_delete_project)
         self.tools_panel.availability_changed.connect(self._handle_tool_availability_changed)
 
         self.send_button.clicked.connect(self._submit_request)
@@ -1135,6 +1136,9 @@ class MainWindow(QMainWindow):
 
     def _request_delete_session(self, session_id: str) -> None:
         self._sidebar_controller.request_delete_session(session_id)
+
+    def _request_delete_project(self, project_path: str) -> None:
+        self._sidebar_controller.request_delete_project(project_path)
 
     def _new_session(self) -> None:
         self._sidebar_controller.new_session()

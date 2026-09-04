@@ -64,6 +64,25 @@ class SidebarController:
         self.window._show_transient_status_message("Deleting chat from history…")
         self.window.controller.delete_session(session_id)
 
+    def request_delete_project(self, project_path: str) -> None:
+        if not project_path or self.window.is_busy or self.window.awaiting_approval or self.window.awaiting_user_choice:
+            return
+        title = self.window.sidebar.title_for_project(project_path) or "this project"
+        count = self.window.sidebar.session_count_for_project(project_path)
+        chats = "chat" if count == 1 else "chats"
+        message = f"Delete all {count} {chats} of “{title}” from chat history?"
+        answer = QMessageBox.question(
+            self.window,
+            "Delete project",
+            message,
+            QMessageBox.Yes | QMessageBox.No,
+            QMessageBox.No,
+        )
+        if answer != QMessageBox.Yes:
+            return
+        self.window._show_transient_status_message("Deleting project from history…")
+        self.window.controller.delete_project(project_path)
+
     def new_session(self) -> None:
         if self.window.is_busy or self.window.awaiting_user_choice:
             QMessageBox.information(self.window, "Busy", "Wait for the current run to finish before starting a new session.")

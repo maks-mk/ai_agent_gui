@@ -311,6 +311,61 @@ class StreamAndFilesystemTests(unittest.TestCase):
         self.assertEqual(statuses[-1]["label"], "Reconnecting... 1/3")
         self.assertEqual(statuses[-1]["node"], "agent")
 
+    def test_stream_processor_restarts_assistant_section_on_api_key_rotation(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._handle_messages(
+            (AIMessage(content="Частичный ответ упавшего ключа."), {"langgraph_node": "agent"})
+        )
+        self.assertEqual(processor.full_text, "Частичный ответ упавшего ключа.")
+
+        processor._handle_custom(
+            {
+                "type": "api_key_rotated",
+                "error_kind": "rate_limit",
+                "from_index": 0,
+                "to_index": 1,
+            }
+        )
+
+        notices = [event.payload for event in events if event.type == "summary_notice"]
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["kind"], "api_key_rotated")
+        self.assertEqual(notices[0]["level"], "warning")
+        self.assertIn("rate_limit", notices[0]["message"])
+
+        boundaries = [event for event in events if event.type == "assistant_boundary"]
+        self.assertEqual(len(boundaries), 1)
+        self.assertEqual(processor.full_text, "")
+        self.assertEqual(processor._previous_assistant_section_text, "")
+
+        # The next key regenerates the answer from scratch; its opening may
+        # repeat the aborted partial text and must not be stripped as a replay.
+        processor._handle_messages(
+            (AIMessage(content="Частичный ответ упавшего ключа. Полный ответ нового ключа."), {"langgraph_node": "agent"})
+        )
+        self.assertEqual(
+            processor.full_text,
+            "Частичный ответ упавшего ключа. Полный ответ нового ключа.",
+        )
+
+    def test_stream_processor_ignores_malformed_api_key_rotation_payload(self):
+        events = []
+        processor = StreamProcessor(events.append)
+
+        processor._handle_messages(
+            (AIMessage(content="Частичный ответ."), {"langgraph_node": "agent"})
+        )
+
+        processor._handle_custom({"type": "api_key_rotated"})
+
+        notices = [event.payload for event in events if event.type == "summary_notice"]
+        self.assertEqual(len(notices), 1)
+        self.assertEqual(notices[0]["kind"], "api_key_rotated")
+        self.assertEqual(processor.full_text, "")
+        self.assertEqual(processor._previous_assistant_section_text, "")
+
     def test_stream_processor_tool_preview_does_not_claim_execution_started(self):
         events = []
         processor = StreamProcessor(events.append)

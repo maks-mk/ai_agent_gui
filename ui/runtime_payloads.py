@@ -19,7 +19,13 @@ from core.session_store import (
     SessionStore,
     normalize_project_path,
 )
-from core.summarize_policy import estimate_context_tokens, estimate_summary_tokens, should_summarize
+from core.summarize_policy import (
+    estimate_context_tokens,
+    estimate_summary_tokens,
+    should_summarize,
+    summary_progress_ratio,
+    summary_trigger_tokens,
+)
 from core.text_utils import build_mcp_tool_ui_labels, build_tool_ui_labels, format_tool_output, prepare_markdown_for_render
 from core.tool_args import canonicalize_tool_args
 from core.tool_policy import ToolMetadata
@@ -259,8 +265,14 @@ def build_summary_progress_payload(config: AgentConfig, state_values: dict[str, 
     summary_tokens = estimate_summary_tokens(summary_text)
     effective_reserved_tokens = reserved_tokens + summary_tokens
     estimated_tokens = estimate_context_tokens(messages, reserved_tokens=effective_reserved_tokens)
-    progress = (estimated_tokens / threshold) if threshold else 0.0
     has_summary = bool(summary_text)
+    trigger_tokens = summary_trigger_tokens(threshold, has_summary=has_summary)
+    progress = summary_progress_ratio(
+        estimated_tokens,
+        threshold=threshold,
+        baseline_tokens=effective_reserved_tokens,
+        has_summary=has_summary,
+    )
     keep_last = _safe_int(getattr(config, "summary_keep_last", 0), 0)
     will_summarize = should_summarize(
         messages,
@@ -272,11 +284,12 @@ def build_summary_progress_payload(config: AgentConfig, state_values: dict[str, 
     return {
         "estimated_tokens": estimated_tokens,
         "threshold": threshold,
-        "remaining_tokens": max(0, threshold - estimated_tokens),
+        "trigger_tokens": trigger_tokens,
+        "remaining_tokens": max(0, trigger_tokens - estimated_tokens),
         "reserved_tokens": reserved_tokens if messages else 0,
         "summary_tokens": summary_tokens,
         "provider_input_tokens": _provider_input_tokens(values.get("token_usage")),
-        "progress": max(0.0, min(1.0, progress)),
+        "progress": progress,
         "message_count": len(messages),
         "has_summary": has_summary,
         "will_summarize": will_summarize,
@@ -300,6 +313,7 @@ def build_help_markdown() -> str:
         "- Open **Tools** to inspect read-only, protected, and MCP capabilities.\n"
         "- Open **Session** to review provider, backend, session, and MCP runtime state.\n"
         "- Right-click a chat in the sidebar to delete it from history.\n"
+        "- Right-click a project in the sidebar to delete all of its chats from history.\n"
         "- Use **New Session** to reset the active session and clear session-scoped approvals.\n"
         "- Approval dialogs support **Approve**, **Deny**, and **Always for this session**.\n"
     )

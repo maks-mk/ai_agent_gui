@@ -185,6 +185,7 @@ class SummaryProgressRing(QWidget):
         self._progress = 0.0
         self._estimated_tokens = 0
         self._threshold = 0
+        self._trigger_tokens = 0
         self._remaining_tokens = 0
         self._reserved_tokens = 0
         self._summary_tokens = 0
@@ -204,13 +205,15 @@ class SummaryProgressRing(QWidget):
         data = payload if isinstance(payload, dict) else {}
         threshold = max(0, int(data.get("threshold", 0) or 0))
         estimated = max(0, int(data.get("estimated_tokens", 0) or 0))
-        remaining = max(0, int(data.get("remaining_tokens", max(0, threshold - estimated)) or 0))
+        trigger = max(0, int(data.get("trigger_tokens", threshold) or 0))
+        remaining = max(0, int(data.get("remaining_tokens", max(0, trigger - estimated)) or 0))
         reserved = max(0, int(data.get("reserved_tokens", 0) or 0))
         summary_tokens = max(0, int(data.get("summary_tokens", 0) or 0))
         provider_input_tokens = max(0, int(data.get("provider_input_tokens", 0) or 0))
-        progress = float(data.get("progress", (estimated / threshold) if threshold else 0.0) or 0.0)
+        progress = float(data.get("progress", (estimated / trigger) if trigger else 0.0) or 0.0)
 
         self._threshold = threshold
+        self._trigger_tokens = trigger or threshold
         self._estimated_tokens = estimated
         self._remaining_tokens = remaining
         self._reserved_tokens = reserved
@@ -244,13 +247,14 @@ class SummaryProgressRing(QWidget):
         if self._will_summarize:
             return (
                 "Auto-summary is ready for the next agent step.\n"
-                f"Context estimate: {self._estimated_tokens:,} / {self._threshold:,} tokens."
+                f"Context estimate: {self._estimated_tokens:,} tokens; compaction at ~{self._trigger_tokens:,}."
                 f"{reserve_line}{summary_line}{provider_line}"
             )
         return (
-            f"Auto-summary: {self._remaining_tokens:,} estimated tokens left.\n"
-            f"Context estimate: {self._estimated_tokens:,} / {self._threshold:,} tokens.\n"
-            "A soft guard may delay compression until there is enough older context to summarize."
+            f"Auto-summary: ~{self._remaining_tokens:,} estimated tokens left.\n"
+            f"Context estimate: {self._estimated_tokens:,} tokens; compaction at ~{self._trigger_tokens:,}.\n"
+            "The ring tracks history that compaction can still remove, so reserved tokens and "
+            "compressed memory are excluded."
             f"{reserve_line}{summary_line}{provider_line}"
         )
 

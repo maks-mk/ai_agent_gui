@@ -155,6 +155,7 @@ class RunStatusController:
     def update_realtime_elapsed(self) -> None:
         if (
             self.window.current_turn is None
+            or not self.window.current_turn.has_status()
             or self.window._run_start_time is None
             or not self.window.is_busy
             or self.window._current_status_phase == "success"
@@ -177,6 +178,10 @@ class RunStatusController:
     def on_run_started(self, payload: dict) -> None:
         self.window._clear_user_choice_request()
         self.window._clear_approval_request()
+        if self.window.current_turn is not None:
+            # A finished turn must never keep a running status row: once the next turn
+            # becomes current, that row can no longer be reached and would spin forever.
+            self.window.current_turn.clear_status()
         self.window.current_turn = self.window.transcript.start_turn(
             payload.get("text", ""),
             attachments=list(payload.get("attachments", []) or []),
@@ -287,6 +292,17 @@ class RunStatusController:
     def set_status_visual(self, label: str, *, busy: bool = False, success: bool = False, error: bool = False) -> None:
         self.window._status_bar_manager.set_status_visual(label, busy=busy, success=success, error=error)
 
+    def _forget_finished_run_status(self) -> None:
+        """Drop the finished run's status so the next run cannot repaint a stale row.
+
+        ``busy_changed(True)`` arrives before ``run_started``, so the elapsed ticker would
+        otherwise restart with the previous label on the already finished turn.
+        """
+        self.window._run_start_time = None
+        self.window._current_status_label = ""
+        self.window._current_status_phase = "working"
+        self.window._last_rendered_elapsed_text = ""
+
     def handle_busy_changed(self, busy: bool) -> None:
         self.window.is_busy = busy
 
@@ -295,6 +311,7 @@ class RunStatusController:
             if self.window.current_turn is not None:
                 self.window.current_turn.clear_status()
                 self.window.transcript.notify_content_changed()
+            self._forget_finished_run_status()
         elif self.window.current_turn is not None and not self.window._realtime_timer.isActive():
             self.window._realtime_timer.start(100)
 

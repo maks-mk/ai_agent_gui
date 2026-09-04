@@ -7,6 +7,8 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 from urllib.parse import urlsplit
 
+from langgraph.config import get_stream_writer
+
 from core.logging_config import SensitiveDataFilter
 from core.model_profiles import ModelProfileStore
 
@@ -297,6 +299,7 @@ class RotatingChatModel:
         profile_store_path: str | Path,
         llm_factory: Callable[..., Any],
         bound_tools: Sequence[Any] | None = None,
+        model_cache: dict[str, Any] | None = None,
     ) -> None:
         self._config = config
         self._profile_id = str(profile_id or "").strip()
@@ -304,7 +307,10 @@ class RotatingChatModel:
         self._llm_factory = llm_factory
         self._bound_tools = list(bound_tools or [])
         self._logger = _setup_rotation_logger(config)
-        self._model_cache: dict[str, Any] = {}
+        # Share the model cache across bind_tools() descendants so per-turn
+        # tool-subset bindings reuse the same provider clients instead of
+        # leaking a fresh client pool per agent turn.
+        self._model_cache: dict[str, Any] = model_cache if model_cache is not None else {}
         self._prototype_model = self._build_model(self._initial_api_key())
 
     def __getattr__(self, name: str) -> Any:
@@ -317,6 +323,7 @@ class RotatingChatModel:
             profile_store_path=self._profile_store.path,
             llm_factory=self._llm_factory,
             bound_tools=list(tools),
+            model_cache=self._model_cache,
         )
 
     async def ainvoke(self, input: Any, **kwargs: Any) -> Any:
@@ -376,6 +383,12 @@ class RotatingChatModel:
 
                 # Advance the index in the store without marking the key as invalid.
                 self._profile_store.rotate_api_key(self._profile_id, active_key)
+                if offset + 1 < total:
+                    self._emit_api_key_rotated_event(
+                        error_kind=error_kind,
+                        from_index=current_index,
+                        to_index=next_index,
+                    )
 
         # Full circle completed — no key succeeded.
         model_label = self._model_label()
@@ -401,7 +414,7 @@ class RotatingChatModel:
         ) from last_error
 
     def _build_model(self, api_key: str) -> Any:
-        cache_key = str(api_key or "")
+        cache_key = self._model_cache_key(api_key)
         cached_model = self._model_cache.get(cache_key)
         if cached_model is not None:
             return cached_model
@@ -410,6 +423,51 @@ class RotatingChatModel:
             model = model.bind_tools(self._bound_tools)
         self._model_cache[cache_key] = model
         return model
+
+    def _model_cache_key(self, api_key: str) -> str:
+        # Bound tools change the model's behavior, so cache entries must be
+        # per (key, tools) pair even when the model cache is shared between
+        # bind_tools() descendants.
+        if not self._bound_tools:
+            return str(api_key or "")
+        tool_names = tuple(self._tool_cache_name(tool) for tool in self._bound_tools)
+        return f"{api_key or ''}::tools::{len(tool_names)}::{'|'.join(tool_names)}"
+
+    @staticmethod
+    def _tool_cache_name(tool: Any) -> str:
+        name = getattr(tool, "name", None)
+        if name is None and isinstance(tool, dict):
+            function = tool.get("function")
+            name = tool.get("name") or (function.get("name") if isinstance(function, dict) else None)
+        return str(name if name is not None else tool)
+
+    def _emit_api_key_rotated_event(
+        self,
+        *,
+        error_kind: str,
+        from_index: int,
+        to_index: int,
+    ) -> None:
+        """Notify the live stream that the assistant section restarts on a new key.
+
+        Tokens already streamed by the failed key belong to an aborted response;
+        the retry on the next key streams a fresh answer from scratch. Without
+        this signal the UI would concatenate the partial text with the full
+        replay from the next key.
+        """
+        try:
+            writer = get_stream_writer()
+        except RuntimeError:
+            # Direct unit invocations have no LangGraph streaming context.
+            return
+        writer(
+            {
+                "type": "api_key_rotated",
+                "error_kind": str(error_kind or ""),
+                "from_index": int(from_index),
+                "to_index": int(to_index),
+            }
+        )
 
     async def aclose(self) -> None:
         seen: set[int] = set()

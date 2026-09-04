@@ -6,7 +6,7 @@ from typing import Callable, List, Optional
 
 from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, SystemMessage, ToolMessage
 
-from core.message_utils import stringify_content
+from core.message_utils import is_user_turn_message, stringify_content
 
 
 IsInternalRetry = Callable[[BaseMessage], bool]
@@ -140,6 +140,41 @@ def estimate_summary_tokens(summary: str) -> int:
     return estimate_tokens([SystemMessage(content=f"<memory>\n{summary_text}\n</memory>")])
 
 
+_MEMORY_TRUNCATION_MARKER = "... [memory truncated]"
+
+
+def _hard_cut_summary(text: str, max_tokens: int) -> str:
+    """Shrink a single oversized memory item until it fits the budget."""
+    cut = str(text or "").strip()
+    while cut and estimate_summary_tokens(f"{cut} {_MEMORY_TRUNCATION_MARKER}") > max_tokens:
+        cut = cut[: int(len(cut) * 0.8)].rstrip()
+    return f"{cut} {_MEMORY_TRUNCATION_MARKER}" if cut else _MEMORY_TRUNCATION_MARKER
+
+
+def truncate_summary_to_token_budget(summary: str, max_tokens: int) -> str:
+    """Drop trailing memory items until the memory estimate fits ``max_tokens``.
+
+    Memory is written as importance-ordered bullets, so cutting from the end keeps the
+    active task, blockers, and next steps. Used as the deterministic guarantee behind the
+    model-driven memory fold, which can overshoot the requested size.
+    """
+    text = str(summary or "").strip()
+    budget = int(max_tokens or 0)
+    if not text or budget <= 0 or estimate_summary_tokens(text) <= budget:
+        return text
+
+    kept: List[str] = []
+    for line in (line for line in text.splitlines() if line.strip()):
+        candidate = "\n".join(kept + [line, _MEMORY_TRUNCATION_MARKER])
+        if estimate_summary_tokens(candidate) > budget:
+            break
+        kept.append(line)
+    if kept:
+        return "\n".join(kept + [_MEMORY_TRUNCATION_MARKER])
+    first_line = next((line for line in text.splitlines() if line.strip()), text)
+    return _hard_cut_summary(first_line, budget)
+
+
 def estimate_context_tokens(messages: List[BaseMessage], *, reserved_tokens: int = 0) -> int:
     """Estimate the model context budget used by message history plus fixed runtime overhead.
 
@@ -167,6 +202,38 @@ def _soft_summary_margin(threshold: int, *, has_summary: bool) -> int:
     return base
 
 
+def summary_trigger_tokens(threshold: int, *, has_summary: bool = False) -> int:
+    """Context estimate at which compaction is no longer delayed by the soft guards."""
+    threshold = int(threshold or 0)
+    if threshold <= 0:
+        return 0
+    return threshold + _soft_summary_margin(threshold, has_summary=has_summary)
+
+
+def summary_progress_ratio(
+    estimated_tokens: int,
+    *,
+    threshold: int,
+    baseline_tokens: int = 0,
+    has_summary: bool = False,
+) -> float:
+    """Share of the compactable context budget already used.
+
+    ``baseline_tokens`` (fixed reserve plus compressed memory) survives every compaction,
+    so it is excluded from both sides of the ratio: right after a compaction the indicator
+    reflects the retained history instead of staying pegged at the fixed overhead.
+    """
+    trigger = summary_trigger_tokens(threshold, has_summary=has_summary)
+    if trigger <= 0:
+        return 0.0
+    baseline = max(0, min(int(baseline_tokens or 0), trigger))
+    span = trigger - baseline
+    if span <= 0:
+        return 1.0
+    used = max(0, int(estimated_tokens or 0) - baseline)
+    return max(0.0, min(1.0, used / span))
+
+
 def should_summarize(
     messages: List[BaseMessage],
     *,
@@ -183,13 +250,18 @@ def should_summarize(
     if estimated <= threshold:
         return False
 
-    boundary = choose_summary_boundary(messages, keep_last=keep_last)
+    boundary = choose_summary_boundary(
+        messages,
+        keep_last=keep_last,
+        threshold=threshold,
+        reserved_tokens=reserved_tokens,
+    )
     summarizable = messages[:boundary]
     if not summarizable:
         return False
 
     summarizable_human_turns = sum(1 for message in summarizable if isinstance(message, HumanMessage))
-    soft_threshold = threshold + _soft_summary_margin(threshold, has_summary=has_summary)
+    soft_threshold = summary_trigger_tokens(threshold, has_summary=has_summary)
     min_summarizable_messages = max(6, int(keep_last or 0) + 2)
 
     if estimated < soft_threshold:
@@ -201,12 +273,44 @@ def should_summarize(
     return True
 
 
-def choose_summary_boundary(messages: List[BaseMessage], *, keep_last: int) -> int:
-    idx = max(0, len(messages) - int(keep_last or 0))
-    for scan_idx in range(idx, len(messages)):
-        if isinstance(messages[scan_idx], HumanMessage):
-            return scan_idx
-    return idx
+def choose_summary_boundary(
+    messages: List[BaseMessage],
+    *,
+    keep_last: int,
+    threshold: int = 0,
+    reserved_tokens: int = 0,
+) -> int:
+    """Pick the compaction cut: ``messages[:boundary]`` is summarized and removed.
+
+    Only real user turns are valid cut points, so the remaining history always starts
+    on a user message and never keeps a tool result whose tool call was removed.
+
+    Preference order:
+    1. the newest user turn that still keeps at least ``keep_last`` messages;
+    2. later user turns, when the retained history would still exceed ``threshold``;
+    3. ``0`` (no compaction) when no user turn can be cut — a growing context is safer
+       than a history that violates the provider tool-call contract.
+    """
+    boundaries = [index for index in range(1, len(messages)) if is_user_turn_message(messages[index])]
+    if not boundaries:
+        return 0
+
+    keep_from = max(0, len(messages) - max(0, int(keep_last or 0)))
+    within_keep_last = [index for index in boundaries if index <= keep_from]
+    candidates = (
+        [index for index in boundaries if index >= within_keep_last[-1]]
+        if within_keep_last
+        else boundaries
+    )
+
+    threshold = int(threshold or 0)
+    if threshold > 0:
+        for index in candidates:
+            retained_tokens = estimate_context_tokens(messages[index:], reserved_tokens=reserved_tokens)
+            if retained_tokens <= threshold:
+                return index
+        return candidates[-1]
+    return candidates[0]
 
 
 def _compact_for_summary(text: str, *, limit: int = 500) -> str:

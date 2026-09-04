@@ -390,6 +390,9 @@ class StreamProcessor:
     def _handle_custom(self, payload: Any) -> None:
         if not isinstance(payload, dict):
             return
+        if payload.get("type") == "api_key_rotated":
+            self._handle_api_key_rotated(payload)
+            return
         if payload.get("type") == "tool_batch_started":
             tool_calls = payload.get("tool_calls") or []
             if not isinstance(tool_calls, list):
@@ -428,6 +431,32 @@ class StreamProcessor:
         status_payload.setdefault("elapsed_text", self._status_elapsed_text())
         status_payload.setdefault("phase", self._status_phase())
         self._emit("status_changed", status_payload)
+
+    def _handle_api_key_rotated(self, payload: Dict[str, Any]) -> None:
+        """Restart the assistant section after an API-key rotation mid-run.
+
+        Tokens already streamed by the failed key belong to an aborted response.
+        The retry on the next key streams a fresh answer, so the partial text
+        must be closed as its own section instead of being concatenated with
+        the replayed response.
+        """
+        error_kind = str(payload.get("error_kind") or "").strip()
+        notice = "Provider key limit reached; switching to the next API key and retrying."
+        if error_kind:
+            notice = f"Provider key limit reached ({error_kind}); switching to the next API key and retrying."
+        self._emit(
+            "summary_notice",
+            {
+                "message": notice,
+                "kind": "api_key_rotated",
+                "level": "warning",
+            },
+        )
+        self._begin_assistant_stream_section()
+        # The next key regenerates the answer from scratch; its opening may
+        # legitimately match the aborted partial text, so the previous-section
+        # replay guard must not strip it.
+        self._previous_assistant_section_text = ""
 
     def _emit_cache_hit_delta(self, tokens: int) -> None:
         delta = max(0, int(tokens or 0))

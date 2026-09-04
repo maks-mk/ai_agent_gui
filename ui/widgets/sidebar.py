@@ -300,6 +300,15 @@ class SessionListModel(QAbstractListModel):
                 return str(item.get("title", "") or "")
         return ""
 
+    def project_title_for_path(self, project_path: str) -> str:
+        return _sidebar_project_name(str(project_path or ""))
+
+    def session_count_for_project(self, project_path: str) -> int:
+        project_key = str(project_path or "").strip()
+        if not project_key:
+            return 0
+        return sum(1 for row in self._source_sessions if str(row.get("project_path", "")).strip() == project_key)
+
     def has_source_sessions(self) -> bool:
         return bool(self._source_sessions)
 
@@ -395,6 +404,7 @@ class SessionItemDelegate(QStyledItemDelegate):
 class SessionSidebarWidget(QWidget):
     session_activated = Signal(str)
     session_delete_requested = Signal(str)
+    project_delete_requested = Signal(str)
 
     def __init__(self) -> None:
         super().__init__()
@@ -457,6 +467,12 @@ class SessionSidebarWidget(QWidget):
     def title_for_session(self, session_id: str) -> str:
         return self.model.title_for_session(session_id)
 
+    def title_for_project(self, project_path: str) -> str:
+        return self.model.project_title_for_path(project_path)
+
+    def session_count_for_project(self, project_path: str) -> int:
+        return self.model.session_count_for_project(project_path)
+
     def _refresh_empty_state(self) -> None:
         if self.model.session_row_count() > 0:
             self.empty_label.setVisible(False)
@@ -487,9 +503,13 @@ class SessionSidebarWidget(QWidget):
         index = self.list_view.indexAt(pos)
         if not index.isValid():
             return
-        if str(index.data(SessionListModel.KindRole) or "session") != "session":
-            return
+        item_kind = str(index.data(SessionListModel.KindRole) or "session")
+        if item_kind == "group":
+            self._show_project_context_menu(index, pos)
+        elif item_kind == "session":
+            self._show_session_context_menu(index, pos)
 
+    def _show_session_context_menu(self, index: QModelIndex, pos) -> None:
         session_id = self.model.session_id_at(index)
         if not session_id:
             return
@@ -499,3 +519,15 @@ class SessionSidebarWidget(QWidget):
         selected = menu.exec(self.list_view.viewport().mapToGlobal(pos))
         if selected is delete_action:
             self.session_delete_requested.emit(session_id)
+
+    def _show_project_context_menu(self, index: QModelIndex, pos) -> None:
+        project_path = str(index.data(SessionListModel.ProjectPathRole) or "").strip()
+        if not project_path:
+            return
+
+        count = self.model.session_count_for_project(project_path)
+        menu = QMenu(self.list_view)
+        delete_action = menu.addAction(f"Delete project ({count} {'chat' if count == 1 else 'chats'})")
+        selected = menu.exec(self.list_view.viewport().mapToGlobal(pos))
+        if selected is delete_action:
+            self.project_delete_requested.emit(project_path)

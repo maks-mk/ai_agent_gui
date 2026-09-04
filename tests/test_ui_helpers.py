@@ -100,21 +100,31 @@ class UiHelperTests(unittest.TestCase):
             {
                 "estimated_tokens": 6400,
                 "threshold": 8000,
-                "remaining_tokens": 1600,
+                "trigger_tokens": 10800,
+                "remaining_tokens": 4400,
                 "reserved_tokens": 3000,
                 "summary_tokens": 850,
                 "provider_input_tokens": 229094,
-                "progress": 0.8,
+                "progress": 0.4,
                 "will_summarize": False,
             }
         )
 
         self.assertTrue(ring.isVisible())
-        self.assertIn("1,600", ring.toolTip())
-        self.assertIn("6,400 / 8,000", ring.toolTip())
+        self.assertIn("4,400", ring.toolTip())
+        self.assertIn("6,400 tokens; compaction at ~10,800", ring.toolTip())
         self.assertIn("3,000 reserved", ring.toolTip())
         self.assertIn("850 estimated tokens from compressed memory", ring.toolTip())
         self.assertIn("229,094 provider-reported tokens", ring.toolTip())
+
+    def test_summary_progress_ring_falls_back_to_threshold_without_trigger(self):
+        ring = SummaryProgressRing()
+        self.addCleanup(ring.deleteLater)
+
+        ring.set_summary_progress({"estimated_tokens": 6400, "threshold": 8000})
+
+        self.assertIn("compaction at ~8,000", ring.toolTip())
+        self.assertIn("1,600", ring.toolTip())
 
     def test_tool_group_animates_expand_and_collapse(self):
         group = ToolGroupWidget()

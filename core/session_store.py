@@ -260,24 +260,44 @@ class SessionStore:
     def delete_session(self, session_id: str) -> bool:
         if not session_id:
             return False
+        return bool(self._delete_sessions({session_id}))
+
+    def delete_project(self, project_path: str | Path | None) -> list[str]:
+        """Remove every chat that belongs to one project. Returns the deleted session ids."""
+        if not str(project_path or "").strip():
+            return []
+
+        self._ensure_index_initialized()
+        project_key = normalize_project_path(project_path)
+        session_ids = {
+            snapshot.session_id
+            for snapshot in self._all_snapshots_from_index()
+            if normalize_project_path(snapshot.project_path) == project_key
+        }
+        return self._delete_sessions(session_ids)
+
+    def _delete_sessions(self, session_ids: set[str]) -> list[str]:
+        """Drop the given sessions from the index in one write and repair the active pointers."""
+        if not session_ids:
+            return []
 
         self._ensure_index_initialized()
         payload = self._load_index_payload()
         sessions = payload.get("sessions", [])
 
         remaining_raw: list[dict] = []
-        removed_any = False
+        removed_ids: list[str] = []
         for raw in sessions:
             snapshot = self._coerce_snapshot(raw)
             if snapshot is None:
                 continue
-            if snapshot.session_id == session_id:
-                removed_any = True
+            if snapshot.session_id in session_ids:
+                removed_ids.append(snapshot.session_id)
                 continue
             remaining_raw.append(asdict(snapshot))
 
-        if not removed_any:
-            return False
+        if not removed_ids:
+            return []
 
         payload["sessions"] = remaining_raw
         remaining_snapshots = [snapshot for snapshot in (self._coerce_snapshot(raw) for raw in remaining_raw) if snapshot is not None]
@@ -289,17 +309,17 @@ class SessionStore:
         active_map = {
             project: sid
             for project, sid in dict(payload.get("active_session_by_project", {})).items()
-            if str(sid) != session_id
+            if str(sid) not in session_ids
         }
         payload["active_session_by_project"] = active_map
 
-        if str(payload.get("last_active_session_id") or "") == session_id:
+        if str(payload.get("last_active_session_id") or "") in session_ids:
             payload["last_active_session_id"] = remaining_snapshots[0].session_id if remaining_snapshots else ""
 
         self._save_index_payload(payload)
 
         active_snapshot = self._load_active_session_file()
-        if active_snapshot is not None and active_snapshot.session_id == session_id:
+        if active_snapshot is not None and active_snapshot.session_id in session_ids:
             replacement = remaining_snapshots[0] if remaining_snapshots else None
             if replacement is not None:
                 self._write_json(self.path, asdict(replacement))
@@ -309,7 +329,7 @@ class SessionStore:
                 except Exception:
                     pass
 
-        return True
+        return removed_ids
 
     def new_session(
         self,

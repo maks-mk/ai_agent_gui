@@ -1,7 +1,9 @@
 import re
 from typing import Any
 
-from langchain_core.messages import ToolMessage
+from langchain_core.messages import BaseMessage, HumanMessage, ToolMessage
+
+from core.constants import REFLECTION_PROMPT
 
 
 _STRUCTURED_TOOL_ERROR_RE = re.compile(r"^\s*ERROR\[[A-Z_]+\]:", re.IGNORECASE)
@@ -61,3 +63,24 @@ def tool_message_status(message: ToolMessage) -> str:
 
 def is_tool_message_error(message: ToolMessage) -> bool:
     return tool_message_status(message) == _TOOL_MESSAGE_ERROR_STATUS
+
+
+def is_internal_retry_message(message: BaseMessage) -> bool:
+    """True for internal retry scaffolding injected by recovery, not a real user turn."""
+    if not isinstance(message, HumanMessage):
+        return False
+    metadata = getattr(message, "additional_kwargs", {}) or {}
+    internal = metadata.get("agent_internal")
+    return isinstance(internal, dict) and internal.get("kind") == "retry_instruction"
+
+
+def is_user_turn_message(message: BaseMessage) -> bool:
+    """True for a real user turn: a non-empty human message that is not internal scaffolding.
+
+    Internal retry hints are stripped from the outbound model context, so they never
+    qualify as a turn boundary.
+    """
+    if not isinstance(message, HumanMessage) or is_internal_retry_message(message):
+        return False
+    content = stringify_content(message.content).strip()
+    return bool(content) and content != REFLECTION_PROMPT

@@ -26,7 +26,7 @@ from core.multimodal import (
 )
 from core.run_logger import JsonlRunLogger
 from core.session_store import SessionSnapshot, SessionStore
-from core.summarize_policy import estimate_tokens
+from core.summarize_policy import estimate_tokens, summary_progress_ratio, summary_trigger_tokens
 from ui.runtime_payloads import (
     APPROVAL_MODE_ALWAYS,
     APPROVAL_MODE_PROMPT,
@@ -379,16 +379,26 @@ class AgentRunWorker(QObject):
             return {}
         threshold = max(0, int(getattr(self.config, "summary_threshold", 0) or 0))
         estimated = max(0, int(self._active_summary_estimated_tokens or 0))
+        reserved = max(0, int(self._active_summary_reserved_tokens or 0))
+        memory_tokens = max(0, int(self._active_summary_memory_tokens or 0))
+        has_summary = bool(self._active_summary_has_summary)
+        trigger = summary_trigger_tokens(threshold, has_summary=has_summary)
         return {
             "estimated_tokens": estimated,
             "threshold": threshold,
-            "remaining_tokens": max(0, threshold - estimated),
-            "reserved_tokens": max(0, int(self._active_summary_reserved_tokens or 0)),
-            "summary_tokens": max(0, int(self._active_summary_memory_tokens or 0)),
+            "trigger_tokens": trigger,
+            "remaining_tokens": max(0, trigger - estimated),
+            "reserved_tokens": reserved,
+            "summary_tokens": memory_tokens,
             "provider_input_tokens": max(0, int(self._active_provider_input_tokens or 0)),
-            "progress": max(0.0, min(1.0, (estimated / threshold) if threshold else 0.0)),
+            "progress": summary_progress_ratio(
+                estimated,
+                threshold=threshold,
+                baseline_tokens=reserved + memory_tokens,
+                has_summary=has_summary,
+            ),
             "message_count": max(0, int(self._active_summary_message_count or 0)),
-            "has_summary": bool(self._active_summary_has_summary),
+            "has_summary": has_summary,
             # Live updates are approximate; the full checkpoint payload decides readiness.
             "will_summarize": False,
             "live": True,
@@ -1020,6 +1030,55 @@ class AgentRunWorker(QObject):
         await self._emit_session_payload(include_transcript=True)
 
     @Slot(str)
+    def delete_project(self, project_path: str) -> None:
+        if not project_path or self._is_busy or self._awaiting_approval:
+            return
+        self._run(self._delete_project_async(project_path))
+
+    async def _delete_project_async(self, project_path: str) -> None:
+        if not self.store or not self.current_session:
+            return
+
+        deleted_ids = self.store.delete_project(project_path)
+        if not deleted_ids:
+            self.event_emitted.emit(
+                StreamEvent("summary_notice", {"message": "Project not found in chat history.", "kind": "project_delete"})
+            )
+            return
+
+        active_deleted = self.current_session.session_id in set(deleted_ids)
+        chats = "chat" if len(deleted_ids) == 1 else "chats"
+        self.event_emitted.emit(
+            StreamEvent(
+                "summary_notice",
+                {"message": f"Deleted {len(deleted_ids)} {chats} of the project from history.", "kind": "project_delete"},
+            )
+        )
+
+        if not active_deleted:
+            self.store.save_active_session(self.current_session, touch=False, set_active=True)
+            await self._emit_session_payload(include_transcript=False)
+            return
+
+        replacement = self.store.get_last_active_session()
+        if replacement is None or not self._project_path_is_valid(replacement.project_path):
+            fallback_project = self._current_project_path()
+            replacement = self._create_new_session_for_project(fallback_project, with_project_label=True)
+
+        self.current_session = self._activate_session_with_workdir_or_fallback(
+            replacement,
+            fallback_event_type="project_delete_fallback",
+            notice_message=(
+                "Could not open the next chat workspace. "
+                "Created a new chat in the current project."
+            ),
+        )
+
+        await self._repair_current_session_if_needed()
+        self.event_emitted.emit(StreamEvent("chat_reset", {}))
+        await self._emit_session_payload(include_transcript=True)
+
+    @Slot(str)
     def set_active_profile(self, profile_id: str) -> None:
         if self._is_busy or self._awaiting_approval:
             self.event_emitted.emit(
@@ -1182,6 +1241,7 @@ class AgentRuntimeController(QObject):
     _new_session_requested = Signal()
     _switch_session_requested = Signal(str)
     _delete_session_requested = Signal(str)
+    _delete_project_requested = Signal(str)
     _set_active_profile_requested = Signal(str)
     _save_profiles_requested = Signal(object)
     _apply_tool_availability_changes_requested = Signal(object)
@@ -1217,6 +1277,7 @@ class AgentRuntimeController(QObject):
         self._new_session_requested.connect(self._worker.new_session)
         self._switch_session_requested.connect(self._worker.switch_session)
         self._delete_session_requested.connect(self._worker.delete_session)
+        self._delete_project_requested.connect(self._worker.delete_project)
         self._set_active_profile_requested.connect(self._worker.set_active_profile)
         self._save_profiles_requested.connect(self._worker.save_profiles)
         self._apply_tool_availability_changes_requested.connect(self._worker.apply_tool_availability_changes)
@@ -1249,6 +1310,7 @@ class AgentRuntimeController(QObject):
             (self._new_session_requested, worker.new_session),
             (self._switch_session_requested, worker.switch_session),
             (self._delete_session_requested, worker.delete_session),
+            (self._delete_project_requested, worker.delete_project),
             (self._set_active_profile_requested, worker.set_active_profile),
             (self._save_profiles_requested, worker.save_profiles),
             (self._apply_tool_availability_changes_requested, worker.apply_tool_availability_changes),
@@ -1370,6 +1432,9 @@ class AgentRuntimeController(QObject):
 
     def delete_session(self, session_id: str) -> None:
         self._delete_session_requested.emit(session_id)
+
+    def delete_project(self, project_path: str) -> None:
+        self._delete_project_requested.emit(project_path)
 
     def set_active_profile(self, profile_id: str) -> None:
         self._set_active_profile_requested.emit(profile_id)

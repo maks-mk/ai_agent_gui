@@ -8,7 +8,7 @@ from unittest import mock
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 
-from PySide6.QtCore import QEvent, QMimeData, QModelIndex, QObject, Qt, QtMsgType, Signal
+from PySide6.QtCore import QEvent, QMimeData, QModelIndex, QObject, QPoint, Qt, QtMsgType, Signal
 from PySide6.QtGui import QIcon, QImage, QKeyEvent, QTextCursor, QTextFormat
 from PySide6.QtTest import QTest
 from PySide6.QtWidgets import QApplication, QCheckBox, QLabel, QFrame, QMessageBox, QPushButton, QSizePolicy, QToolBar, QToolButton, QWidget
@@ -91,6 +91,7 @@ class FakeController(QObject):
         self.new_session_calls = 0
         self.switch_session_calls: list[str] = []
         self.delete_session_calls: list[str] = []
+        self.delete_project_calls: list[str] = []
         self.set_active_profile_calls: list[str] = []
         self.save_profiles_calls: list[dict] = []
         self.reinitialize_calls: list[bool] = []
@@ -119,6 +120,9 @@ class FakeController(QObject):
 
     def delete_session(self, session_id: str):
         self.delete_session_calls.append(session_id)
+
+    def delete_project(self, project_path: str):
+        self.delete_project_calls.append(project_path)
 
     def set_active_profile(self, profile_id: str):
         self.set_active_profile_calls.append(profile_id)
@@ -1777,6 +1781,54 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(self.window.current_turn.status_widget.meta_label.text(), "1m 1s")
 
+    def test_stop_during_retries_does_not_leave_status_in_previous_turn(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_busy_changed(True)
+        self.window._handle_event(StreamEvent("run_started", {"text": "продолжай"}))
+        self.window._handle_event(
+            StreamEvent(
+                "status_changed",
+                {"label": "Retrying provider request... 3/3", "node": "agent", "elapsed": 123.0},
+            )
+        )
+        stopped_turn = self.window.current_turn
+        self.assertIsNotNone(stopped_turn.status_widget)
+        run_start_time = self.window._run_start_time or 0.0
+
+        # Stop pressed: the worker cancels the run and reports itself idle.
+        self.window._handle_busy_changed(False)
+        self._process_events()
+        self.assertIsNone(stopped_turn.status_widget)
+
+        # The next run flips busy before run_started arrives, so the elapsed ticker
+        # must not repaint the retry status into the already finished turn.
+        self.window._handle_busy_changed(True)
+        with mock.patch("ui.main_window_state.time.time", return_value=run_start_time + 200.0):
+            self.window._update_realtime_elapsed()
+        self.assertIsNone(stopped_turn.status_widget)
+
+        self.window._handle_event(StreamEvent("run_started", {"text": "продолжай"}))
+        self._process_events()
+
+        self.assertIsNot(self.window.current_turn, stopped_turn)
+        self.assertIsNone(stopped_turn.status_widget)
+        self.assertIsNotNone(self.window.current_turn.status_widget)
+        self.assertEqual(self.window.current_turn.status_widget.label.text(), "Working...")
+
+    def test_new_turn_clears_status_row_left_in_previous_turn(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        self.window._handle_event(StreamEvent("run_started", {"text": "первый запрос"}))
+        previous_turn = self.window.current_turn
+        previous_turn.set_status("Retrying provider request... 3/3", meta="2m 3s")
+        self.assertTrue(previous_turn.has_status())
+
+        self.window._handle_event(StreamEvent("run_started", {"text": "второй запрос"}))
+        self._process_events()
+
+        self.assertIsNot(self.window.current_turn, previous_turn)
+        self.assertFalse(previous_turn.has_status())
+        self.assertTrue(self.window.current_turn.has_status())
+
     def test_run_started_shows_inline_status_before_output(self):
         self.window._handle_initialized(self._snapshot_payload())
 
@@ -3274,6 +3326,92 @@ class GuiUxTests(unittest.TestCase):
             self.window._request_delete_session("session-older")
 
         self.assertEqual(self.controller.delete_session_calls, [])
+
+    def test_delete_project_requests_controller_after_confirmation(self):
+        payload = self._snapshot_payload()
+        payload["sessions"].append(
+            {
+                "session_id": "session-other-2",
+                "thread_id": "thread-other-2",
+                "project_path": "D:/demo/other-project",
+                "title": "Second chat [demo/other-project]",
+                "created_at": "2026-03-30T09:00:00+00:00",
+                "updated_at": "2026-03-30T11:00:00+00:00",
+            }
+        )
+        self.window._handle_initialized(payload)
+
+        with mock.patch.object(
+            agent_cli.QMessageBox, "question", return_value=agent_cli.QMessageBox.Yes
+        ) as question_mock:
+            self.window._request_delete_project("D:/demo/other-project")
+
+        self.assertEqual(self.controller.delete_project_calls, ["D:/demo/other-project"])
+        self.assertEqual(self.controller.delete_session_calls, [])
+        self.assertIn("2 chats", question_mock.call_args.args[2])
+        self.assertIn("other-project", question_mock.call_args.args[2])
+
+    def test_delete_project_is_cancelled_without_confirmation(self):
+        payload = self._snapshot_payload()
+        self.window._handle_initialized(payload)
+
+        with mock.patch.object(agent_cli.QMessageBox, "question", return_value=agent_cli.QMessageBox.No):
+            self.window._request_delete_project("D:/demo/other-project")
+
+        self.assertEqual(self.controller.delete_project_calls, [])
+
+    def test_sidebar_routes_right_click_to_project_or_chat_menu(self):
+        self.window._handle_initialized(self._snapshot_payload())
+        sidebar = self.window.sidebar
+        rows = {
+            str(sidebar.model.index(row, 0).data(SessionListModel.KindRole)): row
+            for row in range(sidebar.model.rowCount())
+        }
+        group_index = sidebar.model.index(rows["group"], 0)
+        session_index = sidebar.model.index(rows["session"], 0)
+
+        with (
+            mock.patch.object(sidebar, "_show_project_context_menu") as project_menu_mock,
+            mock.patch.object(sidebar, "_show_session_context_menu") as session_menu_mock,
+            mock.patch.object(sidebar.list_view, "indexAt", return_value=group_index),
+        ):
+            sidebar._show_context_menu(QPoint(4, 4))
+
+        session_menu_mock.assert_not_called()
+        project_menu_mock.assert_called_once()
+        self.assertIs(project_menu_mock.call_args.args[0], group_index)
+
+        with (
+            mock.patch.object(sidebar, "_show_project_context_menu") as project_menu_mock,
+            mock.patch.object(sidebar, "_show_session_context_menu") as session_menu_mock,
+            mock.patch.object(sidebar.list_view, "indexAt", return_value=session_index),
+        ):
+            sidebar._show_context_menu(QPoint(4, 4))
+
+        project_menu_mock.assert_not_called()
+        session_menu_mock.assert_called_once()
+        self.assertIs(session_menu_mock.call_args.args[0], session_index)
+
+    def test_sidebar_project_group_counts_chats_for_delete_prompt(self):
+        payload = self._snapshot_payload()
+        payload["sessions"].append(
+            {
+                "session_id": "session-other-2",
+                "thread_id": "thread-other-2",
+                "project_path": "D:/demo/other-project",
+                "title": "Second chat [demo/other-project]",
+                "created_at": "2026-03-30T09:00:00+00:00",
+                "updated_at": "2026-03-30T11:00:00+00:00",
+            }
+        )
+        self.window._handle_initialized(payload)
+        sidebar = self.window.sidebar
+
+        self.assertEqual(sidebar.session_count_for_project("D:/demo/other-project"), 2)
+        self.assertEqual(sidebar.session_count_for_project("D:/demo/workspace"), 1)
+        self.assertEqual(sidebar.session_count_for_project("D:/demo/missing"), 0)
+        self.assertEqual(sidebar.session_count_for_project(""), 0)
+        self.assertEqual(sidebar.title_for_project("D:/demo/other-project"), "other-project")
 
     def test_menu_bar_uses_corner_buttons_and_compact_composer(self):
         self.assertEqual(self.window.send_button.text(), "")

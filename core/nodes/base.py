@@ -4,11 +4,15 @@ import logging
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
-from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, HumanMessage, RemoveMessage, ToolMessage
+from langchain_core.messages import AIMessage, AIMessageChunk, BaseMessage, RemoveMessage, ToolMessage
 
 from core.state import AgentState
-from core.message_utils import compact_text, stringify_content
-from core.constants import REFLECTION_PROMPT
+from core.message_utils import (
+    compact_text,
+    is_internal_retry_message,
+    is_user_turn_message,
+    stringify_content,
+)
 
 logger = logging.getLogger("agent")
 
@@ -71,19 +75,12 @@ class BaseMixin:
         self._log_run_event(state, "node_error", **event_payload)
 
     def _is_internal_retry_message(self, message: BaseMessage) -> bool:
-        if not isinstance(message, HumanMessage):
-            return False
-        metadata = getattr(message, "additional_kwargs", {}) or {}
-        internal = metadata.get("agent_internal")
-        return isinstance(internal, dict) and internal.get("kind") == "retry_instruction"
+        return is_internal_retry_message(message)
 
     def _current_turn_id(self, state: AgentState, messages: List[BaseMessage]) -> int:
         derived_turn_id = 0
         for message in messages:
-            if not isinstance(message, HumanMessage) or self._is_internal_retry_message(message):
-                continue
-            content = stringify_content(message.content).strip()
-            if content and content != REFLECTION_PROMPT:
+            if is_user_turn_message(message):
                 derived_turn_id += 1
         return max(int(state.get("turn_id", 0) or 0), derived_turn_id)
 
@@ -136,10 +133,8 @@ class BaseMixin:
 
     def _derive_current_task(self, messages: List[BaseMessage]) -> str:
         for message in reversed(messages):
-            if isinstance(message, HumanMessage) and not self._is_internal_retry_message(message):
-                content = stringify_content(message.content).strip()
-                if content and content != REFLECTION_PROMPT:
-                    return content
+            if is_user_turn_message(message):
+                return stringify_content(message.content).strip()
         return ""
 
     def _is_low_information_follow_up(self, content: str) -> bool:
@@ -160,9 +155,9 @@ class BaseMixin:
 
     def _derive_specific_task(self, messages: List[BaseMessage]) -> str:
         for message in reversed(messages):
-            if isinstance(message, HumanMessage) and not self._is_internal_retry_message(message):
+            if is_user_turn_message(message):
                 content = stringify_content(message.content).strip()
-                if content and content != REFLECTION_PROMPT and not self._is_low_information_follow_up(content):
+                if not self._is_low_information_follow_up(content):
                     return content
         return ""
 

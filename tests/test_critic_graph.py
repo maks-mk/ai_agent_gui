@@ -8,6 +8,7 @@ from langgraph.types import Command
 from agent import create_agent_workflow
 from core.config import AgentConfig
 from core.nodes import AgentNodes
+from core.summarize_policy import estimate_summary_tokens
 from core.tool_policy import ToolMetadata
 from tools.user_input_tool import request_user_input
 from ui.runtime import build_graph_config
@@ -64,6 +65,8 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         enable_approvals=False,
         summary_threshold=None,
         summary_keep_last=None,
+        summary_reserved_tokens=None,
+        summary_max_tokens=None,
     ):
         config_kwargs = {
             "provider": "openai",
@@ -79,6 +82,10 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
             config_kwargs["summary_threshold"] = summary_threshold
         if summary_keep_last is not None:
             config_kwargs["summary_keep_last"] = summary_keep_last
+        if summary_reserved_tokens is not None:
+            config_kwargs["summary_reserved_tokens"] = summary_reserved_tokens
+        if summary_max_tokens is not None:
+            config_kwargs["summary_max_tokens"] = summary_max_tokens
         return AgentConfig(**config_kwargs)
 
     def _build_app(
@@ -93,6 +100,8 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
         max_loops=8,
         summary_threshold=None,
         summary_keep_last=None,
+        summary_reserved_tokens=None,
+        summary_max_tokens=None,
     ):
         config = self._make_config(
             model_supports_tools=model_supports_tools,
@@ -100,6 +109,8 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
             max_loops=max_loops,
             summary_threshold=summary_threshold,
             summary_keep_last=summary_keep_last,
+            summary_reserved_tokens=summary_reserved_tokens,
+            summary_max_tokens=summary_max_tokens,
         )
         agent_llm = agent_llm_cls(agent_responses)
         nodes = AgentNodes(
@@ -192,6 +203,211 @@ class StabilityGraphTests(unittest.IsolatedAsyncioTestCase):
             if isinstance(message, SystemMessage)
         )
         self.assertIn(f"<memory>\n{summary_text}\n</memory>", memory_text)
+
+    async def test_auto_summary_retains_recent_tool_exchange_for_the_model(self):
+        summary_text = "- Older turn compacted: the goal is to finish the config audit."
+        app, agent_llm = self._build_app(
+            agent_responses=[AIMessage(content=summary_text), AIMessage(content="Continuing the audit.")],
+            tools=[],
+            model_supports_tools=False,
+            summary_threshold=600,
+            summary_keep_last=4,
+            summary_reserved_tokens=0,
+        )
+        state = self._initial_state("Доведи аудит конфига до конца")
+        state["messages"] = [
+            HumanMessage(content="старая задача: " + "детали конфигурации " * 400),
+            AIMessage(content="старый ответ: " + "детали конфигурации " * 400),
+            HumanMessage(content="Доведи аудит конфига до конца"),
+            AIMessage(
+                content="Читаю конфиг",
+                tool_calls=[{"id": "tc-audit-1", "name": "read_file", "args": {"path": "core/config.py"}}],
+            ),
+            ToolMessage(tool_call_id="tc-audit-1", name="read_file", content="summary_threshold = 8000"),
+            AIMessage(content="Нашёл текущее значение порога."),
+            HumanMessage(content="продолжай"),
+        ]
+
+        result = await app.ainvoke(
+            state,
+            config={"configurable": {"thread_id": "summary-retains-tool-exchange"}, "recursion_limit": 24},
+        )
+
+        self.assertEqual(result["summary"], summary_text)
+        retained = result["messages"]
+        self.assertIsInstance(retained[0], HumanMessage)
+        self.assertEqual(retained[0].content, "Доведи аудит конфига до конца")
+
+        retained_tool_call_ids = {
+            str(tool_call.get("id"))
+            for message in retained
+            if isinstance(message, AIMessage)
+            for tool_call in (message.tool_calls or [])
+        }
+        retained_tool_result_ids = {
+            str(message.tool_call_id) for message in retained if isinstance(message, ToolMessage)
+        }
+        self.assertEqual(retained_tool_result_ids, {"tc-audit-1"})
+        self.assertEqual(retained_tool_result_ids, retained_tool_call_ids)
+
+        agent_payload = agent_llm.invocations[1]
+        self.assertTrue(
+            any(
+                isinstance(message, ToolMessage) and "summary_threshold = 8000" in str(message.content)
+                for message in agent_payload
+            )
+        )
+        self.assertTrue(
+            any(
+                isinstance(message, SystemMessage) and f"<memory>\n{summary_text}\n</memory>" in str(message.content)
+                for message in agent_payload
+            )
+        )
+
+    async def test_auto_summary_folds_memory_that_exceeds_its_budget(self):
+        oversized_memory = "\n".join(
+            f"- fact {index}: keep the audit going with detail {index}" for index in range(40)
+        )
+        folded_memory = "\n".join(f"- fact {index}: audit detail kept" for index in range(4))
+        app, agent_llm = self._build_app(
+            agent_responses=[
+                AIMessage(content=oversized_memory),
+                AIMessage(content=folded_memory),
+                AIMessage(content="Continue from memory."),
+            ],
+            tools=[],
+            model_supports_tools=False,
+            summary_threshold=1,
+            summary_keep_last=1,
+            summary_max_tokens=120,
+        )
+        state = self._initial_state("Continue the investigation")
+        state["messages"] = [
+            HumanMessage(content="old request " + "x" * 2000),
+            AIMessage(content="old response " + "x" * 2000),
+            HumanMessage(content="old follow-up " + "x" * 2000),
+            AIMessage(content="old result " + "x" * 2000),
+            HumanMessage(content="old decision " + "x" * 2000),
+            HumanMessage(content="latest request"),
+        ]
+
+        result = await app.ainvoke(
+            state,
+            config={"configurable": {"thread_id": "summary-memory-folded"}, "recursion_limit": 24},
+        )
+
+        self.assertEqual(result["summary"], folded_memory)
+        self.assertLessEqual(estimate_summary_tokens(result["summary"]), 120)
+        self.assertEqual(len(agent_llm.invocations), 3)
+        self.assertIn("Memory compaction mode", str(agent_llm.invocations[1]))
+        self.assertIn(oversized_memory, str(agent_llm.invocations[1]))
+
+    async def test_auto_summary_truncates_memory_when_the_fold_stays_oversized(self):
+        oversized_memory = "\n".join(
+            f"- fact {index}: keep the audit going with detail {index}" for index in range(40)
+        )
+        still_oversized_memory = "\n".join(
+            f"- fact {index}: still too long for the memory budget" for index in range(30)
+        )
+        app, agent_llm = self._build_app(
+            agent_responses=[
+                AIMessage(content=oversized_memory),
+                AIMessage(content=still_oversized_memory),
+                AIMessage(content="Continue from memory."),
+            ],
+            tools=[],
+            model_supports_tools=False,
+            summary_threshold=1,
+            summary_keep_last=1,
+            summary_max_tokens=120,
+        )
+        state = self._initial_state("Continue the investigation")
+        state["messages"] = [
+            HumanMessage(content="old request " + "x" * 2000),
+            AIMessage(content="old response " + "x" * 2000),
+            HumanMessage(content="old follow-up " + "x" * 2000),
+            AIMessage(content="old result " + "x" * 2000),
+            HumanMessage(content="old decision " + "x" * 2000),
+            HumanMessage(content="latest request"),
+        ]
+
+        result = await app.ainvoke(
+            state,
+            config={"configurable": {"thread_id": "summary-memory-truncated"}, "recursion_limit": 24},
+        )
+
+        memory = result["summary"]
+        self.assertLessEqual(estimate_summary_tokens(memory), 120)
+        self.assertTrue(memory.startswith("- fact 0: still too long"))
+        self.assertTrue(memory.endswith("... [memory truncated]"))
+        self.assertNotIn("- fact 29:", memory)
+
+    async def test_auto_summary_keeps_memory_when_the_fold_call_fails(self):
+        oversized_memory = "\n".join(
+            f"- fact {index}: keep the audit going with detail {index}" for index in range(40)
+        )
+        app, agent_llm = self._build_app(
+            agent_responses=[
+                AIMessage(content=oversized_memory),
+                RuntimeError("provider unavailable"),
+                AIMessage(content="Continue from memory."),
+            ],
+            tools=[],
+            model_supports_tools=False,
+            summary_threshold=1,
+            summary_keep_last=1,
+            summary_max_tokens=120,
+        )
+        state = self._initial_state("Continue the investigation")
+        state["messages"] = [
+            HumanMessage(content="old request " + "x" * 2000),
+            AIMessage(content="old response " + "x" * 2000),
+            HumanMessage(content="old follow-up " + "x" * 2000),
+            AIMessage(content="old result " + "x" * 2000),
+            HumanMessage(content="old decision " + "x" * 2000),
+            HumanMessage(content="latest request"),
+        ]
+
+        result = await app.ainvoke(
+            state,
+            config={"configurable": {"thread_id": "summary-memory-fold-failed"}, "recursion_limit": 24},
+        )
+
+        memory = result["summary"]
+        self.assertLessEqual(estimate_summary_tokens(memory), 120)
+        self.assertTrue(memory.startswith("- fact 0: keep the audit going"))
+        self.assertTrue(memory.endswith("... [memory truncated]"))
+
+    async def test_auto_summary_keeps_history_when_memory_comes_back_empty(self):
+        app, agent_llm = self._build_app(
+            agent_responses=[AIMessage(content="   "), AIMessage(content="Continuing with full history.")],
+            tools=[],
+            model_supports_tools=False,
+            summary_threshold=1,
+            summary_keep_last=1,
+        )
+        state = self._initial_state("Continue the investigation")
+        original_messages = [
+            HumanMessage(content="old request " + "x" * 2000),
+            AIMessage(content="old response " + "x" * 2000),
+            HumanMessage(content="old follow-up " + "x" * 2000),
+            AIMessage(content="old result " + "x" * 2000),
+            HumanMessage(content="old decision " + "x" * 2000),
+            HumanMessage(content="latest request"),
+        ]
+        state["messages"] = list(original_messages)
+
+        result = await app.ainvoke(
+            state,
+            config={"configurable": {"thread_id": "summary-empty-memory"}, "recursion_limit": 24},
+        )
+
+        self.assertEqual(result.get("summary", ""), "")
+        self.assertEqual(
+            [str(message.content) for message in result["messages"][:-1]],
+            [str(message.content) for message in original_messages],
+        )
+        self.assertEqual(result["messages"][-1].content, "Continuing with full history.")
 
     async def test_request_user_input_interrupts_and_resumes_with_selected_option(self):
         tool = FakeTool("edit_file", "Success: File edited.")

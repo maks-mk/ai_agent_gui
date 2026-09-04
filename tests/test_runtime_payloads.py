@@ -26,7 +26,11 @@ class RuntimePayloadTests(unittest.TestCase):
 
         self.assertGreater(payload["estimated_tokens"], 0)
         self.assertEqual(payload["threshold"], 100)
-        self.assertEqual(payload["remaining_tokens"], max(0, 100 - payload["estimated_tokens"]))
+        self.assertGreater(payload["trigger_tokens"], payload["threshold"])
+        self.assertEqual(
+            payload["remaining_tokens"],
+            max(0, payload["trigger_tokens"] - payload["estimated_tokens"]),
+        )
         self.assertGreaterEqual(payload["progress"], 0.0)
         self.assertLessEqual(payload["progress"], 1.0)
         self.assertFalse(payload["will_summarize"])
@@ -47,7 +51,10 @@ class RuntimePayloadTests(unittest.TestCase):
 
         self.assertEqual(payload["reserved_tokens"], 25)
         self.assertEqual(payload["estimated_tokens"], estimate_tokens(messages) + 25)
-        self.assertEqual(payload["remaining_tokens"], max(0, 100 - payload["estimated_tokens"]))
+        self.assertEqual(
+            payload["remaining_tokens"],
+            max(0, payload["trigger_tokens"] - payload["estimated_tokens"]),
+        )
 
     def test_build_summary_progress_payload_reports_summary_and_provider_input_separately(self):
         config = type(

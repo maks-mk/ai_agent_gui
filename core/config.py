@@ -202,6 +202,11 @@ class AgentConfig(BaseSettings):
         description="Estimated fixed context overhead for prompts, tool schemas, and provider wrappers",
     )
     summary_keep_last: int = Field(default=4, alias="SUMMARY_KEEP_LAST")
+    summary_max_tokens: int = Field(
+        default=0,
+        alias="SUMMARY_MAX_TOKENS",
+        description="Maximum estimated tokens for compressed memory; 0 derives a quarter of the summarization threshold",
+    )
 
     # Network / Retry
     max_retries: int = Field(default=3, alias="MAX_RETRIES")
@@ -409,6 +414,14 @@ class AgentConfig(BaseSettings):
             value = self.tool_loop_limit_readonly if self.tool_loop_limit_readonly is not None else max(12, min(40, self.max_loops * 2))
             self._cache_tool_loop_limit_readonly = value
         return self._cache_tool_loop_limit_readonly
+
+    @property
+    def effective_summary_max_tokens(self) -> int:
+        """Token budget for compressed memory.
+        Default is a quarter of SESSION_SIZE, so memory can never squeeze out live history."""
+        if self.summary_max_tokens > 0:
+            return self.summary_max_tokens
+        return max(0, self.summary_threshold) // 4
 
     @property
     def safety(self):

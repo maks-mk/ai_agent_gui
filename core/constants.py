@@ -2,7 +2,7 @@ import sys
 from pathlib import Path
 
 # Agent version (single source of truth)
-AGENT_VERSION = "v0.67.73.243b"
+AGENT_VERSION = "v0.67.73.244b"
 
 # Determine the project root directory
 if getattr(sys, 'frozen', False):
@@ -18,7 +18,7 @@ else:
 SUMMARY_PROMPT_TEMPLATE = (
     "Current memory:\n<previous_context>\n{summary}\n</previous_context>\n\n"
     "Operational state:\n{state_snapshot}\n\n"
-    "New events:\n{history_text}\n\n"
+    "New events (deleted from history after this update; anything you omit is lost):\n{history_text}\n\n"
     "Conversation-history summarization mode: update memory for the main model; do not continue or answer the task. Rules:\n"
     "- Merge new information into the existing memory without duplication.\n"
     "- Prefer newer evidence when facts conflict; preserve uncertainty when unresolved.\n"
@@ -27,8 +27,21 @@ SUMMARY_PROMPT_TEMPLATE = (
     "- Remove stale or completed details unless needed for continuity or recovery.\n"
     "- Omit greetings, filler, reasoning, and raw tool output already captured by its outcome.\n"
     "- Do not infer or invent facts.\n"
-    "- Write concise, self-contained bullet points.\n"
+    "- Keep the whole memory under {max_words} words; merge or drop the least valuable items to stay within it.\n"
+    "- Write concise, self-contained bullet points, ordered from most to least important for continuing the task.\n"
     "- Return only the updated memory."
+)
+
+SUMMARY_FOLD_PROMPT_TEMPLATE = (
+    "Current memory:\n<previous_context>\n{summary}\n</previous_context>\n\n"
+    "Memory compaction mode: rewrite the memory above to fit under {max_words} words; "
+    "do not continue or answer the task. Rules:\n"
+    "- Keep the active task, progress, blockers, pending decisions, next steps, and tool/recovery state.\n"
+    "- Keep exact paths, commands, identifiers, and errors that recovery still depends on.\n"
+    "- Merge duplicates; drop stale, completed, or low-value details first.\n"
+    "- Do not infer or invent facts.\n"
+    "- Write concise, self-contained bullet points, ordered from most to least important for continuing the task.\n"
+    "- Return only the compacted memory."
 )
 
 REFLECTION_PROMPT = (

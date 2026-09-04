@@ -129,6 +129,9 @@ class ConversationTurnWidget(QWidget):
         self.status_widget.deleteLater()
         self.status_widget = None
 
+    def has_status(self) -> bool:
+        return self.status_widget is not None
+
     def _ensure_assistant_segment(self) -> AssistantMessageWidget:
         if self._timeline and self._timeline[-1][0] == "assistant" and not self._force_new_assistant_block:
             return self._timeline[-1][1]  # type: ignore[return-value]
