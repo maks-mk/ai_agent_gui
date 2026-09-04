@@ -3,7 +3,7 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from typing import Any
 
-from PySide6.QtCore import QAbstractListModel, QModelIndex, QSize, Qt, Signal
+from PySide6.QtCore import QAbstractListModel, QModelIndex, QRect, QSize, Qt, Signal
 from PySide6.QtGui import QColor, QFont, QFontMetrics, QPainter
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -17,7 +17,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from ui.theme import SURFACE_ALT, TEXT_MUTED, TEXT_PRIMARY
+from ui.theme import SUCCESS_GREEN, SURFACE_ALT, TEXT_MUTED, TEXT_PRIMARY
 from .foundation import _fa_icon
 
 
@@ -389,6 +389,19 @@ class SessionItemDelegate(QStyledItemDelegate):
         painter.setFont(meta_font)
         painter.setPen(QColor(TEXT_MUTED))
         painter.drawText(time_rect, Qt.AlignRight | Qt.AlignVCenter, updated_at)
+
+        if is_selected:
+            dot_diameter = 6
+            dot_rect = QRect(
+                rect.left() + 12,
+                rect.center().y() - dot_diameter // 2,
+                dot_diameter,
+                dot_diameter,
+            )
+            painter.setRenderHint(QPainter.Antialiasing, True)
+            painter.setPen(Qt.NoPen)
+            painter.setBrush(QColor(SUCCESS_GREEN))
+            painter.drawEllipse(dot_rect)
         painter.restore()
 
     def sizeHint(self, option: QStyleOptionViewItem, index: QModelIndex) -> QSize:  # type: ignore[override]

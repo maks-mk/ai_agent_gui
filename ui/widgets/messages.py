@@ -4,11 +4,12 @@ import re
 from typing import Any
 
 import qtawesome as qta
-from PySide6.QtCore import QSize, Qt, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
+from PySide6.QtGui import QBrush, QColor, QFontMetrics, QLinearGradient, QPainter, QPen
 from PySide6.QtWidgets import QFrame, QGridLayout, QHBoxLayout, QLabel, QPushButton, QScrollArea, QSizePolicy, QToolButton, QVBoxLayout, QWidget
 
 from core.text_utils import build_tool_ui_labels, has_visible_text, split_markdown_segments
-from ui.theme import ACCENT_BLUE, AMBER_WARNING, ERROR_RED, SUCCESS_GREEN, TEXT_MUTED
+from ui.theme import ACCENT_BLUE, AMBER_WARNING, ERROR_RED, SUCCESS_GREEN, TEXT_MUTED, TEXT_PRIMARY, blend_hex
 from .attachments import ImageAttachmentStripWidget
 from .foundation import (
     AutoTextBrowser,
@@ -90,6 +91,95 @@ class RunStatsWidget(QWidget):
         layout.addWidget(chip, 0, Qt.AlignRight)
 
 
+class ShimmerLabel(QLabel):
+    """Метка с бегущим белым бликом во время активной работы."""
+
+    _HIGHLIGHT_COLOR = QColor("#FFFFFF")
+    _BASE_COLOR = QColor(TEXT_MUTED)
+
+    def __init__(self, text: str = "", parent: QWidget | None = None) -> None:
+        super().__init__(text, parent)
+        self._shimmer_active = False
+        self._shimmer_phase = 0.0
+        self._shimmer_timer = QTimer(self)
+        self._shimmer_timer.setInterval(60)
+        self._shimmer_timer.timeout.connect(self._advance_shimmer)
+
+    def set_shimmer_active(self, active: bool) -> None:
+        if active == self._shimmer_active:
+            return
+        self._shimmer_active = active
+        if active:
+            self._shimmer_phase = 0.0
+            self._shimmer_timer.start()
+        else:
+            self._shimmer_timer.stop()
+            self._shimmer_phase = 0.0
+        self.update()
+
+    def _advance_shimmer(self) -> None:
+        step = 0.02
+        self._shimmer_phase = (self._shimmer_phase + step) % 1.0
+        self.update()
+
+    def _base_text_color(self) -> QColor:
+        phase = str(self.property("textPhase") or "working")
+        if phase == "success":
+            return QColor(SUCCESS_GREEN)
+        if phase == "waiting":
+            return QColor(blend_hex(AMBER_WARNING, TEXT_PRIMARY, 0.24))
+        # Все рабочие фазы (working/active/reviewing/system) — серый базовый
+        # цвет, чтобы белый блик был отчётливо виден.
+        return QColor(self._BASE_COLOR)
+
+    def paintEvent(self, event) -> None:  # type: ignore[override]
+        _ = event
+        if not self._shimmer_active:
+            super().paintEvent(event)
+            return
+
+        text = self.text()
+        if not text:
+            super().paintEvent(event)
+            return
+
+        painter = QPainter(self)
+        painter.setRenderHint(QPainter.Antialiasing, True)
+        font = self.font()
+        metrics = QFontMetrics(font)
+        painter.setFont(font)
+
+        text_rect = self.contentsRect()
+        content_width = metrics.horizontalAdvance(text)
+        text_width = min(content_width, text_rect.width())
+        x = float(text_rect.left())
+
+        painter.setClipRect(text_rect)
+
+        # Базовый текст текущим цветом фазы.
+        painter.setPen(QPen(self._base_text_color()))
+        painter.drawText(text_rect, self.alignment() | Qt.AlignVCenter, text)
+
+        # Бегущий белый блик: текст перерисовывается градиентной кистью,
+        # прозрачной вне полосы — вне полосы остаётся базовый цвет.
+        band_width = max(18.0, text_width * 0.28)
+        cycle = text_width + band_width * 2.0 if text_width > 0 else 1.0
+        band_start = x + (self._shimmer_phase * cycle) - band_width * 2.0
+
+        gradient = QLinearGradient(band_start, 0.0, band_start + band_width, 0.0)
+        transparent = QColor(self._HIGHLIGHT_COLOR)
+        transparent.setAlpha(0)
+        core = QColor(self._HIGHLIGHT_COLOR)
+        core.setAlpha(200)
+        gradient.setColorAt(0.0, transparent)
+        gradient.setColorAt(0.5, core)
+        gradient.setColorAt(1.0, transparent)
+
+        painter.setPen(QPen(QBrush(gradient), 1))
+        painter.drawText(text_rect, self.alignment() | Qt.AlignVCenter, text)
+        painter.end()
+
+
 class StatusIndicatorWidget(QFrame):
     def __init__(self, label: str, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -109,7 +199,7 @@ class StatusIndicatorWidget(QFrame):
         self._spinner_icon = None
         layout.addWidget(self.spinner, 0, Qt.AlignVCenter)
 
-        self.label = QLabel(label)
+        self.label = ShimmerLabel(label)
         self.label.setObjectName("TranscriptMeta")
         layout.addWidget(self.label, 0, Qt.AlignVCenter)
 
@@ -131,6 +221,9 @@ class StatusIndicatorWidget(QFrame):
             if style is not None:
                 style.unpolish(self)
                 style.polish(self)
+        self.label.setProperty("textPhase", phase)
+        busy_phase = phase != "success"
+        self.label.set_shimmer_active(busy_phase)
         if phase == "success":
             self._spinner_animation.stop()
             icon_name = "fa5s.check-circle"
