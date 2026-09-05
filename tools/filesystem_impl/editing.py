@@ -6,6 +6,8 @@ from pathlib import Path
 
 from core.errors import ErrorType, format_error
 
+from .pathing import atomic_write_text
+
 logger = logging.getLogger(__name__)
 
 _READ_FILE_LINE_NUMBER_RE = re.compile(r"^\s*\d+\s{2}(.*)$")
@@ -98,12 +100,15 @@ def _realign_indentation(
     return result
 
 
-def edit_text_file(target: Path, path_label: str, old_string: str, new_string: str) -> str:
+def edit_text_file(target: Path, path_label: str, old_string: str, new_string: str, *, replace_all: bool = False) -> str:
     try:
         if not target.exists():
             return format_error(ErrorType.NOT_FOUND, f"File '{path_label}' not found.")
+        if not isinstance(replace_all, bool):
+            return format_error(ErrorType.VALIDATION, "replace_all must be a boolean.")
 
-        content = target.read_text(encoding="utf-8")
+        original_bytes = target.read_bytes()
+        content = original_bytes.decode("utf-8", errors="replace")
         original_newline = "\r\n" if "\r\n" in content else "\n"
         content_norm = content.replace("\r\n", "\n")
         old_string_norm = old_string.replace("\r\n", "\n")
@@ -124,11 +129,13 @@ def edit_text_file(target: Path, path_label: str, old_string: str, new_string: s
         count = content_norm.count(old_string_norm)
         if count == 1:
             new_content = content_norm.replace(old_string_norm, new_string_norm, 1)
+        elif count > 1 and replace_all:
+            new_content = content_norm.replace(old_string_norm, new_string_norm)
         elif count > 1:
             return format_error(
                 ErrorType.VALIDATION,
                 f"Found {count} identical occurrences of the exact target text. "
-                "Please provide more context (e.g., surrounding lines) to uniquely identify the block.",
+                "Provide more context to uniquely identify the block, or set replace_all=true.",
             )
         else:
             file_lines = content_norm.split("\n")
@@ -211,17 +218,18 @@ def edit_text_file(target: Path, path_label: str, old_string: str, new_string: s
             new_content = "\n".join(new_file_lines)
 
         final_content = new_content.replace("\n", original_newline)
+        if new_content == content_norm:
+            return "No changes: replacement is identical to the existing text."
         if target.suffix.lower() == ".json":
             try:
-                json.loads(final_content)
+                json.loads(final_content.removeprefix("\ufeff"))
             except json.JSONDecodeError as exc:
                 return format_error(
                     ErrorType.VALIDATION,
                     f"Edit would produce invalid JSON in '{path_label}' (line {exc.lineno}, column {exc.colno}): {exc.msg}",
                 )
 
-        with open(target, "w", encoding="utf-8", newline="") as file_obj:
-            file_obj.write(final_content)
+        atomic_write_text(target, final_content, expected_content=original_bytes)
 
         diff = difflib.unified_diff(
             content_norm.splitlines(),
@@ -231,6 +239,10 @@ def edit_text_file(target: Path, path_label: str, old_string: str, new_string: s
             lineterm="",
         )
         diff_text = "\n".join(diff)
-        return f"Success: File edited.{line_number_warning}{fallback_warning}\n\nDiff:\n```diff\n{diff_text}\n```"
+        replacements = count if count > 0 else 1
+        return (
+            f"Success: File edited. ({replacements} replacement(s))"
+            f"{line_number_warning}{fallback_warning}\n\nDiff:\n```diff\n{diff_text}\n```"
+        )
     except Exception as exc:
         return format_error(ErrorType.EXECUTION, f"Error editing file: {exc}")

@@ -5,9 +5,12 @@ Tool names and imports stay stable while the implementation lives in smaller int
 
 import asyncio
 import logging
+import os
 import re
+import tempfile
 from pathlib import Path
 from typing import Any, Optional, Protocol, cast
+from urllib.parse import unquote, urlsplit
 
 import aiofiles
 import httpx
@@ -29,7 +32,7 @@ class FilesystemBackend(Protocol):
     def set_policy(self, policy: SafetyPolicy) -> None: ...
     def read_file(self, path: str, offset: int = 0, limit: int = 2000, show_line_numbers: bool = False) -> str: ...
     def write_file(self, path: str, content: str) -> str: ...
-    def edit_file(self, path: str, old_string: str, new_string: str) -> str: ...
+    def edit_file(self, path: str, old_string: str, new_string: str, *, replace_all: bool = False) -> str: ...
     def list_files(self, path: str = ".", include_hidden: bool = False) -> str: ...
     def delete_file(self, path: str) -> str: ...
     def delete_directory(self, path: str, recursive: bool = False) -> str: ...
@@ -152,6 +155,10 @@ class EditFileInput(BaseModel):
             "new_string", "new_text", "replace_text", "replacement", "replace_with", "new", "after", "to"
         ),
         description="Replacement text.",
+    )
+    replace_all: bool = Field(
+        default=False,
+        description="Replace all exact matches instead of requiring a unique one.",
     )
 
     @model_validator(mode="before")
@@ -280,6 +287,7 @@ def edit_file_tool(
     path: str | None = None,
     old_string: str | None = None,
     new_string: str | None = None,
+    replace_all: bool = False,
     file_path: str | None = None,
     filepath: str | None = None,
     old_text: str | None = None,
@@ -344,7 +352,10 @@ def edit_file_tool(
             ErrorType.VALIDATION,
             "Missing required field: new_string. Accepted aliases: new_text, replace_text, replacement.",
         )
-    return _get_synced_backend().edit_file(resolved_path, old_string, new_string)
+    backend = _get_synced_backend()
+    if replace_all:
+        return backend.edit_file(resolved_path, old_string, new_string, replace_all=True)
+    return backend.edit_file(resolved_path, old_string, new_string)
 
 
 @tool("list_directory")
@@ -426,61 +437,59 @@ def _format_download_request_error(exc: httpx.RequestError) -> str:
 
 @tool("download_file")
 async def download_file(url: str, filename: Optional[str] = None) -> str:
-    """Download a URL to the workspace."""
+    """Download HTTP(S) content atomically; partial files never replace the destination."""
     temp_destination: Optional[Path] = None
     try:
+        parsed = urlsplit(url)
+        if parsed.scheme.lower() not in {"http", "https"} or not parsed.netloc:
+            return format_error(ErrorType.VALIDATION, "A valid HTTP(S) URL is required.")
         if not filename:
-            filename = url.split("/")[-1] or "downloaded_file"
+            name = unquote(parsed.path.rsplit("/", 1)[-1]).replace("\\", "/").rsplit("/", 1)[-1]
+            filename = name if name not in {"", ".", ".."} else "downloaded_file"
 
         try:
             destination = resolve_workspace_path(filename)
         except ValueError as exc:
             return format_error(ErrorType.VALIDATION, str(exc))
-
-        temp_destination = destination.with_name(destination.name + ".part")
-        _cleanup_partial_download(temp_destination)
+        if destination.is_dir():
+            return format_error(ErrorType.VALIDATION, "Download destination is a directory.")
 
         client = _get_download_client()
-        logger.info("⬇️ Downloading %s to %s", url, destination)
-
-        try:
-            async with client.stream(
-                "GET",
-                url,
-                follow_redirects=True,
-                headers=_DOWNLOAD_HEADERS,
-            ) as response:
-                response.raise_for_status()
-                content_length = response.headers.get("content-length")
-                max_size = max_filesystem_file_size()
-                if content_length:
-                    try:
-                        if int(content_length) > max_size:
-                            return format_error(ErrorType.LIMIT_EXCEEDED, f"File too large (>{max_size} bytes). Download aborted.")
-                    except ValueError:
-                        pass
-
-                async with aiofiles.open(temp_destination, "wb") as file_obj:
-                    downloaded = 0
-                    async for chunk in response.aiter_bytes():
-                        downloaded += len(chunk)
-                        if downloaded > max_size:
-                            _cleanup_partial_download(temp_destination)
-                            return format_error(ErrorType.LIMIT_EXCEEDED, f"File exceeded max size {max_size}. Aborted.")
-                        await file_obj.write(chunk)
-
-            temp_destination.replace(destination)
-            return f"Success: File downloaded to {destination}"
-        except httpx.HTTPStatusError as exc:
-            _cleanup_partial_download(temp_destination)
-            return _format_download_http_error(exc)
-        except httpx.RequestError as exc:
-            _cleanup_partial_download(temp_destination)
-            return _format_download_request_error(exc)
+        logger.info("Downloading to %s", destination)
+        async with client.stream("GET", url, follow_redirects=True, headers=_DOWNLOAD_HEADERS) as response:
+            response.raise_for_status()
+            max_size = max_filesystem_file_size()
+            length = response.headers.get("content-length")
+            if length:
+                try:
+                    declared = int(length)
+                except ValueError:
+                    declared = None
+                if declared is not None and declared > max_size:
+                    return format_error(ErrorType.LIMIT_EXCEEDED, f"File too large (>{max_size} bytes). Download aborted.")
+            destination.parent.mkdir(parents=True, exist_ok=True)
+            fd, name = tempfile.mkstemp(prefix=f".{destination.name}.", suffix=".part", dir=destination.parent)
+            os.close(fd)
+            temp_destination = Path(name)
+            async with aiofiles.open(temp_destination, "wb") as handle:
+                downloaded = 0
+                async for chunk in response.aiter_bytes():
+                    downloaded += len(chunk)
+                    if downloaded > max_size:
+                        return format_error(ErrorType.LIMIT_EXCEEDED, f"File exceeded max size {max_size}. Aborted.")
+                    await handle.write(chunk)
+        temp_destination.replace(destination)
+        return f"Success: File downloaded to {destination}"
+    except httpx.HTTPStatusError as exc:
+        return _format_download_http_error(exc)
+    except httpx.RequestError as exc:
+        return _format_download_request_error(exc)
     except Exception as exc:
+        return format_error(ErrorType.EXECUTION, f"Error downloading file: {exc}")
+    finally:
+        # Runs after handles close, also on cancellation/size errors on Windows.
         if temp_destination is not None:
             _cleanup_partial_download(temp_destination)
-        return format_error(ErrorType.EXECUTION, f"Error downloading file: {exc}")
 
 
 __all__ = [

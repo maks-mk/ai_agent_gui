@@ -1,5 +1,8 @@
 import errno
+import os
 import shutil
+import stat
+import tempfile
 from functools import lru_cache
 from pathlib import Path
 
@@ -82,6 +85,8 @@ def candidate_path_inputs(path_str: str) -> list[str]:
 def resolve_path(cwd: Path, virtual_mode: bool, path_str: str) -> Path:
     if not path_str:
         raise ValueError("Path cannot be empty")
+    if "\0" in str(path_str):
+        raise ValueError("Path cannot contain NUL.")
 
     resolved_candidates: list[tuple[str, Path]] = []
     for candidate_input in candidate_path_inputs(path_str):
@@ -118,8 +123,19 @@ def resolve_path(cwd: Path, virtual_mode: bool, path_str: str) -> Path:
     return original_path
 
 
-def resolve_existing_path(cwd: Path, virtual_mode: bool, path: str, expected: str) -> Path:
-    target = resolve_path(cwd, virtual_mode, path)
+def resolve_existing_path(cwd: Path, virtual_mode: bool, path: str, expected: str, *, follow_final_symlink: bool = True) -> Path:
+    # When the caller must not follow the final component (e.g. deleting a
+    # symlink), resolve only the parent so is_symlink() still sees the link.
+    # A full .resolve() would collapse it to the target and defeat the check.
+    if not follow_final_symlink:
+        literal = _resolve_without_final_symlink(cwd, virtual_mode, path)
+        if literal.is_symlink():
+            if expected == "file":
+                return literal
+            raise NotADirectoryError(f"{path} is a symlink. Use safe_delete_file.")
+        target = literal
+    else:
+        target = resolve_path(cwd, virtual_mode, path)
     if not target.exists():
         raise FileNotFoundError(path)
     if expected == "file" and not target.is_file():
@@ -129,7 +145,58 @@ def resolve_existing_path(cwd: Path, virtual_mode: bool, path: str, expected: st
     return target
 
 
+def _resolve_without_final_symlink(cwd: Path, virtual_mode: bool, path: str) -> Path:
+    """Resolve the parent chain but keep the final path component literal.
+
+    resolve_path() fully resolves symlinks, collapsing a link to its target;
+    that makes is_symlink() useless for delete operations. This rebuilds the
+    path from the raw input (same candidate normalization as resolve_path)
+    and resolves only the parent directory.
+    """
+    for candidate_input in candidate_path_inputs(path):
+        clean_path = candidate_input.replace("\\", "/")
+        path_obj = Path(clean_path).expanduser()
+        if path_obj.is_absolute():
+            absolute = path_obj
+        else:
+            absolute = cwd / path_obj
+        if absolute.name in {"", ".", ".."}:
+            return absolute.resolve()
+        literal = absolute.parent.resolve() / absolute.name
+        if virtual_mode and not literal.is_relative_to(cwd):
+            raise ValueError(f"ACCESS DENIED: Path outside working directory: {path}")
+        if literal.exists() or literal.is_symlink():
+            return literal
+    return resolve_path(cwd, virtual_mode, path)
+
+
+def atomic_write_text(target: Path, content: str, *, expected_content: bytes | None = None) -> None:
+    """Atomic UTF-8 replacement preserving permissions and caller-supplied newlines.
+
+    The optional stale-content check is not a multi-process lock. Callers must
+    still serialize overlapping writes; compare-and-replace is not a transaction.
+    """
+    target.parent.mkdir(parents=True, exist_ok=True)
+    fd, name = tempfile.mkstemp(prefix=f".{target.name}.", suffix=".tmp", dir=target.parent)
+    temp = Path(name)
+    try:
+        with os.fdopen(fd, "wb") as handle:
+            handle.write(content.encode("utf-8"))
+            handle.flush()
+            os.fsync(handle.fileno())
+        if target.exists():
+            os.chmod(temp, stat.S_IMODE(target.stat().st_mode))
+        if expected_content is not None and target.read_bytes() != expected_content:
+            raise ValueError("File changed while preparing the edit; read it again before retrying.")
+        os.replace(temp, target)
+    finally:
+        temp.unlink(missing_ok=True)
+
+
 def delete_directory_path(target: Path, recursive: bool) -> None:
+    if target.is_symlink():
+        # rmtree on a symlink follows the link and deletes the target tree.
+        raise ValueError("Use safe_delete_file to unlink a directory symlink.")
     if recursive:
         shutil.rmtree(target)
         return

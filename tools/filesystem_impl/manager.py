@@ -11,6 +11,7 @@ from core.utils import truncate_output
 
 from .editing import edit_text_file
 from .pathing import (
+    atomic_write_text,
     count_file_lines,
     delete_directory_path,
     is_binary_path,
@@ -39,8 +40,8 @@ class FilesystemManager:
     def _resolve_path(self, path_str: str) -> Path:
         return resolve_path(self.cwd, self.virtual_mode, path_str)
 
-    def _resolve_existing(self, path: str, expected: str) -> Path:
-        return resolve_existing_path(self.cwd, self.virtual_mode, path, expected)
+    def _resolve_existing(self, path: str, expected: str, *, follow_final_symlink: bool = True) -> Path:
+        return resolve_existing_path(self.cwd, self.virtual_mode, path, expected, follow_final_symlink=follow_final_symlink)
 
     def _tool_limit(self) -> int:
         return self.safety_policy.max_tool_output if self.safety_policy else 5000
@@ -50,7 +51,8 @@ class FilesystemManager:
 
     def delete_file(self, path: str) -> str:
         try:
-            target = self._resolve_existing(path, "file")
+            # follow_final_symlink=False: unlink the link itself, never its target.
+            target = self._resolve_existing(path, "file", follow_final_symlink=False)
             target.unlink()
             return f"Success: File {path} deleted."
         except FileNotFoundError:
@@ -62,7 +64,9 @@ class FilesystemManager:
 
     def delete_directory(self, path: str, recursive: bool = False) -> str:
         try:
-            target = self._resolve_existing(path, "dir")
+            target = self._resolve_existing(path, "dir", follow_final_symlink=False)
+            if self.cwd.resolve().is_relative_to(target):
+                return format_error(ErrorType.VALIDATION, "Refusing to delete the workspace root or its ancestor.")
             delete_directory_path(target, recursive)
             if recursive:
                 return f"Success: Directory {path} deleted recursively."
@@ -70,7 +74,7 @@ class FilesystemManager:
         except FileNotFoundError:
             return format_error(ErrorType.NOT_FOUND, f"Directory not found: {path}")
         except NotADirectoryError:
-            return format_error(ErrorType.VALIDATION, f"{path} is a file.")
+            return format_error(ErrorType.VALIDATION, f"{path} is not a directory; use safe_delete_file for symlinks.")
         except OSError as exc:
             if exc.errno == errno.ENOTEMPTY:
                 return format_error(ErrorType.VALIDATION, "Directory is not empty. Set recursive=True to delete it.")
@@ -118,6 +122,7 @@ class FilesystemManager:
             result: list[str] = []
             chars_used = 0
             lines_read = 0
+            long_line_warning = ""
             try:
                 with open(target, "r", encoding="utf-8", errors="replace") as file_obj:
                     for index, line in enumerate(itertools.islice(file_obj, offset, offset + limit)):
@@ -125,6 +130,16 @@ class FilesystemManager:
                         formatted = f"{offset + index + 1:6}  {clean_line}" if show_line_numbers else clean_line
                         line_chars = len(formatted) + 1
                         if chars_used + line_chars > char_budget:
+                            if not result:
+                                # A single line longer than the whole budget: show its
+                                # prefix instead of returning an empty page.
+                                result.append(formatted[:char_budget])
+                                lines_read = 1
+                                long_line_warning = (
+                                    f"\n\n[TRUNCATED LINE] Line {offset + 1}: only its prefix is shown. "
+                                    "The remainder of this line is omitted; use cli_exec to read character "
+                                    "ranges or increase max_tool_output."
+                                )
                             break
                         result.append(formatted)
                         chars_used += line_chars
@@ -132,7 +147,7 @@ class FilesystemManager:
             except Exception as exc:
                 return format_error(ErrorType.EXECUTION, f"Error reading file stream: {exc}")
 
-            output = "\n".join(result)
+            output = "\n".join(result) + long_line_warning
             end_index = offset + lines_read
             if total_lines > end_index:
                 output += (
@@ -143,23 +158,29 @@ class FilesystemManager:
                 )
             else:
                 if offset == 0 and not show_line_numbers and end_index >= total_lines:
-                    return output
+                    return self._truncate(output, source="read_file")
                 output += f"\n\n[EOF] Lines {offset + 1}-{end_index} of {total_lines} ({stats.st_size} bytes)."
-            return output
+            return self._truncate(output, source="read_file")
         except Exception as exc:
             return format_error(ErrorType.EXECUTION, f"Error reading file: {exc}")
 
     def write_file(self, path: str, content: str) -> str:
         try:
             target = self._resolve_path(path)
-            target.parent.mkdir(parents=True, exist_ok=True)
-            target.write_text(content, encoding="utf-8")
+            if not isinstance(content, str):
+                return format_error(ErrorType.VALIDATION, "content must be a string.")
+            atomic_write_text(target, content)
             return f"Success: File '{path}' saved ({len(content)} chars)."
         except Exception as exc:
             return format_error(ErrorType.EXECUTION, f"Error writing file: {exc}")
 
-    def edit_file(self, path: str, old_string: str, new_string: str) -> str:
-        return edit_text_file(self._resolve_path(path), path, old_string, new_string)
+    def edit_file(self, path: str, old_string: str, new_string: str, *, replace_all: bool = False) -> str:
+        try:
+            return self._truncate(edit_text_file(self._resolve_path(path), path, old_string, new_string, replace_all=replace_all))
+        except ValueError as exc:
+            return format_error(ErrorType.VALIDATION, str(exc))
+        except Exception as exc:
+            return format_error(ErrorType.EXECUTION, f"Error editing file: {exc}")
 
     def list_files(self, path: str, include_hidden: bool = False) -> str:
         try:

@@ -1,6 +1,7 @@
 import asyncio
 from contextlib import contextmanager
 from contextvars import ContextVar
+import codecs
 import os
 import re
 import shutil
@@ -305,6 +306,32 @@ def _limit_raw_output(content: str) -> str:
     return truncate_output(content, limit, source="shell-raw")
 
 
+class _OutputBuffer:
+    """Bound memory while retaining the beginning and the diagnostic tail."""
+
+    def __init__(self, limit: int):
+        self.head_limit = max(0, limit // 2)
+        self.tail_limit = max(0, limit - self.head_limit)
+        self.head = ""
+        self.tail = ""
+        self.total = 0
+
+    def append(self, text: str) -> None:
+        self.total += len(text)
+        needed = self.head_limit - len(self.head)
+        if needed > 0:
+            self.head += text[:needed]
+            text = text[needed:]
+        if self.tail_limit:
+            self.tail = (self.tail + text)[-self.tail_limit:]
+
+    def getvalue(self) -> str:
+        omitted = self.total - len(self.head) - len(self.tail)
+        if omitted > 0:
+            return self.head + f"\n[TRUNCATED: {omitted} characters omitted]\n" + self.tail
+        return self.head + self.tail
+
+
 def set_working_directory(cwd: str):
     """
     Syncs the shell's working directory with the FilesystemManager's workspace.
@@ -393,25 +420,37 @@ async def cli_exec(
                 cwd=_WORKING_DIRECTORY,
                 env=command_env,
             )
-        stdout_chunks: list[str] = []
-        stderr_chunks: list[str] = []
+        # Bound memory per stream while keeping head+tail diagnostics.
+        # The buffer limit sits above max_raw_tool_output so that _limit_raw_output
+        # stays the single canonical truncation point in the normal range; the
+        # buffer only kicks in for runaway multi-megabyte output.
+        raw_limit = _SAFETY_POLICY.max_raw_tool_output if _SAFETY_POLICY else 100000
+        buffer_limit = max(raw_limit * 2, raw_limit + 1024)
+        stdout_buffer = _OutputBuffer(buffer_limit)
+        stderr_buffer = _OutputBuffer(buffer_limit)
         chunk_queue: asyncio.Queue[tuple[str, str | None]] = asyncio.Queue()
         interactive_prompt: str = ""
-        interactive_prompt_sample = ""
+        interactive_prompt_sample: str = ""
 
         async def _read_stream(stream_name: str, reader: asyncio.StreamReader | None) -> None:
             if reader is None:
                 await chunk_queue.put((stream_name, None))
                 return
+            # Incremental decoder: multi-byte UTF-8 characters split across chunk
+            # boundaries are reassembled instead of being replaced with U+FFFD.
+            decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
             try:
                 while True:
-                    chunk = await reader.read(1024)
+                    chunk = await reader.read(8192)
                     if not chunk:
                         break
-                    text = chunk.decode("utf-8", errors="replace")
+                    text = decoder.decode(chunk)
                     if not text:
                         continue
                     await chunk_queue.put((stream_name, text))
+                tail = decoder.decode(b"", final=True)
+                if tail:
+                    await chunk_queue.put((stream_name, tail))
             finally:
                 await chunk_queue.put((stream_name, None))
 
@@ -425,9 +464,9 @@ async def cli_exec(
                     completed_readers += 1
                     continue
                 if stream_name == "stdout":
-                    stdout_chunks.append(chunk)
+                    stdout_buffer.append(chunk)
                 else:
-                    stderr_chunks.append(chunk)
+                    stderr_buffer.append(chunk)
                 _emit_cli_output(chunk, stream_name)
 
                 if detect_interactive_prompts and not interactive_prompt:
@@ -455,8 +494,8 @@ async def cli_exec(
             await asyncio.gather(stdout_reader_task, stderr_reader_task, return_exceptions=True)
             await collector_task
 
-        stdout = "".join(stdout_chunks).strip()
-        stderr = "".join(stderr_chunks).strip()
+        stdout = stdout_buffer.getvalue().strip()
+        stderr = stderr_buffer.getvalue().strip()
 
         output_parts =[]
         if stdout:
