@@ -417,6 +417,25 @@ class GuiUxTests(unittest.TestCase):
                 self.assertEqual(group.header_btn.text(), expected_title)
                 group.deleteLater()
 
+    def test_tool_group_error_title_includes_total_tools_and_errors(self):
+        group = ToolGroupWidget(parent=self.window)
+        for index, is_error in enumerate((False, True, True)):
+            card = ToolCardWidget(
+                {
+                    "tool_id": f"error-group-{index}",
+                    "name": "read_file",
+                    "phase": "finished",
+                    "is_error": is_error,
+                },
+                parent=group.container,
+            )
+            group.add_tool(card)
+
+        group.refresh_completion()
+
+        self.assertEqual(group.header_btn.text(), "Completed 3 tools with 2 errors")
+        group.deleteLater()
+
     def test_transcript_does_not_duplicate_preface_after_tool_group_with_minor_text_drift(self):
         turn = ConversationTurnWidget("user", parent=self.window)
         preface = (
@@ -1504,6 +1523,60 @@ class GuiUxTests(unittest.TestCase):
         mime = browser.createMimeDataFromSelection()
 
         self.assertEqual(mime.text(), "alpha.py")
+
+    def test_auto_text_browser_highlights_filenames_in_blue(self):
+        browser = AutoTextBrowser()
+        browser.setMarkdown("Смотри файл main.py и путь src/ui/theme.py, а также Dockerfile.")
+
+        highlighted = self._filename_highlighted_texts(browser)
+
+        self.assertIn("main.py", highlighted)
+        self.assertIn("src/ui/theme.py", highlighted)
+        self.assertIn("Dockerfile", highlighted)
+
+    def test_auto_text_browser_keeps_links_and_fenced_code_out_of_filename_highlight(self):
+        browser = AutoTextBrowser()
+        browser.setMarkdown(
+            "Инлайн `theme.py`, [ссылка](main.py) и блок:\n\n```\nmain.py в коде\n```\n"
+        )
+
+        highlighted = self._filename_highlighted_texts(browser)
+
+        self.assertEqual(highlighted, ["theme.py"])
+
+    def test_auto_text_browser_filename_highlight_survives_streaming_updates(self):
+        browser = AutoTextBrowser()
+        for text in (
+            "Отредактировал ",
+            "Отредактировал main",
+            "Отредактировал main.py",
+            "Отредактировал main.py и core/utils.py",
+        ):
+            browser.setMarkdown(text)
+
+        highlighted = self._filename_highlighted_texts(browser)
+
+        self.assertIn("main.py", highlighted)
+        self.assertIn("core/utils.py", highlighted)
+        self.assertEqual(highlighted.count("main.py"), 1)
+
+    @staticmethod
+    def _filename_highlighted_texts(browser: AutoTextBrowser) -> list[str]:
+        from ui.theme import FILENAME_BLUE
+
+        highlighted: list[str] = []
+        block = browser.document().firstBlock()
+        while block.isValid():
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                if fragment.isValid():
+                    color = fragment.charFormat().foreground().color()
+                    if color.name().upper() == FILENAME_BLUE.upper():
+                        highlighted.append(fragment.text())
+                iterator += 1
+            block = block.next()
+        return highlighted
 
     def test_composer_history_navigation_works_when_empty_and_dedupes_adjacent_entries(self):
         self.window._handle_initialized(self._snapshot_payload())

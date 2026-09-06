@@ -167,3 +167,52 @@ class UiHelperTests(unittest.TestCase):
 
         self.assertIn("first.py", [row["relative"] for row in rows])
         self.assertIn("late.py", [row["relative"] for row in rows])
+
+
+class FilenameSpanTests(unittest.TestCase):
+    def test_finds_plain_filenames_and_paths(self):
+        from core.text_utils import find_filename_spans
+
+        cases = {
+            "Смотри файл main.py в папке core": ["main.py"],
+            "Изменил src/ui/theme.py и core\\text_utils.py": ["src/ui/theme.py", "core\\text_utils.py"],
+            "Windows: D:\\project\\main.py открылся": ["D:\\project\\main.py"],
+            "Отредактированы Dockerfile и Makefile": ["Dockerfile", "Makefile"],
+            "картинка image.png и архив data.tar.gz": ["image.png", "data.tar.gz"],
+        }
+        for text, expected in cases.items():
+            with self.subTest(text=text):
+                spans = find_filename_spans(text)
+                self.assertEqual([text[start:end] for start, end in spans], expected)
+
+    def test_ignores_versions_and_non_filenames(self):
+        from core.text_utils import find_filename_spans
+
+        cases = [
+            "Версия 1.2.3 и main.py2 не подсвечиваются",
+            "Обычный текст без файлов",
+            "см. раздел 3.14 главы",
+        ]
+        for text in cases:
+            with self.subTest(text=text):
+                self.assertEqual(find_filename_spans(text), [])
+
+    def test_recognizes_extensions_with_dotless_suffixes(self):
+        from core.text_utils import find_filename_spans
+
+        text = "файл headers.json_codex"
+        self.assertEqual(
+            [text[start:end] for start, end in find_filename_spans(text)],
+            ["headers.json_codex"],
+        )
+        text = "config.json_codex и config.json_bak"
+        self.assertEqual(
+            [text[start:end] for start, end in find_filename_spans(text)],
+            ["config.json_codex", "config.json_bak"],
+        )
+
+    def test_empty_input_returns_no_spans(self):
+        from core.text_utils import find_filename_spans
+
+        self.assertEqual(find_filename_spans(""), [])
+        self.assertEqual(find_filename_spans(None), [])

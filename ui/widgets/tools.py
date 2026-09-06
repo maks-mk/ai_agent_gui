@@ -10,7 +10,7 @@ from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPlainTextEdit, QPush
 from shiboken6 import isValid
 
 from core.text_utils import build_tool_ui_labels, format_tool_display
-from ui.theme import ERROR_RED, SUCCESS_GREEN, TEXT_MUTED
+from ui.theme import ERROR_RED, FILENAME_BLUE, SUCCESS_GREEN, TEXT_MUTED
 from .foundation import (
     CodeBlockWidget,
     CollapsibleSection,
@@ -23,7 +23,7 @@ from .foundation import (
 )
 
 _ANSI_ESCAPE_RE = re.compile(r"\x1B\[[0-?]*[ -/]*[@-~]")
-FILE_ACCENT_BLUE = "#7CC7FF"
+FILE_ACCENT_BLUE = FILENAME_BLUE  # Backwards-compatible alias; canonical color lives in ui.theme
 TOOL_ICON_SIZE = 12
 MCP_TOOL_ICON = "fa5s.cubes"
 TOOL_ROLE_ICONS = {

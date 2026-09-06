@@ -257,6 +257,57 @@ def split_markdown_segments(text: str) -> list[MarkdownSegment]:
 
     return segments or [MarkdownSegment("markdown", "", "")]
 
+# Filename detection for assistant-answer highlighting. Matches:
+#   - explicit paths with a known extension: src/ui/theme.py, ./docs/README.md
+#   - bare names with a known extension: theme.py, README.md
+#   - Windows/UNC paths: core\text_utils.py, D:\project\main.py
+# Spaces are deliberately excluded from name characters: allowing them lets a
+# sentence like "see the docs. The file main.py" match as one giant token.
+_FILENAME_TOKEN_RE = re.compile(
+    r"(?<![\w./\\-])"
+    r"(?:[A-Za-z]:)?(?:[\w.\-]*[/\\])*"
+    r"[\w.\-]+\.(?:py|pyw|js|mjs|cjs|ts|tsx|jsx|json|jsonl|md|markdown|txt|rst|"
+    r"yml|yaml|toml|ini|cfg|conf|env|bat|ps1|psm1|sh|bash|zsh|fish|"
+    r"c|h|cpp|hpp|cc|cxx|cs|go|rs|java|kt|kts|rb|php|swift|m|mm|"
+    r"html|htm|css|scss|sass|less|vue|svelte|"
+    r"xml|sql|graphql|gql|proto|tf|tfvars|hcl|"
+    r"png|jpg|jpeg|gif|bmp|webp|svg|ico|tiff|pdf|zip|gz|tgz|tar|7z|rar|exe|dll|so|dylib|"
+    r"csv|tsv|xlsx|xls|docx|doc|pptx|ppt|ipynb|lock|log)"
+    r"(?:_[A-Za-z0-9]+)*(?!\w)(?!\.[A-Za-z0-9])"
+)
+# Extension-less filenames are too ambiguous in prose; only well-known project
+# files are highlighted.
+_BARE_FILENAME_RE = re.compile(
+    r"(?<![\w./\\-])(?:Dockerfile|Makefile|LICENSE|CHANGELOG|README)(?!\w)(?!\.[A-Za-z0-9])"
+)
+
+
+def find_filename_spans(text: str) -> list[tuple[int, int]]:
+    """Return merged (start, end) spans of filename-like tokens in plain text.
+
+    Used by the UI to tint filenames in assistant answers. Overlapping matches
+    from both patterns are merged so a token is never highlighted twice.
+    """
+    if not text:
+        return []
+    spans: list[tuple[int, int]] = []
+    for regex in (_FILENAME_TOKEN_RE, _BARE_FILENAME_RE):
+        for match in regex.finditer(text):
+            start, end = match.span()
+            if end > start:
+                spans.append((start, end))
+    if not spans:
+        return []
+    spans.sort()
+    merged: list[tuple[int, int]] = []
+    for start, end in spans:
+        if merged and start < merged[-1][1]:
+            previous_start, previous_end = merged[-1]
+            merged[-1] = (previous_start, max(previous_end, end))
+            continue
+        merged.append((start, end))
+    return merged
+
 # Matches Markdown links whose href is a local file path (not http/https/ftp/mailto).
 # Rich URL-encodes non-ASCII hrefs, which breaks Cyrillic filenames in output.
 # Capture groups: 1=link text, 2=href

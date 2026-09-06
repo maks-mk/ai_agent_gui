@@ -19,6 +19,7 @@ from ui.theme import (
     AMBER_WARNING,
     BORDER,
     ERROR_RED,
+    FILENAME_BLUE,
     MONO_FONT_FAMILY,
     SURFACE_ALT,
     SURFACE_BG,
@@ -27,6 +28,7 @@ from ui.theme import (
     TEXT_MUTED,
     TEXT_PRIMARY,
 )
+from core.text_utils import find_filename_spans
 
 DIFF_HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
 RENDERED_DIFF_LINE_RE = re.compile(r"^\s*\d*\s+\d*\s(?P<marker>[+\- ])\s")
@@ -451,6 +453,14 @@ def _build_full_width_diff_selections(editor: QPlainTextEdit) -> list[QTextEdit.
     return selections
 
 
+def _is_monospace_format(char_format: QTextCharFormat) -> bool:
+    """Return whether a rendered fragment uses a monospace font."""
+    families = char_format.fontFamilies() or []
+    return char_format.font().fixedPitch() or any(
+        str(family).lower() == "monospace" for family in families
+    )
+
+
 class AutoTextBrowser(QTextBrowser):
     def __init__(self, parent: QWidget | None = None) -> None:
         super().__init__(parent)
@@ -475,7 +485,53 @@ class AutoTextBrowser(QTextBrowser):
         self._last_markdown = markdown
         super().setMarkdown(markdown)
         self._normalize_inline_code_font_size()
+        self._highlight_filenames()
         self._queue_height_sync()
+
+    def _highlight_filenames(self) -> None:
+        """Tint filename-like tokens in rendered assistant markdown.
+
+        Runs on the already-rendered document, so Markdown structure (code
+        blocks, links, inline code) is respected: only plain-text fragments
+        are scanned, and anchors/links keep their own styling. Ranges are
+        collected first and formats applied afterwards, because merging a
+        char format splits fragments and would invalidate the iterator.
+        """
+        document = self.document()
+        highlight_ranges: list[tuple[int, int]] = []
+
+        block = document.firstBlock()
+        while block.isValid():
+            iterator = block.begin()
+            while not iterator.atEnd():
+                fragment = iterator.fragment()
+                if fragment.isValid():
+                    char_format = fragment.charFormat()
+                    is_fenced_code = (
+                        _is_monospace_format(char_format) and not char_format.font().fixedPitch()
+                    )
+                    if not char_format.isAnchor() and not is_fenced_code:
+                        # Keep inline-code typography, but tint filenames inside
+                        # it. Fenced code blocks use a generic monospace format
+                        # and remain untouched.
+                        fragment_start = fragment.position()
+                        highlight_ranges.extend(
+                            (fragment_start + start, fragment_start + end)
+                            for start, end in find_filename_spans(fragment.text())
+                        )
+                iterator += 1
+            block = block.next()
+
+        if not highlight_ranges:
+            return
+
+        highlight = QTextCharFormat()
+        highlight.setForeground(QColor(FILENAME_BLUE))
+        cursor = QTextCursor(document)
+        for start, end in highlight_ranges:
+            cursor.setPosition(start)
+            cursor.setPosition(end, QTextCursor.KeepAnchor)
+            cursor.mergeCharFormat(highlight)
 
     def _normalize_inline_code_font_size(self) -> None:
         self.ensurePolished()

@@ -194,8 +194,7 @@ class ToolGroupWidget(QFrame):
                 "find_process": "Finding process failed",
                 "input": "Requesting input failed",
             }.get(role, "Tool failed")
-        noun = self._pluralize(errors, "error", "errors")
-        return f"Completed with errors: {errors} {noun}"
+        return f"Completed {total} tools with {errors} errors"
 
     def _set_header_state(self, *, state: str) -> None:
         if self.header_btn.property("state") == state:
@@ -309,7 +308,8 @@ class ToolGroupWidget(QFrame):
             self._set_header_state(state="error" if errors > 0 else "complete")
             if errors > 0:
                 self.header_btn.setIcon(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=9))
-                self.header_btn.setText(f"{self._error_header_text(errors)} ·")
+                error_title = self._error_header_text(errors)
+                self.header_btn.setText(f"{error_title} ·" if total == 1 else error_title)
             else:
                 self.header_btn.setIcon(_fa_icon("fa5s.check-circle", color=SUCCESS_GREEN, size=9))
                 self.header_btn.setText(self._header_text(completed=True))

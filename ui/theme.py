@@ -20,6 +20,7 @@ BORDER = "#38352F"
 AMBER_WARNING = "#D97706"
 ERROR_RED = "#EF4444"
 SUCCESS_GREEN = "#10B981"
+FILENAME_BLUE = "#7CC7FF"         # Filename highlights in assistant markdown and tool cards
 CODE_BG = "#161514"             # Code background
 CODE_TEXT = "#ECEAE6"
 
