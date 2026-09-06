@@ -31,6 +31,7 @@ jsonpointer==3.1.1
 jsonschema==4.26.0
 jsonschema-specifications==2025.9.1
 langchain==1.4.0
+langchain-anthropic==1.7.1
 langchain-core==1.6.2
 langchain-google-genai==4.4.0
 langchain-mcp-adapters==0.3.2

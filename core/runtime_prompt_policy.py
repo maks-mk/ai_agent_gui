@@ -50,17 +50,19 @@ class RuntimePromptPolicyBuilder:
     )
     TOOL_INTENT_REQUIREMENT_TEXT = (
         "TOOL INTENT REQUIREMENT:\n"
-        "Never send an empty assistant message when tool_calls are present.\n"
-        "The `content` field of every assistant message that contains `tool_calls` MUST be non-empty.\n"
-        "Write one useful preface for a new investigation/action phase or a risky action; do not restate a similar "
-        "preface before every follow-up tool batch.\n"
-        "For follow-up tool calls in the same phase, keep content very brief and non-repetitive.\n"
-        "When writing a preface, say what target you are checking or changing, why it matters, and what signal you expect next.\n"
-        "If you say you will use a tool, emit the matching structured tool_call in the same assistant message.\n"
-        "Keep it concrete and useful to the user; avoid generic notes like 'I will use a tool now.'\n"
-        "Example: 'I will inspect config.py and the startup path to see where the database host is resolved. "
-        "That should show whether the wrong value comes from env loading or runtime overrides.'\n"
-        "An empty `content` when `tool_calls` are present is a PROTOCOL ERROR."
+        "Announce each logical group of tool calls ONCE, BEFORE its opening batch, not before every call.\n"
+        "A group consists of consecutive calls serving one immediate objective, even across multiple messages.\n"
+        "In the opening tool-call message, write one short comment in content naming the target and purpose "
+        "in the user's language. Include that batch's structured tool_calls in the SAME assistant message.\n"
+        "Example: 'Tracing database host resolution through configuration and startup code.'\n"
+        "Continue without commentary while the next calls serve the announced objective and introduce no "
+        "unannounced risk. content may be empty for these follow-ups.\n"
+        "Changing a tool, file or command, retrying or fetching more results alone does not start a new group.\n"
+        "Give a new preface before calls serving a different immediate objective, or before a risky action "
+        "not covered by the current preface. For risky actions, briefly explain the intended effect.\n"
+        "Do not narrate individual tool results or repeat the preface. "
+        "Report actionable blockers or summarize verified outcomes when the task is complete.\n"
+        "Keep comments concrete and brief; avoid generic filler and do not expose internal reasoning."
     )
     def __init__(self, *, config: AgentConfig) -> None:
         self.config = config
@@ -128,7 +130,11 @@ class RuntimePromptPolicyBuilder:
     def _build_strict_mode_message(self) -> str:
         if not self.config.strict_mode:
             return ""
-        return "STRICT MODE: Be precise. No guessing."
+        return (
+            "STRICT MODE: Be precise. No guessing.\n"
+            "State material uncertainty, failed checks, and skipped verification explicitly. "
+            "If a fact is not confirmed by repository state, tool output, or the user, say so instead of assuming it."
+        )
 
     def _build_tool_access_message(self, context: RuntimePromptContext) -> str:
         if not context.tools_available:
@@ -141,7 +147,8 @@ class RuntimePromptPolicyBuilder:
         if not names:
             return (
                 "TOOLS:\n"
-                "Tools are available in this runtime. Use tool calls when they help."
+                "Tools are available in this runtime. Call a tool only when it serves the current objective; "
+                "answer directly from already-known information otherwise. Do not invent unavailable tools."
             )
         if len(names) <= 4:
             return (
@@ -152,9 +159,9 @@ class RuntimePromptPolicyBuilder:
             )
         return (
             "TOOLS:\n"
-            "Tools are available in this runtime for file, shell, web, or system access. Do not invent unavailable tools."
+            "Multiple tools are available in this runtime. Do not invent unavailable tools. "
+            "If unsure which tool fits, prefer the read-only inspection tool over a mutating one."
         )
-    
     def _build_request_user_input_policy(self, context: RuntimePromptContext) -> str:
         if self.REQUEST_USER_INPUT_TOOL_NAME not in self._normalized_tool_names(context.active_tool_names):
             return ""

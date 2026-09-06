@@ -730,7 +730,10 @@ class AnthropicReasoningTests(unittest.TestCase):
         self.assertEqual(payload["model"], "deepseek-v3.2")
         self.assertNotIn("thinking", payload)
         self.assertNotIn("output_config", payload)
-        self.assertEqual(payload["temperature"], cfg.temperature)
+        # With anthropic>=1 the SDK no longer accepts sampling params as named
+        # arguments, so langchain-anthropic relocates `temperature` into
+        # `extra_body`; the value still reaches the API.
+        self.assertEqual(payload.get("temperature", payload.get("extra_body", {}).get("temperature")), cfg.temperature)
 
     def test_non_claude_model_does_not_reject_anthropic_reasoning_setting(self):
         from core.providers.anthropic import create_anthropic_chat_model

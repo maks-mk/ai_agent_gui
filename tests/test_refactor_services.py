@@ -99,7 +99,10 @@ class RefactorServicesTests(unittest.TestCase):
         system_text = "\n".join(
             str(message.content) for message in context if isinstance(message, SystemMessage)
         )
-        self.assertIn("Tools are available in this runtime for file, shell, web, or system access.", system_text)
+        self.assertIn(
+            "Multiple tools are available in this runtime. Do not invent unavailable tools.", system_text
+        )
+        self.assertIn("prefer the read-only inspection tool over a mutating one", system_text)
         self.assertNotIn("tool_0, tool_1", system_text)
 
     def test_context_builder_injects_runtime_contract_from_code(self):
@@ -132,7 +135,7 @@ class RefactorServicesTests(unittest.TestCase):
         self.assertIn("Current task: Проверь задачу", joined)
         self.assertIn("TOOLS:", joined)
         self.assertIn("TOOL INTENT REQUIREMENT:", joined)
-        self.assertIn("Never send an empty assistant message when tool_calls are present.", joined)
+        self.assertIn("Announce each logical group of tool calls ONCE, BEFORE its opening batch", joined)
         self.assertIn("Execution environment: os=windows;", joined)
         self.assertIn("paths=windows.", joined)
         self.assertIn("Workspace:", joined)
