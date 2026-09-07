@@ -4093,6 +4093,55 @@ class GuiUxTests(unittest.TestCase):
 
         self.assertEqual(dialog.name_edit.text(), "gpt-oss-120b")
 
+    def test_model_settings_dialog_keeps_manually_entered_model_after_save_and_reload(self):
+        payload = {
+            "active_profile": "gpt-4o",
+            "profiles": [
+                {
+                    "id": "gpt-4o",
+                    "provider": "openai",
+                    "model": "gpt-4o",
+                    "api_key": "sk-demo",
+                    "base_url": "https://api.openai.com/v1",
+                    "enabled": True,
+                }
+            ],
+        }
+        with mock.patch.object(agent_cli.ModelSettingsDialog, "_schedule_fetch", autospec=True):
+            dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+            self.addCleanup(dialog.close)
+            self._process_events()
+
+            dialog._apply_loaded_models(
+                [
+                    ModelEntry("gpt-4o", "openai", True),
+                    ModelEntry("gpt-4o-mini", "openai", True),
+                ]
+            )
+            self._process_events()
+
+            dialog.model_combo.setEditText("custom-manual-model")
+            self._process_events()
+            self.assertEqual(dialog._get_current_model_value(), "custom-manual-model")
+
+            dialog._save_and_accept()
+            self._process_events()
+            result = dialog.result_payload()
+            self.assertEqual(result["profiles"][0]["model"], "custom-manual-model")
+            self.assertEqual(dialog._get_current_model_value(), "custom-manual-model")
+
+            # A later model-list reload (e.g. after Save) must not wipe the manual entry.
+            dialog._apply_loaded_models(
+                [
+                    ModelEntry("gpt-4o", "openai", True),
+                    ModelEntry("gpt-4o-mini", "openai", True),
+                ]
+            )
+            self._process_events()
+            self.assertEqual(dialog._get_current_model_value(), "custom-manual-model")
+            dialog._save_and_accept()
+            self.assertEqual(dialog.result_payload()["profiles"][0]["model"], "custom-manual-model")
+
     def test_model_settings_dialog_updates_auto_name_when_only_model_is_replaced(self):
         payload = {
             "active_profile": "opn/gpt-4o",

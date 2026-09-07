@@ -209,6 +209,7 @@ class ModelSettingsDialog(QDialog):
         self._profiles: list[dict[str, Any]] = [dict(item) for item in normalized.get("profiles", [])]
         self._active_profile = str(normalized.get("active_profile") or "").strip()
         self._name_manual_flags: list[bool] = []
+        self._model_manual_flags: list[bool] = []
         self._selected_row = -1
         self._loading_form = False
         self._filter_text = ""
@@ -231,6 +232,7 @@ class ModelSettingsDialog(QDialog):
         self._save_button_reset_timer.setInterval(3000)
         self._save_button_reset_timer.timeout.connect(self._restore_save_button_text)
         self._name_manual_flags = self._compute_initial_name_manual_flags()
+        self._model_manual_flags = [False] * len(self._profiles)
 
         root = QVBoxLayout(self)
         root.setContentsMargins(10, 10, 10, 10)
@@ -919,7 +921,12 @@ class ModelSettingsDialog(QDialog):
     def _apply_loaded_models(self, entries: list[ModelEntry]) -> None:
         provider = self._normalized_provider()
         current_value = self._get_current_model_value()
-        self._model_entries_by_id = {entry.id: entry for entry in entries}
+        current_row = self._current_row()
+        manual_entry = 0 <= current_row < len(self._model_manual_flags) and self._model_manual_flags[current_row]
+        new_entries = {entry.id: entry for entry in entries}
+        if current_value and current_value not in new_entries and not manual_entry:
+            current_value = ""
+        self._model_entries_by_id = new_entries
 
         self.model_combo.blockSignals(True)
         self.model_combo.clear()
@@ -931,16 +938,21 @@ class ModelSettingsDialog(QDialog):
                 self.model_combo.addItem(model_id)
 
         selected_model = current_value if current_value in self._model_entries_by_id else (ordered_ids[0] if ordered_ids else "")
+        manual_model = bool(current_value) and selected_model != current_value
+        if manual_model:
+            self.model_combo.insertItem(0, current_value)
+            selected_model = current_value
         if selected_model:
             selected_index = self.model_combo.findText(selected_model)
             if selected_index >= 0:
                 self.model_combo.setCurrentIndex(selected_index)
-            elif provider in {"openai", "anthropic"}:
+            elif self.model_combo.isEditable():
                 self.model_combo.setEditText(selected_model)
         self.model_combo.blockSignals(False)
 
         self._set_current_model_widgets_text(selected_model)
-        current_row = self._current_row()
+        if manual_model and 0 <= current_row < len(self._model_manual_flags):
+            self._model_manual_flags[current_row] = True
         if selected_model and 0 <= current_row < len(self._profiles) and not self._name_manual_flags[current_row]:
             self._loading_form = True
             self.name_edit.setText(self._suggest_unique_id(selected_model, row=current_row))
@@ -1598,6 +1610,8 @@ class ModelSettingsDialog(QDialog):
         current_model = self._get_current_model_value()
         if self._model_state == ModelLoadState.LOADED:
             self._apply_entry_image_support(current_model)
+            if 0 <= row < len(self._model_manual_flags):
+                self._model_manual_flags[row] = current_model not in self._model_entries_by_id
         self._loading_form = True
         self.name_edit.setText(self._suggest_unique_id(current_model, row=row))
         self._loading_form = False
@@ -1615,6 +1629,9 @@ class ModelSettingsDialog(QDialog):
         self._update_base_url_field_state(provider)
         self._invalidate_pending_fetches()
         self._clear_model_options()
+        row = self._current_row()
+        if 0 <= row < len(self._model_manual_flags):
+            self._model_manual_flags[row] = False
         self._loading_form = True
         self._set_current_model_widgets_text("")
         if str(provider or "").strip().lower() not in {"openai", "anthropic"}:
@@ -1643,6 +1660,7 @@ class ModelSettingsDialog(QDialog):
             }
         )
         self._name_manual_flags.append(False)
+        self._model_manual_flags.append(False)
         self._set_save_state("")
         self._refresh_profile_list(preferred_row=len(self._profiles) - 1)
         self.name_edit.setFocus()
@@ -1658,6 +1676,7 @@ class ModelSettingsDialog(QDialog):
         duplicated["enabled"] = bool(source.get("enabled", True))
         self._profiles.insert(row + 1, duplicated)
         self._name_manual_flags.insert(row + 1, False)
+        self._model_manual_flags.insert(row + 1, bool(self._model_manual_flags[row]) if row < len(self._model_manual_flags) else False)
         self._set_save_state("Duplicated profile. Rename it before saving if needed.")
         self._refresh_profile_list(preferred_row=row + 1)
         self.name_edit.setFocus()
@@ -1670,6 +1689,8 @@ class ModelSettingsDialog(QDialog):
         removed_id = str(self._profiles[row].get("id") or "").strip()
         self._profiles.pop(row)
         self._name_manual_flags.pop(row)
+        if row < len(self._model_manual_flags):
+            self._model_manual_flags.pop(row)
 
         if removed_id and removed_id == self._active_profile:
             self._active_profile = ""
@@ -1732,6 +1753,8 @@ class ModelSettingsDialog(QDialog):
         self._profiles = [dict(item) for item in self._result_payload.get("profiles", [])]
         self._active_profile = str(self._result_payload.get("active_profile") or "").strip()
         self._name_manual_flags = self._compute_initial_name_manual_flags()
+        if len(self._model_manual_flags) != len(self._profiles):
+            self._model_manual_flags = [False] * len(self._profiles)
         current_row = self._current_row()
         preferred_row = current_row if current_row >= 0 else self._preferred_row_for_open()
         self._refresh_profile_list(preferred_row=preferred_row)

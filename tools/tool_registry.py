@@ -589,8 +589,25 @@ class ToolRegistry:
                 server_config = {key: value for key, value in cfg.items() if key in valid_keys}
                 client = MultiServerMCPClient({name: server_config})
                 return name, client, await client.get_tools(), None
-            except Exception as e:
+            except BaseException as e:
                 return name, None, None, e
+
+    @staticmethod
+    def _format_mcp_error(err: BaseException) -> str:
+        parts = [str(err)]
+        seen = set()
+        stack = [err]
+        while stack:
+            exc = stack.pop()
+            if id(exc) in seen:
+                continue
+            seen.add(id(exc))
+            for sub in getattr(exc, "exceptions", []) or []:
+                cause = f"{type(sub).__name__}: {sub}"
+                if cause not in parts:
+                    parts.append(cause)
+                stack.append(sub)
+        return " | ".join(parts)
 
     async def _load_mcp_tools(self):
         try:
@@ -648,8 +665,9 @@ class ToolRegistry:
             )
             for name, client, mcp_tools, err in results:
                 if err is not None:
-                    self.mcp_server_status.append({"server": name, "loaded_tools": [], "error": str(err), "enabled": True})
-                    logger.error("❌ MCP Server '%s' Error: %s", name, err)
+                    error_text = self._format_mcp_error(err)
+                    self.mcp_server_status.append({"server": name, "loaded_tools": [], "error": error_text, "enabled": True})
+                    logger.error("❌ MCP Server '%s' Error: %s", name, error_text)
                     continue
 
                 server_cfg = raw_cfg.get(name) if isinstance(raw_cfg.get(name), dict) else {}

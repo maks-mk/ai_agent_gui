@@ -3,10 +3,19 @@
     "type": "remote",
     "url": "https://mcp.context7.com/mcp",
     "transport": "http",
-    "enabled": true,
+    "enabled": false,
     "policy": {
       "read_only": true
     }
+  },
+  "ux-expert": {
+    "command": "npx",
+    "args": [
+      "-y",
+      "@elsahafy/ux-mcp-server"
+    ],
+    "transport": "stdio",
+    "enabled": false
   },
   "sequential-thinking": {
     "command": "npx",
