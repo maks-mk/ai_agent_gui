@@ -325,7 +325,10 @@ class ChatTranscriptWidget(QWidget):
         shell = QHBoxLayout(self.container)
         shell.setContentsMargins(0, 0, 0, 0)
         shell.setSpacing(0)
-        shell.addStretch(1)
+        # Side spacers keep stretch 0 so the column takes all free space up to
+        # its maximum width; any leftover is then split evenly between them.
+        shell.addStretch(0)
+        self.shell = shell
 
         self.column = QWidget(self.container)
         self.column.setObjectName("TranscriptColumn")
@@ -336,8 +339,8 @@ class ChatTranscriptWidget(QWidget):
         self.layout.setSpacing(4)
         self.layout.addStretch(1)
 
-        shell.addWidget(self.column, 3)
-        shell.addStretch(1)
+        shell.addWidget(self.column, 1)
+        shell.addStretch(0)
         self.scroll.setWidget(self.container)
         outer.addWidget(self.scroll)
         scrollbar = self.scroll.verticalScrollBar()

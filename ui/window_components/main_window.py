@@ -5,7 +5,7 @@ import os
 import sys
 from typing import Final
 
-from PySide6.QtCore import QMessageLogContext, Qt, QtMsgType, QSize, QTimer, qInstallMessageHandler
+from PySide6.QtCore import QEvent, QMessageLogContext, Qt, QtMsgType, QSize, QTimer, qInstallMessageHandler
 from PySide6.QtGui import QAction, QCloseEvent, QIcon
 from PySide6.QtWidgets import QApplication, QDockWidget, QFileDialog, QMainWindow, QMenuBar, QMessageBox, QSizePolicy, QVBoxLayout, QWidget
 
@@ -86,7 +86,7 @@ class MainWindow(QMainWindow):
         self.awaiting_user_choice = False
         self.is_busy = False
         self.sidebar_collapsed = False
-        self._sidebar_width = 330
+        self._sidebar_width = 300
         self.inspector_collapsed = False
         self._inspector_width = 400
         self._custom_choice_armed = False
@@ -127,6 +127,8 @@ class MainWindow(QMainWindow):
         self._build_ui()
         self._connect_signals()
         self._build_event_dispatch()
+        # Track the center panel's final geometry to keep the chat centered.
+        self.transcript.parentWidget().installEventFilter(self)
         if auto_initialize:
             self.controller.initialize()
 
@@ -231,6 +233,7 @@ class MainWindow(QMainWindow):
         self.new_session_button.clicked.connect(lambda _checked=False: self.new_session_action.trigger())
         self.settings_button.clicked.connect(lambda _checked=False: self.settings_action.trigger())
         self.info_button.clicked.connect(lambda _checked=False: self.info_action.trigger())
+        self.splitter.splitterMoved.connect(lambda _pos, _index: self._update_centering())
         self.sidebar.session_activated.connect(self._switch_session)
         self.sidebar.session_delete_requested.connect(self._request_delete_session)
         self.sidebar.project_delete_requested.connect(self._request_delete_project)
@@ -567,6 +570,7 @@ class MainWindow(QMainWindow):
 
     def _toggle_info_popup(self) -> None:
         self._inspector_controller.toggle_info_popup()
+        self._update_centering()
 
     def _set_input_enabled(self, enabled: bool) -> None:
         has_pending_interrupt = self.awaiting_approval or self.awaiting_user_choice
@@ -876,6 +880,7 @@ class MainWindow(QMainWindow):
                 pass
             close_button.clicked.connect(dock.close)
         dock.destroyed.connect(lambda *_args: setattr(self, "_model_settings_window", None))
+        dock.visibilityChanged.connect(lambda _visible: self._update_centering())
         dock.show()
         dock.raise_()
 
@@ -1130,6 +1135,17 @@ class MainWindow(QMainWindow):
 
     def _toggle_sidebar(self) -> None:
         self._sidebar_controller.toggle_sidebar()
+        self._update_centering()
+
+    def _update_centering(self) -> None:
+        self._workspace_builder.apply_centering_compensation()
+
+    def eventFilter(self, watched, event) -> bool:  # type: ignore[override]
+        # Recompute chat centering whenever the center panel gets its final
+        # geometry (window resize, sidebar/inspector toggle, dock open/close).
+        if event.type() == QEvent.Resize and watched is self.transcript.parentWidget():
+            self._workspace_builder.apply_centering_compensation()
+        return super().eventFilter(watched, event)
 
     def _switch_session(self, session_id: str) -> None:
         self._sidebar_controller.switch_session(session_id)
@@ -1145,6 +1161,14 @@ class MainWindow(QMainWindow):
 
     def _open_new_project(self) -> None:
         self._sidebar_controller.open_new_project()
+
+    def showEvent(self, event) -> None:  # type: ignore[override]
+        super().showEvent(event)
+        self._update_centering()
+
+    def resizeEvent(self, event) -> None:  # type: ignore[override]
+        super().resizeEvent(event)
+        self._update_centering()
 
     def closeEvent(self, event: QCloseEvent) -> None:
         try:

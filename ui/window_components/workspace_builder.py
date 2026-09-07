@@ -81,6 +81,51 @@ class WorkspaceBuilder:
     def __init__(self, window) -> None:
         self.window = window
 
+    def apply_centering_compensation(self) -> None:
+        """Keep the chat column and composer centered on the whole window.
+
+        The transcript/composer column is centered inside the splitter's center
+        panel, so the open Projects sidebar shifts it off the window center.
+        Compensate with asymmetric shell margins so the column stays visually
+        centered on the window regardless of the sidebar state. Right-side
+        panels (inspector / model settings) must NOT trigger this compensation:
+        with any of them open the chat simply centers inside the center panel.
+        """
+        window = self.window
+        center_panel = window.transcript.parentWidget()
+        if center_panel is None or not center_panel.isVisible():
+            return
+        # Activate layouts first so the geometry reads below reflect the latest
+        # splitter sizes instead of the pre-layout values.
+        if center_panel.layout() is not None:
+            center_panel.layout().activate()
+        right_panel_open = window.inspector_container.isVisible() or self._settings_dock_visible()
+        if right_panel_open:
+            left = right = 0
+        else:
+            panel_left = center_panel.mapTo(window, center_panel.rect().topLeft()).x()
+            panel_width = center_panel.width()
+            column_width = min(TRANSCRIPT_MAX_WIDTH, panel_width)
+            # Column start (in panel coordinates) that puts its center on the
+            # window center; clamped to the panel so the sidebar is never overlapped.
+            target_left = window.width() // 2 - column_width // 2 - panel_left
+            left = max(0, min(target_left, panel_width - column_width))
+            right = max(0, panel_width - column_width - left)
+        shell = window.transcript.shell
+        margins = shell.contentsMargins()
+        shell.setContentsMargins(left, margins.top(), right, margins.bottom())
+        composer_shell = window.composer_shell
+        composer_margins = composer_shell.contentsMargins()
+        composer_shell.setContentsMargins(left, composer_margins.top(), right, composer_margins.bottom())
+        # Apply the new margins immediately instead of waiting for the next
+        # event-loop pass, so the column never appears off-center.
+        shell.activate()
+        center_panel.layout().activate()
+
+    def _settings_dock_visible(self) -> bool:
+        dock = getattr(self.window, "_model_settings_window", None)
+        return dock is not None and dock.isVisible()
+
     def build(self) -> WorkspaceBuildResult:
         workspace = QWidget()
         layout = QVBoxLayout(workspace)
@@ -119,7 +164,7 @@ class WorkspaceBuilder:
         composer_shell = QHBoxLayout()
         composer_shell.setContentsMargins(0, 18, 0, 12)
         composer_shell.setSpacing(0)
-        composer_shell.addStretch(1)
+        composer_shell.addStretch(0)
 
         composer_container = QWidget()
         composer_container.setObjectName("CenteredComposerRow")
@@ -277,8 +322,8 @@ class WorkspaceBuilder:
         pill_layout.addLayout(control_row)
 
         outer_layout.addWidget(composer_pill)
-        composer_shell.addWidget(composer_container, 3)
-        composer_shell.addStretch(1)
+        composer_shell.addWidget(composer_container, 1)
+        composer_shell.addStretch(0)
         # Transcript and composer share column 0.
         center_layout.addLayout(composer_shell, 1, 0)
 

@@ -33,7 +33,7 @@ from core.text_utils import find_filename_spans
 DIFF_HUNK_HEADER_RE = re.compile(r"^@@ -(?P<old>\d+)(?:,\d+)? \+(?P<new>\d+)(?:,\d+)? @@")
 RENDERED_DIFF_LINE_RE = re.compile(r"^\s*\d*\s+\d*\s(?P<marker>[+\- ])\s")
 # Keep the transcript/composer column comfortably readable on wide displays.
-TRANSCRIPT_MAX_WIDTH = 810
+TRANSCRIPT_MAX_WIDTH = 730
 USER_MESSAGE_COLLAPSE_CHAR_LIMIT = 420
 USER_MESSAGE_COLLAPSE_LINE_LIMIT = 8
 COMPOSER_MENTION_MAX_ITEMS = 50
