@@ -96,7 +96,12 @@ class WorkspaceBuilder:
         if center_panel is None or not center_panel.isVisible():
             return
         # Activate layouts first so the geometry reads below reflect the latest
-        # splitter sizes instead of the pre-layout values.
+        # splitter sizes instead of the pre-layout values. The main window
+        # layout matters too: a full-width Settings dock pushes the central
+        # widget off-window, and closing the dock restores it only through the
+        # main window layout (the inner splitter geometry does not change).
+        if window.layout() is not None:
+            window.layout().activate()
         if center_panel.layout() is not None:
             center_panel.layout().activate()
         right_panel_open = window.inspector_container.isVisible() or self._settings_dock_visible()

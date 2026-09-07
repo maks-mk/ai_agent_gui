@@ -162,6 +162,29 @@ class SearchableModelComboBox(QComboBox):
         self.popup_requested.emit()
 
 
+class ResponsiveProfileList(QListWidget):
+    """Keep profile cards inside the list viewport when the pane is resized."""
+
+    def _fit_items_to_viewport(self) -> None:
+        viewport_width = self.viewport().width()
+        if viewport_width <= 0:
+            return
+        for row in range(self.count()):
+            item = self.item(row)
+            if item is None:
+                continue
+            hint = item.sizeHint()
+            if hint.width() != viewport_width:
+                item.setSizeHint(QSize(viewport_width, hint.height()))
+            item_widget = self.itemWidget(item)
+            if item_widget is not None and item_widget.width() != viewport_width:
+                item_widget.setFixedWidth(viewport_width)
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._fit_items_to_viewport()
+
+
 class ModelSettingsDialog(QDialog):
     profiles_saved = Signal(object)
 
@@ -172,8 +195,15 @@ class ModelSettingsDialog(QDialog):
         self.setModal(False)
         self.setWindowModality(Qt.NonModal)
         self.setAttribute(Qt.WA_DeleteOnClose, True)
-        self.resize(824, 680)
-        self.setMinimumSize(755, 450)
+        available_geometry = QApplication.primaryScreen().availableGeometry()
+        self.resize(
+            min(824, available_geometry.width()),
+            min(680, available_geometry.height()),
+        )
+        self.setMinimumSize(
+            min(660, available_geometry.width()),
+            min(450, available_geometry.height()),
+        )
 
         normalized = normalize_profiles_payload(payload or {})
         self._profiles: list[dict[str, Any]] = [dict(item) for item in normalized.get("profiles", [])]
@@ -272,9 +302,10 @@ class ModelSettingsDialog(QDialog):
         self.search_edit.addAction(_fa_icon("fa5s.search", color=TEXT_MUTED, size=10), QLineEdit.LeadingPosition)
         left.addWidget(self.search_edit)
 
-        self.profile_list = QListWidget()
+        self.profile_list = ResponsiveProfileList()
         self.profile_list.setObjectName("ModelProfileList")
-        self.profile_list.setMinimumWidth(280)
+        self.profile_list.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self.profile_list.setMinimumWidth(240)
         self.profile_list.setAccessibleName("Profile list")
         self.profile_list.setAccessibleDescription("Select a model profile to edit")
         self.profile_list.currentRowChanged.connect(self._on_selection_changed)
@@ -526,11 +557,15 @@ class ModelSettingsDialog(QDialog):
         editor_scroll.setWidget(editor_content)
         right.addWidget(editor_scroll, 1)
 
-        left_container.setMinimumWidth(285)
+        left_container.setMinimumWidth(240)
         right_container.setMinimumWidth(405)
+        left_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
+        right_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.body_splitter.addWidget(left_container)
         self.body_splitter.addWidget(right_container)
-        self.body_splitter.setSizes([285, 539])
+        self.body_splitter.setStretchFactor(0, 1)
+        self.body_splitter.setStretchFactor(1, 2)
+        self.body_splitter.setSizes([240, 539])
         models_page_layout.addWidget(self.body_splitter, 1)
 
         actions = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
@@ -1354,6 +1389,7 @@ class ModelSettingsDialog(QDialog):
             self.profile_list.addItem(item)
             self.profile_list.setItemWidget(item, item_widget)
         self.profile_list.blockSignals(False)
+        self.profile_list._fit_items_to_viewport()
         if self.save_button is not None:
             self.save_button.setEnabled(bool(self._profiles))
 

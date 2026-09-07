@@ -149,6 +149,7 @@ class MainWindow(QMainWindow):
         self.setStatusBar(status_refs.status_bar)
 
         central = QWidget()
+        central.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Expanding)
         root = QVBoxLayout(central)
         root.setContentsMargins(8, 8, 8, 8)
         root.setSpacing(6)
@@ -863,15 +864,14 @@ class MainWindow(QMainWindow):
         dock.setFeatures(QDockWidget.DockWidgetFeature.DockWidgetClosable)
         dock.setTitleBarWidget(QWidget(dock))
         dock.setFloating(False)
-        dock.setMinimumWidth(850)
-        dock.resize(1070, max(420, self.height()))
+        dock.setMinimumWidth(660)
         dock.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         dialog.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose, False)
         dialog.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         dock.setWidget(dialog)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
-        self.resizeDocks([dock], [1070], Qt.Orientation.Horizontal)
         self._model_settings_window = dock
+        self._expand_settings_dock_to_full_width()
 
         if close_button := getattr(dialog, "close_button", None):
             try:
@@ -880,9 +880,10 @@ class MainWindow(QMainWindow):
                 pass
             close_button.clicked.connect(dock.close)
         dock.destroyed.connect(lambda *_args: setattr(self, "_model_settings_window", None))
-        dock.visibilityChanged.connect(lambda _visible: self._update_centering())
+        dock.visibilityChanged.connect(self._on_settings_dock_visibility_changed)
         dock.show()
         dock.raise_()
+        self._expand_settings_dock_to_full_width()
 
     def _save_model_profiles_from_dialog(self, payload: dict | None) -> None:
         normalized = normalize_profiles_payload(payload or {})
@@ -1143,7 +1144,10 @@ class MainWindow(QMainWindow):
     def eventFilter(self, watched, event) -> bool:  # type: ignore[override]
         # Recompute chat centering whenever the center panel gets its final
         # geometry (window resize, sidebar/inspector toggle, dock open/close).
-        if event.type() == QEvent.Resize and watched is self.transcript.parentWidget():
+        # Move matters as much as Resize: a full-width Settings dock pushes the
+        # central widget off-window without resizing it, and on close the panel
+        # returns via a Move event only.
+        if watched is self.transcript.parentWidget() and event.type() in (QEvent.Resize, QEvent.Move):
             self._workspace_builder.apply_centering_compensation()
         return super().eventFilter(watched, event)
 
@@ -1162,6 +1166,20 @@ class MainWindow(QMainWindow):
     def _open_new_project(self) -> None:
         self._sidebar_controller.open_new_project()
 
+    def _on_settings_dock_visibility_changed(self, visible: bool) -> None:
+        if visible:
+            self._expand_settings_dock_to_full_width()
+        # Recompute centering on the next event-loop pass: at this moment the
+        # dock layout is not settled yet and reading geometry now would keep
+        # the chat column glued to the right edge after the dock closes.
+        QTimer.singleShot(0, self._update_centering)
+
+    def _expand_settings_dock_to_full_width(self) -> None:
+        dock = self._model_settings_window
+        if not isinstance(dock, QDockWidget) or not dock.isVisible():
+            return
+        self.resizeDocks([dock], [self.width()], Qt.Orientation.Horizontal)
+
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
         self._update_centering()
@@ -1169,6 +1187,10 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._update_centering()
+        self._expand_settings_dock_to_full_width()
+        # The resize handler above still sees pre-layout geometry; recompute
+        # centering once layouts have settled so the chat column stays centered.
+        QTimer.singleShot(0, self._update_centering)
 
     def closeEvent(self, event: QCloseEvent) -> None:
         try:
