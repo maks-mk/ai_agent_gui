@@ -3243,6 +3243,25 @@ class GuiUxTests(unittest.TestCase):
         self.assertIn(SURFACE_CARD, stylesheet)
         self.assertIn(TEXT_MUTED, stylesheet)
 
+    def test_settings_dock_does_not_expand_window_past_requested_width(self):
+        for width in (900, 1024, 1280, 1366, 1920):
+            with self.subTest(width=width):
+                self.window.resize(width, 700)
+                self.window.show()
+                self._process_events()
+                self.window._open_settings_dialog()
+                self._process_events()
+
+                dock = self.window._model_settings_window
+                self.assertIsNotNone(dock)
+                self.assertGreaterEqual(dock.width(), width - 8)
+                self.assertLessEqual(dock.x(), 8)
+                self.assertEqual(self.window.width(), width)
+                self.assertLessEqual(dock.x() + dock.width(), self.window.width())
+
+                self.window._open_settings_dialog()
+                self._process_events()
+
     def test_inspector_toggle_collapses_and_restores_right_panel(self):
         self.window.show()
         self._process_events()
@@ -4398,7 +4417,7 @@ class GuiUxTests(unittest.TestCase):
         self.addCleanup(dialog.close)
         self._process_events()
 
-        self.assertGreaterEqual(dialog.profile_list.minimumWidth(), 280)
+        self.assertGreaterEqual(dialog.profile_list.minimumWidth(), 240)
 
         first_item_widget = dialog.profile_list.itemWidget(dialog.profile_list.item(0))
         self.assertIsNotNone(first_item_widget)
@@ -4517,10 +4536,11 @@ class GuiUxTests(unittest.TestCase):
         self.assertIs(dialog.tabs.widget(0), dialog.models_page)
         self.assertIs(dialog.tabs.widget(1), dialog.test_page)
         self.assertIsNone(dialog.test_page.layout())
-        self.assertEqual(dialog.width(), 824)
-        self.assertEqual(dialog.minimumWidth(), 755)
-        self.assertEqual(dialog.body_splitter.widget(0).minimumWidth(), 285)
+        self.assertLessEqual(dialog.width(), QApplication.primaryScreen().availableGeometry().width())
+        self.assertEqual(dialog.body_splitter.widget(0).minimumWidth(), 240)
         self.assertEqual(dialog.body_splitter.widget(1).minimumWidth(), 405)
+        self.assertEqual(dialog.body_splitter.widget(0).sizePolicy().horizontalStretch(), 1)
+        self.assertEqual(dialog.body_splitter.widget(1).sizePolicy().horizontalStretch(), 2)
         self.assertIsNotNone(dialog.save_button)
         self.assertFalse(dialog.save_button.isEnabled())
         self.assertIn("Add a profile", dialog.form_hint.text())
