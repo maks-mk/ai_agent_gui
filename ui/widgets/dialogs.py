@@ -165,20 +165,67 @@ class SearchableModelComboBox(QComboBox):
 class ResponsiveProfileList(QListWidget):
     """Keep profile cards inside the list viewport when the pane is resized."""
 
+    @staticmethod
+    def _card_height(widget: QWidget | None, width: int, fallback: int) -> int:
+        """Height for a profile card at *width*, honoring wrapped text.
+
+        A word-wrapped QLabel does not grow its sizeHint(): the base card hint
+        assumes a single text line. The extra height required by the wrapped
+        lines comes from heightForWidth() and must be ADDED to the base hint —
+        taking max() alone leaves the model-name line overlapping the title.
+        """
+        height = fallback
+        if widget is None:
+            return height
+        height = max(height, widget.sizeHint().height(), widget.minimumSizeHint().height())
+        extra = 0
+        for label in widget.findChildren(QLabel):
+            if not label.wordWrap() or not label.isVisibleTo(widget):
+                continue
+            # The label geometry is up to date: the caller activated the card
+            # layout after assigning the viewport width. hasHeightForWidth()
+            # is unreliable for QLabel (may report False even when
+            # heightForWidth() returns the wrapped height), so query it directly.
+            text_width = label.width() - label.margin() * 2
+            if text_width <= 0:
+                continue
+            wrapped_height = label.heightForWidth(text_width) + label.margin() * 2
+            single_line_height = label.fontMetrics().height()
+            extra += max(0, wrapped_height - single_line_height)
+        return height + extra
+
+    # Right gutter kept free so profile cards never extend under the
+    # overlay-style vertical scrollbar: its transparent track hides the
+    # cards' right border and clips the selected card's accent border.
+    SCROLLBAR_GUTTER = 10
+
     def _fit_items_to_viewport(self) -> None:
         viewport_width = self.viewport().width()
         if viewport_width <= 0:
             return
+        card_width = viewport_width - self.SCROLLBAR_GUTTER
         for row in range(self.count()):
             item = self.item(row)
             if item is None:
                 continue
-            hint = item.sizeHint()
-            if hint.width() != viewport_width:
-                item.setSizeHint(QSize(viewport_width, hint.height()))
             item_widget = self.itemWidget(item)
-            if item_widget is not None and item_widget.width() != viewport_width:
-                item_widget.setFixedWidth(viewport_width)
+            if item_widget is None:
+                continue
+            if item_widget.width() != card_width:
+                item_widget.setFixedWidth(card_width)
+            # Activate the card layout at the new width so child label geometry
+            # (and therefore the wrapped-text height below) is up to date.
+            if item_widget.layout() is not None:
+                item_widget.layout().activate()
+            # Base the height on the widget's own hint (NOT the previous item
+            # hint) so repeated calls cannot accumulate extra wrapped height.
+            base = max(
+                72,
+                item_widget.sizeHint().height(),
+                item_widget.minimumSizeHint().height(),
+            )
+            height = self._card_height(item_widget, card_width, base) + 6
+            item.setSizeHint(QSize(viewport_width, height))
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
@@ -235,8 +282,8 @@ class ModelSettingsDialog(QDialog):
         self._model_manual_flags = [False] * len(self._profiles)
 
         root = QVBoxLayout(self)
-        root.setContentsMargins(10, 10, 10, 10)
-        root.setSpacing(8)
+        root.setContentsMargins(16, 14, 16, 14)
+        root.setSpacing(10)
 
         hero_card = QFrame()
         hero_card.setObjectName("ModelSettingsHeroCard")
@@ -283,8 +330,8 @@ class ModelSettingsDialog(QDialog):
         left_container.setObjectName("ModelSettingsPane")
         left_container.setProperty("paneRole", "library")
         left = QVBoxLayout(left_container)
-        left.setContentsMargins(8, 8, 8, 8)
-        left.setSpacing(6)
+        left.setContentsMargins(18, 12, 18, 12)
+        left.setSpacing(8)
 
         left_header = QHBoxLayout()
         left_header.setContentsMargins(0, 0, 0, 0)
@@ -329,8 +376,8 @@ class ModelSettingsDialog(QDialog):
         right_container.setObjectName("ModelSettingsPane")
         right_container.setProperty("paneRole", "editor")
         right = QVBoxLayout(right_container)
-        right.setContentsMargins(8, 8, 8, 8)
-        right.setSpacing(6)
+        right.setContentsMargins(18, 12, 18, 12)
+        right.setSpacing(8)
 
         right_header = QHBoxLayout()
         right_header.setContentsMargins(0, 0, 0, 0)
@@ -367,15 +414,15 @@ class ModelSettingsDialog(QDialog):
         editor_content = QWidget()
         editor_content.setObjectName("ModelSettingsEditorContent")
         editor_layout = QVBoxLayout(editor_content)
-        editor_layout.setContentsMargins(0, 0, 0, 0)
-        editor_layout.setSpacing(6)
+        editor_layout.setContentsMargins(4, 4, 4, 4)
+        editor_layout.setSpacing(8)
 
         form_frame = QFrame()
         form_frame.setObjectName("ModelSettingsFormCard")
         form_layout = QFormLayout(form_frame)
-        form_layout.setContentsMargins(6, 6, 6, 6)
-        form_layout.setHorizontalSpacing(6)
-        form_layout.setVerticalSpacing(5)
+        form_layout.setContentsMargins(12, 10, 12, 10)
+        form_layout.setHorizontalSpacing(10)
+        form_layout.setVerticalSpacing(8)
         form_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         form_layout.setRowWrapPolicy(QFormLayout.DontWrapRows)
         form_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
@@ -507,9 +554,9 @@ class ModelSettingsDialog(QDialog):
 
         advanced_content = QWidget()
         advanced_layout = QFormLayout(advanced_content)
-        advanced_layout.setContentsMargins(6, 4, 6, 4)
-        advanced_layout.setHorizontalSpacing(6)
-        advanced_layout.setVerticalSpacing(5)
+        advanced_layout.setContentsMargins(6, 6, 6, 6)
+        advanced_layout.setHorizontalSpacing(10)
+        advanced_layout.setVerticalSpacing(8)
         advanced_layout.setFieldGrowthPolicy(QFormLayout.AllNonFixedFieldsGrow)
         advanced_layout.setLabelAlignment(Qt.AlignLeft | Qt.AlignVCenter)
         advanced_layout.addRow(base_url_label, self.base_url_edit)
@@ -523,8 +570,8 @@ class ModelSettingsDialog(QDialog):
         rotation_card = QFrame()
         rotation_card.setObjectName("ModelSettingsFormCard")
         rotation_card_layout = QVBoxLayout(rotation_card)
-        rotation_card_layout.setContentsMargins(8, 8, 8, 8)
-        rotation_card_layout.setSpacing(6)
+        rotation_card_layout.setContentsMargins(12, 10, 12, 10)
+        rotation_card_layout.setSpacing(8)
 
         self.api_key_rotation_editor = CopySafePlainTextEdit()
         self.api_key_rotation_editor.setPlaceholderText("sk-key-1\nsk-key-2\ngm-key-3")
@@ -559,15 +606,15 @@ class ModelSettingsDialog(QDialog):
         editor_scroll.setWidget(editor_content)
         right.addWidget(editor_scroll, 1)
 
-        left_container.setMinimumWidth(240)
+        left_container.setMinimumWidth(280)
         right_container.setMinimumWidth(405)
         left_container.setSizePolicy(QSizePolicy.Policy.Preferred, QSizePolicy.Policy.Expanding)
         right_container.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding)
         self.body_splitter.addWidget(left_container)
         self.body_splitter.addWidget(right_container)
-        self.body_splitter.setStretchFactor(0, 1)
-        self.body_splitter.setStretchFactor(1, 2)
-        self.body_splitter.setSizes([240, 539])
+        self.body_splitter.setStretchFactor(0, 3)
+        self.body_splitter.setStretchFactor(1, 4)
+        self.body_splitter.setSizes([320, 480])
         models_page_layout.addWidget(self.body_splitter, 1)
 
         actions = QDialogButtonBox(QDialogButtonBox.Save | QDialogButtonBox.Close)
@@ -1345,10 +1392,16 @@ class ModelSettingsDialog(QDialog):
         details_label.setEnabled(is_enabled)
         details_label.setMargin(0)
         details_label.setAlignment(Qt.AlignLeft | Qt.AlignVCenter)
-        details_label.setWordWrap(False)
+        # Long model names must wrap instead of being clipped by the narrow
+        # Profiles column. The card height grows to fit the wrapped text.
+        details_label.setWordWrap(True)
         details_label.setMinimumWidth(0)
         details_label.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Preferred)
-        text_column.addWidget(details_label, 0, Qt.AlignLeft | Qt.AlignVCenter)
+        # No alignment flags in addWidget(): an alignment constraint stops the
+        # layout from stretching the label to the full column width, and a
+        # word-wrapped QLabel then shrinks to its (underestimated) sizeHint and
+        # wraps names that would easily fit on one line.
+        text_column.addWidget(details_label)
 
         layout.addLayout(text_column, 1)
 
@@ -1372,7 +1425,8 @@ class ModelSettingsDialog(QDialog):
         title_label.ensurePolished()
         details_label.ensurePolished()
         title_label.setMinimumHeight(title_label.fontMetrics().height() + 6)
-        details_label.setMinimumHeight(details_label.fontMetrics().height() + 4)
+        # Do NOT force a fixed minimum height on the model-name label: with
+        # wordWrap enabled a long name must be able to grow the card height.
         container.adjustSize()
         return container
 
@@ -1401,6 +1455,8 @@ class ModelSettingsDialog(QDialog):
             self.profile_list.addItem(item)
             self.profile_list.setItemWidget(item, item_widget)
         self.profile_list.blockSignals(False)
+        # _fit_items_to_viewport re-derives every card height at the real
+        # viewport width, honoring wrapped model names (heightForWidth).
         self.profile_list._fit_items_to_viewport()
         if self.save_button is not None:
             self.save_button.setEnabled(bool(self._profiles))

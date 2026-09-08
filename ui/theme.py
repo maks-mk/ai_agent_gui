@@ -1101,15 +1101,19 @@ def build_stylesheet() -> str:
     }}
 
     QTabWidget::pane {{
-        border: none;
+        border: 1px solid {model_dialog_border};
+        border-radius: {SOFT_RADIUS_MD + 4}px;
         background: transparent;
+        top: -1px;
     }}
 
     QTabBar::tab {{
         background: transparent;
-        border: none;
-        padding: 3px 6px;
-        margin-right: 2px;
+        border: 1px solid {model_dialog_border};
+        border-bottom: 1px solid {model_dialog_border};
+        padding: 3px 10px;
+        margin-right: 4px;
+        margin-bottom: 2px;
         color: {TEXT_MUTED};
         border-radius: {SOFT_RADIUS_SM}px;
         font-size: 8.5pt;
@@ -1118,7 +1122,9 @@ def build_stylesheet() -> str:
     QTabBar::tab:selected {{
         background: {SURFACE_ALT};
         color: {TEXT_PRIMARY};
-        border: none;
+        border: 1px solid {model_dialog_selected_border};
+        border-bottom-left-radius: {SOFT_RADIUS_SM}px;
+        border-bottom-right-radius: {SOFT_RADIUS_SM}px;
     }}
 
     QToolBar {{

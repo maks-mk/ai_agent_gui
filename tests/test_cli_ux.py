@@ -3254,8 +3254,12 @@ class GuiUxTests(unittest.TestCase):
 
                 dock = self.window._model_settings_window
                 self.assertIsNotNone(dock)
-                self.assertGreaterEqual(dock.width(), width - 8)
-                self.assertLessEqual(dock.x(), 8)
+                # The dock must NOT stretch across the whole window: it stays
+                # bounded (~45% of the window, clamped to 660-900px) so the
+                # chat column remains visible and centered.
+                self.assertLess(dock.width(), width)
+                self.assertGreaterEqual(dock.width(), 660)
+                self.assertLessEqual(dock.width(), 900)
                 self.assertEqual(self.window.width(), width)
                 self.assertLessEqual(dock.x() + dock.width(), self.window.width())
 
@@ -4586,10 +4590,10 @@ class GuiUxTests(unittest.TestCase):
         self.assertIs(dialog.tabs.widget(1), dialog.test_page)
         self.assertIsNone(dialog.test_page.layout())
         self.assertLessEqual(dialog.width(), QApplication.primaryScreen().availableGeometry().width())
-        self.assertEqual(dialog.body_splitter.widget(0).minimumWidth(), 240)
+        self.assertEqual(dialog.body_splitter.widget(0).minimumWidth(), 280)
         self.assertEqual(dialog.body_splitter.widget(1).minimumWidth(), 405)
-        self.assertEqual(dialog.body_splitter.widget(0).sizePolicy().horizontalStretch(), 1)
-        self.assertEqual(dialog.body_splitter.widget(1).sizePolicy().horizontalStretch(), 2)
+        self.assertEqual(dialog.body_splitter.widget(0).sizePolicy().horizontalStretch(), 3)
+        self.assertEqual(dialog.body_splitter.widget(1).sizePolicy().horizontalStretch(), 4)
         self.assertIsNotNone(dialog.save_button)
         self.assertFalse(dialog.save_button.isEnabled())
         self.assertIn("Add a profile", dialog.form_hint.text())
@@ -4676,6 +4680,74 @@ class GuiUxTests(unittest.TestCase):
         combined = "\n".join(label.text() for label in labels)
         self.assertIn("gpt-4o", combined)
         self.assertIn("openai", combined)
+        # Long model names must wrap instead of being clipped by the narrow
+        # Profiles column, so the full model identifier stays readable.
+        meta_label = next((label for label in labels if label.objectName() == "ModelProfileItemMeta"), None)
+        self.assertIsNotNone(meta_label)
+        self.assertTrue(meta_label.wordWrap())
+
+    def test_model_settings_dialog_long_model_name_wraps_in_profile_list(self):
+        payload = {
+            "active_profile": "long-model",
+            "profiles": [
+                {
+                    "id": "long-model",
+                    "provider": "openai",
+                    "model": "openai/gpt-oss-120b-very-long-model-identifier-that-would-not-fit-in-a-narrow-column",
+                    "api_key": "sk-demo",
+                    "base_url": "",
+                }
+            ],
+        }
+        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        self._process_events()
+
+        item_widget = dialog.profile_list.itemWidget(dialog.profile_list.item(0))
+        self.assertIsNotNone(item_widget)
+        meta_label = item_widget.findChild(QLabel, "ModelProfileItemMeta")
+        self.assertIsNotNone(meta_label)
+        self.assertTrue(meta_label.wordWrap())
+        self.assertEqual(
+            meta_label.text(),
+            "openai/gpt-oss-120b-very-long-model-identifier-that-would-not-fit-in-a-narrow-column",
+        )
+
+    def test_model_settings_dialog_wrapped_model_name_grows_card_height(self):
+        # Regression: a wrapped model name must grow the card height instead of
+        # overlapping the profile title line inside a fixed-height card.
+        long_name = "mdlscp/qwen3-8-27b-very-long-model-identifier-that-wraps-to-multiple-lines-in-a-narrow-profiles-column"
+        payload = {
+            "active_profile": "long-model",
+            "profiles": [
+                {"id": "long-model", "provider": "openai", "model": long_name, "api_key": "sk-demo", "base_url": ""},
+                {"id": "short-model", "provider": "openai", "model": "gpt-4o", "api_key": "sk-demo", "base_url": ""},
+            ],
+        }
+        dialog = agent_cli.ModelSettingsDialog(payload, self.window)
+        self.addCleanup(dialog.close)
+        dialog.show()
+        self._process_events()
+
+        long_item = dialog.profile_list.item(0)
+        short_item = dialog.profile_list.item(1)
+        self.assertIsNotNone(long_item)
+        self.assertIsNotNone(short_item)
+
+        long_meta = dialog.profile_list.itemWidget(long_item).findChild(QLabel, "ModelProfileItemMeta")
+        short_meta = dialog.profile_list.itemWidget(short_item).findChild(QLabel, "ModelProfileItemMeta")
+        long_wrapped_height = long_meta.heightForWidth(long_meta.width())
+        short_wrapped_height = short_meta.heightForWidth(short_meta.width())
+        self.assertGreater(long_wrapped_height, short_wrapped_height)
+
+        # The wrapped card must be taller than the single-line card, and the
+        # height must be stable across repeated relayouts (no accumulation).
+        long_height = long_item.sizeHint().height()
+        short_height = short_item.sizeHint().height()
+        self.assertGreater(long_height, short_height)
+        dialog.profile_list._fit_items_to_viewport()
+        self._process_events()
+        self.assertEqual(long_item.sizeHint().height(), long_height)
 
     def test_model_settings_dialog_enables_base_url_for_openai(self):
         payload = {

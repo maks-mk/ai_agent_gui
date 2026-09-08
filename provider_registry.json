@@ -538,7 +538,8 @@
         "agentrouter.org",
         "apimaster.ai",
         "true-sota.com",
-		"tokenbom.com"
+		"tokenbom.com",
+		"api.ashna.ai"
       ],
       "match_type": "exact",
       "supports_reasoning": true,

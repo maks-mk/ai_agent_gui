@@ -871,7 +871,7 @@ class MainWindow(QMainWindow):
         dock.setWidget(dialog)
         self.addDockWidget(Qt.DockWidgetArea.RightDockWidgetArea, dock)
         self._model_settings_window = dock
-        self._expand_settings_dock_to_full_width()
+        self._size_settings_dock()
 
         if close_button := getattr(dialog, "close_button", None):
             try:
@@ -883,7 +883,7 @@ class MainWindow(QMainWindow):
         dock.visibilityChanged.connect(self._on_settings_dock_visibility_changed)
         dock.show()
         dock.raise_()
-        self._expand_settings_dock_to_full_width()
+        self._size_settings_dock()
 
     def _save_model_profiles_from_dialog(self, payload: dict | None) -> None:
         normalized = normalize_profiles_payload(payload or {})
@@ -1168,17 +1168,27 @@ class MainWindow(QMainWindow):
 
     def _on_settings_dock_visibility_changed(self, visible: bool) -> None:
         if visible:
-            self._expand_settings_dock_to_full_width()
+            self._size_settings_dock()
         # Recompute centering on the next event-loop pass: at this moment the
         # dock layout is not settled yet and reading geometry now would keep
         # the chat column glued to the right edge after the dock closes.
         QTimer.singleShot(0, self._update_centering)
 
-    def _expand_settings_dock_to_full_width(self) -> None:
+    def _size_settings_dock(self) -> None:
+        """Stretch the Settings dock across the whole window.
+
+        The panel is meant to be used full-window: the chat is not needed while
+        it is open, so its size does not matter. Giving the dock the full width
+        also guarantees its content (which needs ~717 px) never overflows the
+        right edge of the screen on narrow windows.
+        """
         dock = self._model_settings_window
         if not isinstance(dock, QDockWidget) or not dock.isVisible():
             return
-        self.resizeDocks([dock], [self.width()], Qt.Orientation.Horizontal)
+        window_width = self.width()
+        if window_width <= 0:
+            return
+        self.resizeDocks([dock], [window_width], Qt.Orientation.Horizontal)
 
     def showEvent(self, event) -> None:  # type: ignore[override]
         super().showEvent(event)
@@ -1187,7 +1197,7 @@ class MainWindow(QMainWindow):
     def resizeEvent(self, event) -> None:  # type: ignore[override]
         super().resizeEvent(event)
         self._update_centering()
-        self._expand_settings_dock_to_full_width()
+        self._size_settings_dock()
         # The resize handler above still sees pre-layout geometry; recompute
         # centering once layouts have settled so the chat column stays centered.
         QTimer.singleShot(0, self._update_centering)
